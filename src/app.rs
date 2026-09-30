@@ -1,0 +1,780 @@
+//! The viewer: which file is current, what is on screen, and what the
+//! commands do.
+//!
+//! `current` is the file the user is on; `shown` is what is on screen,
+//! which stays the previous image until the current one is decoded, so
+//! browsing never flashes an empty window. Decoded images become textures
+//! in `cache`, which keeps the current file and its two neighbours; the
+//! neighbours are decoded ahead ([`App::update_wanted`]), so the next image
+//! usually appears at once.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureFilter, TextureHandle, TextureOptions, Vec2};
+
+use crate::folder::{self, Scan};
+use crate::input::{Arrow, Cmd, Wheel};
+use crate::loader::{Loader, Meta};
+use crate::view::{self, View, Zoom};
+use crate::win;
+
+/// Default background of the image area.
+pub const DEFAULT_BACKGROUND: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x1c);
+
+/// Backgrounds offered in View → Background, the default first.
+pub fn background_presets() -> [(Color32, &'static str); 4] {
+    [
+        (DEFAULT_BACKGROUND, tr!("Dark (default)", "Тёмный (по умолчанию)")),
+        (Color32::BLACK, tr!("Black", "Чёрный")),
+        (Color32::from_gray(0x80), tr!("Grey", "Серый")),
+        (Color32::WHITE, tr!("White", "Белый")),
+    ]
+}
+
+/// `#rrggbb` as kept in the settings.
+pub fn background_to_hex(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+/// A colour saved by [`background_to_hex`] (any CSS hex form), opaque.
+pub fn background_from_hex(s: &str) -> Option<Color32> {
+    let [r, g, b, _] = Color32::from_hex(s.trim()).ok()?.to_srgba_unmultiplied();
+    Some(Color32::from_rgb(r, g, b))
+}
+
+/// Colour of text and the spinner drawn on `bg`: dark on light
+/// backgrounds, light on dark ones.
+pub fn ink_on(bg: Color32) -> Color32 {
+    let luma = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
+    if luma > 140.0 { Color32::from_gray(70) } else { Color32::from_gray(170) }
+}
+
+/// Mipmaps keep downscaled images smooth (egui_glow builds them).
+const TEXTURE: TextureOptions = TextureOptions::LINEAR.with_mipmap_mode(Some(TextureFilter::Linear));
+
+/// How long a notice stays in the status bar.
+const NOTICE_TIME: Duration = Duration::from_secs(4);
+/// A window cloaked at start-up is shown after this at the latest.
+const UNCLOAK_TIMEOUT: Duration = Duration::from_secs(1);
+/// A spinner appears when an image takes longer than this.
+const SPINNER_DELAY: Duration = Duration::from_millis(250);
+
+const TOOLBAR_KEY: &str = "toolbar";
+const STATUS_BAR_KEY: &str = "status_bar";
+const BACKGROUND_KEY: &str = "background";
+
+#[derive(Clone)]
+pub struct Picture {
+    pub texture: TextureHandle,
+    pub meta: Meta,
+}
+
+impl Picture {
+    /// Size in image pixels (of the file, not of a shrunk texture).
+    pub fn size(&self) -> Vec2 {
+        egui::vec2(self.meta.width as f32, self.meta.height as f32)
+    }
+}
+
+pub enum Slot {
+    Ready(Picture),
+    Failed(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dialog {
+    Shortcuts,
+    About,
+    Associations,
+}
+
+pub struct App {
+    loader: Loader,
+    /// Images of the folder of `current`, in Explorer's order.
+    pub files: Vec<PathBuf>,
+    dir: Option<PathBuf>,
+    /// The listing of `dir` while it runs.
+    pub scan: Option<Scan>,
+    /// The file the user is on.
+    pub current: Option<PathBuf>,
+    /// Position of `current` in `files`, once the folder is listed.
+    pub index: Option<usize>,
+    /// When `current` last changed, for the spinner.
+    current_since: Instant,
+    /// What is on screen.
+    pub shown: Option<(PathBuf, Picture)>,
+    pub cache: HashMap<PathBuf, Slot>,
+    pub view: View,
+    /// The image area of the last frame.
+    pub viewport: Rect,
+    pub show_toolbar: bool,
+    pub show_status_bar: bool,
+    /// Background of the image area.
+    pub background: Color32,
+    /// The file the delete confirmation asks about.
+    pub confirm_delete: Option<PathBuf>,
+    deleting: Option<mpsc::Receiver<(PathBuf, Result<(), String>)>>,
+    pub dialog: Option<Dialog>,
+    /// `dialog` was opened this frame.
+    pub dialog_fresh: bool,
+    notice: Option<(String, Instant)>,
+    wheel: Wheel,
+    /// Direction of the last move, to decode ahead in that direction first.
+    forward: bool,
+    title: String,
+    /// The app icon of the start screen and of About, rasterised for the
+    /// display (see `ui::app_icon`).
+    pub start_icon: Option<TextureHandle>,
+    pub about_icon: Option<TextureHandle>,
+    /// Icons of the file types in the associations dialog, rasterised for
+    /// the display, with the pixel size they were made for.
+    pub type_icons: Option<(u32, Vec<TextureHandle>)>,
+    /// Commands clicked in menus and on the toolbar, run after drawing.
+    pub clicked: Vec<Cmd>,
+    first_image_logged: bool,
+    /// The window handle, when it is a Win32 window.
+    hwnd: Option<isize>,
+    /// The window is cloaked until its first maximized frame is on screen
+    /// (see `App::new`); uncloaked at this time at the latest.
+    cloaked_until: Option<Instant>,
+}
+
+impl App {
+    pub fn new(cc: &eframe::CreationContext<'_>, loader: Loader, initial: Option<PathBuf>) -> Self {
+        let ctx = &cc.egui_ctx;
+        log::debug!("window created at {:.0} ms", crate::since_start_ms());
+        loader.set_context(ctx.clone());
+        // Ctrl+Plus and Ctrl+Minus zoom the image, not the interface.
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        crate::ui::style(ctx);
+        // The window is created with the Windows theme and egui turns it
+        // dark only at the end of the first frame; Windows 10 would then
+        // keep a white caption until the frame is repainted, and forcing
+        // that repaint flickers. eframe shows the window after the first
+        // frame, so making the caption dark now shows it dark from the start.
+        let hwnd = {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            match cc.window_handle().map(|h| h.as_raw()) {
+                Ok(RawWindowHandle::Win32(w)) => Some(w.hwnd.get()),
+                _ => None,
+            }
+        };
+        if let Some(hwnd) = hwnd {
+            win::dark_caption(hwnd);
+        }
+        // A window saved maximized is created normal (see
+        // `main::MAXIMIZE_WHEN_SHOWN`). Showing and maximizing it now would
+        // show it before it is painted (a white flash); maximizing it after
+        // eframe shows it makes it appear in two steps (the normal size,
+        // then the maximized one). So it is maximized now but cloaked,
+        // painted unseen at its final size, and uncloaked in `ui` once a
+        // maximized frame is on screen.
+        let mut cloaked_until = None;
+        if let Some(hwnd) = hwnd
+            && crate::MAXIMIZE_WHEN_SHOWN.swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            win::cloak(hwnd, true);
+            win::show_maximized(hwnd);
+            cloaked_until = Some(Instant::now() + UNCLOAK_TIMEOUT);
+        }
+        let flag = |key: &str| cc.storage.and_then(|s| s.get_string(key)).as_deref() != Some("false");
+        let mut app = Self {
+            loader,
+            files: Vec::new(),
+            dir: None,
+            scan: None,
+            current: None,
+            index: None,
+            current_since: Instant::now(),
+            shown: None,
+            cache: HashMap::new(),
+            view: View::default(),
+            viewport: ctx.content_rect(),
+            show_toolbar: flag(TOOLBAR_KEY),
+            show_status_bar: flag(STATUS_BAR_KEY),
+            background: cc
+                .storage
+                .and_then(|s| s.get_string(BACKGROUND_KEY))
+                .and_then(|v| background_from_hex(&v))
+                .unwrap_or(DEFAULT_BACKGROUND),
+            confirm_delete: None,
+            deleting: None,
+            dialog: None,
+            dialog_fresh: false,
+            notice: None,
+            wheel: Wheel::default(),
+            forward: true,
+            title: String::new(),
+            start_icon: None,
+            about_icon: None,
+            type_icons: None,
+            clicked: Vec::new(),
+            first_image_logged: false,
+            hwnd,
+            cloaked_until,
+        };
+        if let Some(path) = initial {
+            app.open(ctx, path);
+        }
+        app
+    }
+
+    /// Show `path`, a file or the first image of a folder, and list its
+    /// folder for browsing.
+    pub fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let path = std::path::absolute(&path).unwrap_or(path);
+        if path.is_dir() {
+            self.set_current(None);
+            self.shown = None;
+            self.start_scan(ctx, path, None);
+            return;
+        }
+        let dir = path.parent().map(Path::to_path_buf);
+        let listed =
+            self.scan.is_none() && matches!((&self.dir, &dir), (Some(a), Some(b)) if folder::same_path(a, b));
+        self.index = if listed { folder::position(&self.files, &path) } else { None };
+        self.set_current(Some(path.clone()));
+        if self.index.is_none()
+            && let Some(dir) = dir
+        {
+            self.start_scan(ctx, dir, Some(path));
+        }
+    }
+
+    fn start_scan(&mut self, ctx: &egui::Context, dir: PathBuf, keep: Option<PathBuf>) {
+        self.files.clear();
+        self.index = None;
+        self.dir = Some(dir.clone());
+        self.scan = Some(folder::scan(dir, keep, ctx.clone()));
+    }
+
+    fn set_current(&mut self, path: Option<PathBuf>) {
+        self.current = path;
+        self.current_since = Instant::now();
+    }
+
+    /// Go to `files[i]`.
+    fn go(&mut self, i: usize) {
+        if self.index == Some(i) {
+            return;
+        }
+        if let Some(path) = self.files.get(i).cloned() {
+            self.forward = self.index.is_none_or(|old| i > old);
+            self.index = Some(i);
+            self.set_current(Some(path));
+        }
+    }
+
+    /// Move `delta` images along the folder, stopping at its ends.
+    fn step(&mut self, delta: isize) {
+        if let Some(i) = self.index {
+            let target = i as isize + delta;
+            if target >= 0 && (target as usize) < self.files.len() {
+                self.go(target as usize);
+            }
+        }
+    }
+
+    pub fn notice(&mut self, text: String) {
+        self.notice = Some((text, Instant::now()));
+    }
+
+    /// The notice to show now, if any.
+    pub fn current_notice(&self) -> Option<&str> {
+        self.notice.as_ref().filter(|(_, at)| at.elapsed() < NOTICE_TIME).map(|(t, _)| t.as_str())
+    }
+
+    fn poll_scan(&mut self) {
+        let Some(result) = self.scan.as_ref().and_then(Scan::poll) else { return };
+        self.scan = None;
+        match result {
+            Ok(files) => self.files = files,
+            Err(e) => {
+                self.notice(tr!(format!("Cannot list the folder: {e}"), format!("Не удалось прочитать папку: {e}")));
+                self.files = self.current.iter().cloned().collect();
+            }
+        }
+        self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
+        if self.current.is_none() && !self.files.is_empty() {
+            self.go(0);
+        }
+    }
+
+    /// The current file and its neighbours, most wanted first: these are
+    /// decoded ahead and kept.
+    fn wanted(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self.current.iter().cloned().collect();
+        if let Some(i) = self.index {
+            let order: [isize; 2] = if self.forward { [1, -1] } else { [-1, 1] };
+            for d in order {
+                let j = i as isize + d;
+                if j >= 0
+                    && let Some(p) = self.files.get(j as usize)
+                {
+                    paths.push(p.clone());
+                }
+            }
+        }
+        paths
+    }
+
+    fn poll_decoded(&mut self, ctx: &egui::Context) {
+        let wanted = self.wanted();
+        let max_side = ctx.input(|i| i.max_texture_side);
+        while let Some(d) = self.loader.poll() {
+            if !wanted.contains(&d.path) {
+                continue; // the user has moved on
+            }
+            let slot = match d.result {
+                // Decoded before the GPU's limit was known: decode again.
+                Ok((image, _)) if image.size[0] > max_side || image.size[1] > max_side => continue,
+                Ok((image, meta)) => {
+                    let texture = ctx.load_texture(d.path.to_string_lossy(), image, TEXTURE);
+                    Slot::Ready(Picture { texture, meta })
+                }
+                Err(e) => {
+                    log::warn!("cannot open {}: {e}", d.path.display());
+                    Slot::Failed(e)
+                }
+            };
+            self.cache.insert(d.path, slot);
+        }
+    }
+
+    /// Ask for the wanted files that are not decoded yet and forget the
+    /// rest.
+    fn update_wanted(&mut self) {
+        let wanted = self.wanted();
+        self.cache.retain(|p, _| wanted.contains(p));
+        self.loader.want(wanted.into_iter().filter(|p| !self.cache.contains_key(p)));
+    }
+
+    /// Put the current image on screen once it is decoded.
+    fn sync_shown(&mut self) {
+        let Some(current) = &self.current else {
+            self.shown = None;
+            return;
+        };
+        match self.cache.get(current) {
+            Some(Slot::Ready(picture)) => {
+                let (same_path, same_texture) = match &self.shown {
+                    Some((p, s)) => (p == current, s.texture.id() == picture.texture.id()),
+                    None => (false, false),
+                };
+                if !same_texture {
+                    if !same_path {
+                        self.view.next_image();
+                    }
+                    self.shown = Some((current.clone(), picture.clone()));
+                    if !self.first_image_logged {
+                        self.first_image_logged = true;
+                        log::info!("first image on screen at {:.0} ms", crate::since_start_ms());
+                    }
+                }
+            }
+            Some(Slot::Failed(_)) => self.shown = None,
+            None => {}
+        }
+    }
+
+    fn poll_delete(&mut self) {
+        let Some(rx) = &self.deleting else { return };
+        let Ok((path, result)) = rx.try_recv() else { return };
+        self.deleting = None;
+        if path.exists() {
+            if let Err(e) = result
+                && e != "cancelled"
+            {
+                self.notice(tr!(format!("Cannot delete the file: {e}"), format!("Не удалось удалить файл: {e}")));
+            }
+            return;
+        }
+        self.cache.remove(&path);
+        let was_current = self.current.as_deref().is_some_and(|c| folder::same_path(c, &path));
+        match folder::position(&self.files, &path) {
+            Some(pos) => {
+                self.files.remove(pos);
+                if was_current {
+                    self.index = None;
+                    if self.files.is_empty() {
+                        self.set_current(None);
+                    } else {
+                        // The next image takes its place; after the last,
+                        // the one before.
+                        self.go(pos.min(self.files.len() - 1));
+                    }
+                } else if let Some(i) = self.index
+                    && i > pos
+                {
+                    self.index = Some(i - 1);
+                }
+            }
+            None if was_current => self.set_current(None),
+            None => {}
+        }
+    }
+
+    /// Move `path` to the Recycle Bin on a thread; the shell may ask
+    /// questions of its own (a file that cannot be recycled).
+    pub fn delete(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let result = win::recycle(&path);
+            let _ = tx.send((path, result));
+            ctx.request_repaint();
+        });
+        self.deleting = Some(rx);
+    }
+
+    fn handle_drop(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
+        if let Some(path) = dropped {
+            self.open(ctx, path);
+        }
+    }
+
+    fn is_fullscreen(ctx: &egui::Context) -> bool {
+        ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
+    }
+
+    /// Carry out `cmd`.
+    fn run(&mut self, ctx: &egui::Context, frame: &eframe::Frame, cmd: Cmd) {
+        let ppp = ctx.pixels_per_point();
+        let viewport = self.viewport;
+        let size = self.shown.as_ref().map(|(_, p)| p.size());
+        match cmd {
+            Cmd::Next => self.step(1),
+            Cmd::Prev => self.step(-1),
+            Cmd::First => self.go(0),
+            Cmd::Last => self.go(self.files.len().saturating_sub(1)),
+            Cmd::Arrow(arrow) => {
+                let can = size.map_or([false; 2], |s| self.view.pannable(s, viewport, ppp));
+                // An eighth of the window per press.
+                let d = viewport.size() / 8.0;
+                match (arrow, size) {
+                    (Arrow::Left, Some(s)) if can[0] => self.view.pan(egui::vec2(d.x, 0.0), s, viewport, ppp),
+                    (Arrow::Right, Some(s)) if can[0] => self.view.pan(egui::vec2(-d.x, 0.0), s, viewport, ppp),
+                    (Arrow::Up, Some(s)) if can[1] => self.view.pan(egui::vec2(0.0, d.y), s, viewport, ppp),
+                    (Arrow::Down, Some(s)) if can[1] => self.view.pan(egui::vec2(0.0, -d.y), s, viewport, ppp),
+                    (Arrow::Left | Arrow::Up, _) => self.step(-1),
+                    (Arrow::Right | Arrow::Down, _) => self.step(1),
+                }
+            }
+            Cmd::ZoomIn | Cmd::ZoomOut => {
+                if let Some(s) = size {
+                    self.view.zoom_step(cmd == Cmd::ZoomIn, s, viewport, ppp, viewport.center());
+                }
+            }
+            Cmd::Fit => {
+                self.view.zoom = Zoom::Fit;
+                self.view.offset = Vec2::ZERO;
+            }
+            Cmd::Actual => {
+                if let Some(s) = size {
+                    self.view.zoom_to(Zoom::Actual, s, viewport, ppp, viewport.center());
+                }
+            }
+            Cmd::RotateLeft => self.view.turns = (self.view.turns + 3) % 4,
+            Cmd::RotateRight => self.view.turns = (self.view.turns + 1) % 4,
+            Cmd::FullScreen => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!Self::is_fullscreen(ctx))),
+            Cmd::Escape if Self::is_fullscreen(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false)),
+            Cmd::Escape | Cmd::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Cmd::Delete => {
+                if self.deleting.is_none() {
+                    self.confirm_delete = self.current.clone().filter(|p| p.is_file());
+                }
+            }
+            Cmd::Copy => {
+                if let Some(path) = self.current.clone() {
+                    let text = match win::copy_file(&path) {
+                        Ok(()) => tr!("Copied to the clipboard".into(), "Скопировано в буфер обмена".into()),
+                        Err(e) => tr!(format!("Cannot copy: {e}"), format!("Не удалось скопировать: {e}")),
+                    };
+                    self.notice(text);
+                }
+            }
+            Cmd::Open => self.pick_file(ctx, frame),
+            Cmd::OpenDefault => {
+                if let Some(path) = &self.current
+                    && !win::open_default(path)
+                {
+                    self.notice(tr!(
+                        "No program is associated with this file".into(),
+                        "С этим файлом не связана ни одна программа".into()
+                    ));
+                }
+            }
+            Cmd::ShowInExplorer => {
+                if let Some(path) = &self.current {
+                    win::show_in_explorer(path);
+                }
+            }
+            Cmd::Refresh => {
+                if let Some(path) = self.current.clone() {
+                    // Decoded again; the old picture stays until then.
+                    self.cache.remove(&path);
+                    if let Some(dir) = path.parent() {
+                        self.start_scan(ctx, dir.to_path_buf(), Some(path));
+                    }
+                } else if let Some(dir) = self.dir.clone() {
+                    self.start_scan(ctx, dir, None);
+                }
+            }
+            Cmd::ToggleToolbar => self.show_toolbar = !self.show_toolbar,
+            Cmd::ToggleStatusBar => self.show_status_bar = !self.show_status_bar,
+            Cmd::Shortcuts | Cmd::About | Cmd::Associations => {
+                self.dialog = Some(match cmd {
+                    Cmd::About => Dialog::About,
+                    Cmd::Associations => Dialog::Associations,
+                    _ => Dialog::Shortcuts,
+                });
+                self.dialog_fresh = true;
+            }
+        }
+    }
+
+    fn pick_file(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(tr!("Open image", "Открыть изображение"))
+            .add_filter(tr!("Images", "Изображения"), folder::EXTENSIONS)
+            .add_filter(tr!("All files", "Все файлы"), &["*"])
+            .set_parent(frame);
+        if let Some(dir) = &self.dir {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.open(ctx, path);
+        }
+    }
+
+    /// The image area: the picture, panning, the wheel and the context
+    /// menu.
+    fn image_area(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let rect = ui.max_rect();
+        self.viewport = rect;
+        let ppp = ctx.pixels_per_point();
+        // Not focusable: Space and Enter must not "click" it.
+        let response = ui.allocate_rect(rect, Sense::CLICK | Sense::DRAG);
+        let painter = ui.painter_at(rect);
+
+        if let Some((_, picture)) = self.shown.clone() {
+            let size = picture.size();
+            if response.dragged_by(PointerButton::Primary) {
+                self.view.pan(response.drag_delta(), size, rect, ppp);
+            }
+            let place = self.view.place(size, rect, ppp);
+            view::paint(&painter, picture.texture.id(), place, self.view.turns);
+            if self.view.pannable(size, rect, ppp).contains(&true) && response.hovered() {
+                ctx.set_cursor_icon(if response.dragged() {
+                    egui::CursorIcon::Grabbing
+                } else {
+                    egui::CursorIcon::Grab
+                });
+            }
+        } else if self.current.is_none() && self.scan.is_none() && self.dir.is_none() {
+            self.start_screen(ui, rect);
+        } else {
+            let text = match (&self.current, self.current.as_ref().and_then(|c| self.cache.get(c))) {
+                (Some(_), Some(Slot::Failed(e))) => Some(tr!(format!("Cannot open the image\n\n{e}"), format!("Не удалось открыть изображение\n\n{e}"))),
+                (None, _) if self.scan.is_none() => Some(tr!("No images in this folder".into(), "В этой папке нет изображений".into())),
+                _ => None,
+            };
+            if let Some(text) = text {
+                painter.text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(16.0), ink_on(self.background));
+            }
+        }
+
+        // Still decoding the current image.
+        let waiting = self.current.as_ref().is_some_and(|c| {
+            !self.cache.contains_key(c) && self.shown.as_ref().is_none_or(|(p, _)| p != c)
+        }) || (self.current.is_none() && self.scan.is_some());
+        if waiting {
+            let late = self.current_since.elapsed() > SPINNER_DELAY;
+            if late {
+                let r = Rect::from_center_size(rect.right_bottom() - egui::vec2(28.0, 28.0), egui::vec2(24.0, 24.0));
+                egui::Spinner::new().color(ink_on(self.background)).paint_at(ui, r);
+            } else {
+                ctx.request_repaint_after(SPINNER_DELAY);
+            }
+        }
+
+        if response.double_clicked() || response.middle_clicked() {
+            self.clicked.push(Cmd::FullScreen);
+        }
+        // Windows sends the wheel to the window under the pointer, so it
+        // browses from anywhere in the window, but not under a menu or a
+        // dialog.
+        let modal_open = self.confirm_delete.is_some() || self.dialog.is_some();
+        if !modal_open && !egui::Popup::is_any_open(&ctx) {
+            let (browse, zoom) = self.wheel.read(&ctx);
+            // Wheel up: the previous image.
+            for _ in 0..browse.unsigned_abs() {
+                self.clicked.push(if browse > 0 { Cmd::Prev } else { Cmd::Next });
+            }
+            if zoom != 0
+                && let Some((_, picture)) = &self.shown
+            {
+                let anchor = ctx.pointer_latest_pos().filter(|p| rect.contains(*p)).unwrap_or(rect.center());
+                for _ in 0..zoom.unsigned_abs() {
+                    self.view.zoom_step(zoom > 0, picture.size(), rect, ppp, anchor);
+                }
+            }
+        }
+        response.context_menu(|ui| self.context_menu(ui));
+    }
+
+    /// Show the window cloaked in `App::new` once a frame at its maximized
+    /// size has been presented (this frame follows it), or when that takes
+    /// too long, so that it can never stay invisible.
+    fn uncloak(&mut self, ctx: &egui::Context) {
+        let Some(deadline) = self.cloaked_until else { return };
+        let maximized = ctx.input(|i| i.viewport().maximized == Some(true));
+        if (maximized && ctx.cumulative_frame_nr() >= 1) || Instant::now() >= deadline {
+            if let Some(hwnd) = self.hwnd {
+                win::cloak(hwnd, false);
+            }
+            self.cloaked_until = None;
+            log::debug!("window uncloaked at {:.0} ms", crate::since_start_ms());
+        } else {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Nothing opened yet: the icon, the name, the version and what to do.
+    fn start_screen(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        const ICON: f32 = 112.0;
+        let icon = crate::ui::app_icon(ui.ctx(), ICON, &mut self.start_icon);
+        let ink = ink_on(self.background);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Center)));
+        ui.add_space((rect.height() * 0.5 - ICON).max(0.0));
+        ui.image((icon.id(), egui::vec2(ICON, ICON)));
+        ui.add_space(14.0);
+        ui.label(egui::RichText::new("qview").size(30.0).strong().color(ink));
+        ui.label(
+            egui::RichText::new(tr!(format!("Version {}", crate::VERSION), format!("Версия {}", crate::VERSION)))
+                .color(ink.gamma_multiply(0.8)),
+        );
+        ui.add_space(18.0);
+        ui.label(egui::RichText::new(tr!(
+            "Open an image with Ctrl+O or drop a file here",
+            "Откройте изображение: Ctrl+O или перетащите файл сюда"
+        ))
+        .color(ink));
+    }
+
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = match &self.current {
+            Some(p) => format!("{} - qview", file_name(p)),
+            None => "qview".into(),
+        };
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+    }
+}
+
+/// The file name of `path` for display.
+pub fn file_name(path: &Path) -> String {
+    path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, root_ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = root_ui.ctx().clone();
+        if ctx.cumulative_frame_nr() == 0 {
+            log::debug!("first frame at {:.0} ms", crate::since_start_ms());
+            self.loader.set_max_side(ctx.input(|i| i.max_texture_side));
+        }
+        self.uncloak(&ctx);
+
+        self.poll_scan();
+        self.poll_decoded(&ctx);
+        self.poll_delete();
+        self.handle_drop(&ctx);
+        self.sync_shown();
+
+        let modal_open = self.confirm_delete.is_some() || self.dialog.is_some();
+        if !modal_open && !egui::Popup::is_any_open(&ctx) {
+            // Keys are the viewer's: no widget keeps the focus to take
+            // Space or Enter as a click.
+            if let Some(id) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+            for cmd in crate::input::keys(&ctx) {
+                self.run(&ctx, frame, cmd);
+            }
+            self.sync_shown();
+        }
+
+        let fullscreen = Self::is_fullscreen(&ctx);
+        if !fullscreen {
+            self.menu_bar(root_ui);
+            if self.show_toolbar {
+                self.toolbar(root_ui);
+            }
+            if self.show_status_bar {
+                self.status_bar(root_ui);
+            }
+        }
+        egui::CentralPanel::no_frame().show(root_ui, |ui| self.image_area(ui));
+        self.dialogs(&ctx);
+
+        let clicked = std::mem::take(&mut self.clicked);
+        if !clicked.is_empty() {
+            for cmd in clicked {
+                self.run(&ctx, frame, cmd);
+            }
+            self.sync_shown();
+            ctx.request_repaint();
+        }
+        self.update_wanted();
+        self.update_title(&ctx);
+        if let Some((_, at)) = &self.notice
+            && at.elapsed() < NOTICE_TIME
+        {
+            ctx.request_repaint_after(NOTICE_TIME - at.elapsed());
+        }
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(TOOLBAR_KEY, self.show_toolbar.to_string());
+        storage.set_string(STATUS_BAR_KEY, self.show_status_bar.to_string());
+        storage.set_string(BACKGROUND_KEY, background_to_hex(self.background));
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // The image area has no frame: this is its background.
+        self.background.to_normalized_gamma_f32()
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_round_trip() {
+        for (c, _) in background_presets() {
+            assert_eq!(background_from_hex(&background_to_hex(c)), Some(c));
+        }
+        assert_eq!(background_to_hex(DEFAULT_BACKGROUND), "#1c1c1c");
+        assert_eq!(background_from_hex(" #fff "), Some(Color32::WHITE));
+        assert_eq!(background_from_hex("bogus"), None);
+    }
+
+    #[test]
+    fn ink_contrasts_with_the_background() {
+        assert_eq!(ink_on(DEFAULT_BACKGROUND), Color32::from_gray(170));
+        assert_eq!(ink_on(Color32::WHITE), Color32::from_gray(70));
+    }
+}

@@ -1,0 +1,45 @@
+[package]
+name = "qview"
+version = "0.1.0"
+authors = ["Fan4_Metal"]
+edition = "2024"
+description = "Fast and simple image viewer for Windows"
+license = "MIT"
+
+[dependencies]
+# glow, not the default wgpu: egui_glow builds mipmaps for textures, which
+# keeps downscaled photos smooth, and an OpenGL context starts faster.
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "persistence"] }
+egui = "0.36"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff", "ico", "tga", "qoi", "pnm", "rayon"] }
+rfd = { version = "0.17.2", default-features = false }
+raw-window-handle = "0.6"
+log = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_Registry",
+    "Win32_System_Time",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+clipboard-win = "5.4"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

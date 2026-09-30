@@ -1,0 +1,147 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+#[macro_use]
+mod i18n;
+mod app;
+mod assoc;
+mod filetypes;
+mod folder;
+mod format;
+mod icon;
+mod input;
+mod loader;
+mod type_icon;
+mod ui;
+mod view;
+mod win;
+
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
+
+/// Version from Cargo.toml, shown in the About window.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// eframe app id; also names the settings folder in `%APPDATA%`.
+pub const APP_ID: &str = "qview";
+
+/// When the process started, for the start-up timings in the log.
+pub static START: OnceLock<Instant> = OnceLock::new();
+
+/// Milliseconds since start-up.
+pub fn since_start_ms() -> f64 {
+    START.get().map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e3)
+}
+
+/// The saved window was maximized: it is created normal (see `main`), and
+/// `App::new` maximizes it while it is cloaked.
+pub static MAXIMIZE_WHEN_SHOWN: AtomicBool = AtomicBool::new(false);
+
+fn main() -> eframe::Result {
+    START.get_or_init(Instant::now);
+    // QVIEW_TRACE=1 logs start-up and decoding times (to stderr).
+    let mut log = env_logger::Builder::from_default_env();
+    if std::env::var_os("QVIEW_TRACE").is_some() {
+        log.filter_module("qview", log::LevelFilter::Debug);
+    }
+    log.init();
+    i18n::set_lang(i18n::system_lang());
+    install_panic_hook();
+
+    // For an installer: register or unregister the file types and exit.
+    let first = std::env::args().nth(1);
+    if let Some(flag @ ("--register" | "--unregister")) = first.as_deref() {
+        let result = match flag {
+            "--register" => std::env::current_exe().map_err(|e| e.to_string()).and_then(|e| assoc::register(&e)),
+            _ => assoc::unregister(),
+        };
+        if let Err(e) = &result {
+            win::error_box("qview", e);
+        }
+        std::process::exit(i32::from(result.is_err()));
+    }
+
+    let initial = std::env::args_os().nth(1).map(|a| normalize(&a.to_string_lossy()));
+    // Decoding starts now, while the window is being created.
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 3));
+    let loader = loader::Loader::new(workers);
+    if let Some(path) = initial.as_ref().filter(|p| p.is_file()) {
+        loader.want([path.clone()]);
+    }
+
+    let has_saved = eframe::storage_dir(APP_ID).is_some_and(|d| d.join("app.ron").is_file());
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("qview")
+            .with_inner_size([1024.0, 720.0])
+            .with_min_inner_size([320.0, 240.0])
+            .with_drag_and_drop(true)
+            .with_icon(egui::IconData { rgba: icon::rgba(64), width: 64, height: 64 }),
+        renderer: eframe::Renderer::Glow,
+        // Centre only on the first run; later runs restore the saved window.
+        centered: !has_saved,
+        persist_window: true,
+        // eframe creates the window hidden and shows it after the first
+        // frame, but winit shows a window created maximized at once, which
+        // flashes an empty white window. So a restored maximized window is
+        // created normal, and `App::new` maximizes it cloaked, uncloaking it
+        // once a maximized frame is painted.
+        window_builder: Some(Box::new(|mut builder| {
+            if builder.maximized == Some(true) {
+                builder.maximized = Some(false);
+                MAXIMIZE_WHEN_SHOWN.store(true, Ordering::Relaxed);
+            }
+            builder
+        })),
+        ..Default::default()
+    };
+    eframe::run_native(APP_ID, options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, loader, initial)))))
+}
+
+/// The path given on the command line, absolute. Explorer passes a drive
+/// root as `"C:\"`, which Windows argument parsing turns into `C:"`; the
+/// trailing quote is turned back into a backslash. A bare `C:` means the
+/// root, not the current directory of C.
+fn normalize(arg: &str) -> PathBuf {
+    let arg = match arg.strip_suffix('"') {
+        Some(stripped) => format!("{}\\", stripped.trim_end_matches('\\')),
+        None => arg.to_string(),
+    };
+    let b = arg.as_bytes();
+    let path = if b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        PathBuf::from(format!("{arg}\\"))
+    } else {
+        PathBuf::from(arg)
+    };
+    std::path::absolute(&path).unwrap_or(path)
+}
+
+/// The release build aborts on a panic and has no console, so the window
+/// would vanish without a word: say what happened in a message box. The
+/// default hook still prints it (seen in a debug build or with a console).
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default(info);
+        let text = tr!(
+            format!("qview stopped because of an internal error.\n\n{info}"),
+            format!("qview остановлен из-за внутренней ошибки.\n\n{info}")
+        );
+        win::error_box("qview", &text);
+    }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize;
+    use std::path::PathBuf;
+
+    #[test]
+    fn normalizes_explorer_arguments() {
+        assert_eq!(normalize("C:"), PathBuf::from(r"C:\"));
+        assert_eq!(normalize("C:\""), PathBuf::from(r"C:\"));
+        assert_eq!(normalize(r"D:\Photos\a.jpg"), PathBuf::from(r"D:\Photos\a.jpg"));
+        assert_eq!(normalize(r"D:\Photos\.\a.jpg"), PathBuf::from(r"D:\Photos\a.jpg"));
+        assert!(normalize("a.jpg").is_absolute());
+    }
+}
