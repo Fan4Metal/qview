@@ -18,6 +18,14 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 
 Supported formats: JPEG, PNG, GIF (first frame), WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM).
 
+## Installation
+
+The installer and the portable archive are published on the [Releases](https://github.com/Fan4Metal/qview/releases) page.
+
+The installer, `qview_<version>_Setup.exe`, needs no administrator rights: the program is placed in `%LOCALAPPDATA%\Programs\qview`. The "Register qview for image files" option, selected by default, registers the supported file types (see [File associations](#file-associations)); the last page of the installer then offers to open Windows Settings, where qview is chosen as the default program. Uninstallation removes the registration.
+
+The portable archive, `qview_<version>_portable.zip`, contains the program in a `qview` folder and runs without installation; the file types are registered from File → File Associations… if needed. In both cases the settings are kept in `%APPDATA%\qview`.
+
 ## Controls
 
 | Action | Keys and mouse |
@@ -77,6 +85,26 @@ cargo test
 `build.py` first closes a `qview.exe` running from the project's `target` folder, which would otherwise lock the file, and then runs `cargo build --release`; extra arguments are passed to cargo. Its only dependency, `psutil`, is installed by uv. When qview is not running, plain `cargo build --release` works as well.
 
 The window is drawn by egui/eframe through OpenGL (glow), images are decoded by the `image` crate. Setting the environment variable `QVIEW_TRACE=1` writes start-up and decoding times to stderr.
+
+## Installer and release
+
+The release script builds the executable, the installer and the portable archive (Inno Setup 6 is required):
+
+```
+python tools/make_release.py              # tests, release build, installer, archive
+python tools/make_release.py --no-tests   # the same without cargo test
+```
+
+The files are written to `dist`; the version is taken from `Cargo.toml`. Like `build.py`, the script first closes a `qview.exe` running from `target\release`. The installer script is `tools/setup.iss`; the installer icon is written by `qview.exe --export-icon <file.ico>`.
+
+Releases on GitHub are built by the **Release** workflow (`.github/workflows/release.yml`). After the version in `Cargo.toml` is updated and committed, pushing a matching tag publishes a release with the installer and the portable archive:
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Running the workflow manually (Actions → Release → Run workflow) only builds the files and attaches them to the run, without a release.
 
 ## License
 

@@ -5,6 +5,7 @@ authors = ["Fan4_Metal"]
 edition = "2024"
 description = "Fast and simple image viewer for Windows"
 license = "MIT"
+repository = "https://github.com/Fan4Metal/qview"
 
 [dependencies]
 # glow, not the default wgpu: egui_glow builds mipmaps for textures, which

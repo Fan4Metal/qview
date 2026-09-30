@@ -48,8 +48,21 @@ fn main() -> eframe::Result {
     i18n::set_lang(i18n::system_lang());
     install_panic_hook();
 
-    // For an installer: register or unregister the file types and exit.
+    // For the release script: write the app icon for the installer and exit.
     let first = std::env::args().nth(1);
+    if first.as_deref() == Some("--export-icon") {
+        let Some(path) = std::env::args_os().nth(2) else {
+            eprintln!("usage: qview --export-icon <file.ico>");
+            std::process::exit(2);
+        };
+        if let Err(e) = std::fs::write(&path, icon::ico(&icon::ICO_SIZES)) {
+            eprintln!("cannot write {}: {e}", path.to_string_lossy());
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+
+    // For an installer: register or unregister the file types and exit.
     if let Some(flag @ ("--register" | "--unregister")) = first.as_deref() {
         let result = match flag {
             "--register" => std::env::current_exe().map_err(|e| e.to_string()).and_then(|e| assoc::register(&e)),

@@ -1,0 +1,70 @@
+# Builds the installer and the portable zip with tools/make_release.py.
+#
+# - Pushing a tag "vX.Y.Z" publishes a GitHub release with both files. The
+#   tag must match the version in Cargo.toml.
+# - Running the workflow manually (Actions -> Release -> Run workflow) only
+#   builds and attaches the files as a workflow artifact, without a release.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read version from Cargo.toml
+        id: version
+        shell: pwsh
+        run: |
+          $m = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $version = $m.Matches[0].Groups[1].Value
+          "version=$version" >> $env:GITHUB_OUTPUT
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version (expected v$version)"
+          }
+          "Version: $version"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (Test-Path $iscc) { "Inno Setup is preinstalled"; exit 0 }
+          choco install innosetup --no-progress -y
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after installation" }
+
+      - name: Build release
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tools/make_release.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: qview-${{ steps.version.outputs.version }}
+          path: |
+            dist/*_Setup.exe
+            dist/*_portable.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          name: qview ${{ steps.version.outputs.version }}
+          files: |
+            dist/*_Setup.exe
+            dist/*_portable.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

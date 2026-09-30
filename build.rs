@@ -8,9 +8,6 @@ mod filetypes;
 #[path = "src/type_icon.rs"]
 mod type_icon;
 
-/// Sizes in every `.ico`.
-const SIZES: [u32; 8] = [16, 20, 24, 32, 40, 48, 64, 256];
-
 fn main() {
     println!("cargo:rerun-if-changed=src/icon.rs");
     println!("cargo:rerun-if-changed=src/filetypes.rs");
@@ -22,7 +19,7 @@ fn main() {
     }
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let ico_path = out_dir.join("app.ico");
-    std::fs::write(&ico_path, icon::ico(&SIZES)).expect("write app.ico");
+    std::fs::write(&ico_path, icon::ico(&icon::ICO_SIZES)).expect("write app.ico");
 
     let mut res = winresource::WindowsResource::new();
     // The icons of the registered file types, referenced by the registry as
@@ -30,7 +27,7 @@ fn main() {
     // Explorer shows for the executable.
     for (i, t) in filetypes::FILE_TYPES.iter().enumerate() {
         let path = out_dir.join(format!("type_{}.ico", t.id));
-        std::fs::write(&path, type_icon::ico(t, &SIZES)).expect("write a file type icon");
+        std::fs::write(&path, type_icon::ico(t, &icon::ICO_SIZES)).expect("write a file type icon");
         res.set_icon_with_id(path.to_str().unwrap(), &filetypes::icon_id(i).to_string());
     }
     res.set_icon(ico_path.to_str().unwrap())

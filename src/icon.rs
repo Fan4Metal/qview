@@ -7,6 +7,9 @@
 // build.rs and the app use different parts.
 #![allow(dead_code)]
 
+/// Sizes in every `.ico` of the executable and in the exported icon.
+pub const ICO_SIZES: [u32; 8] = [16, 20, 24, 32, 40, 48, 64, 256];
+
 /// Straight RGBA, channels 0..1.
 type Rgba = [f32; 4];
 
