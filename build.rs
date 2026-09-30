@@ -20,6 +20,11 @@ fn main() {
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let ico_path = out_dir.join("app.ico");
     std::fs::write(&ico_path, icon::ico(&icon::ICO_SIZES)).expect("write app.ico");
+    // The icon as raw RGBA for the window icon and the start screen (see
+    // `main::embedded_icon`), so that nothing is rasterised at start-up.
+    for size in [64u32, 128, 256] {
+        std::fs::write(out_dir.join(format!("app_icon_{size}.rgba")), icon::rgba(size)).expect("write an icon");
+    }
 
     let mut res = winresource::WindowsResource::new();
     // The icons of the registered file types, referenced by the registry as

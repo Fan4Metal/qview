@@ -25,14 +25,19 @@ pub fn style(ctx: &egui::Context) {
     });
 }
 
-/// The app icon as a texture `points` wide, rasterised at the display's
-/// pixel density and kept in `cache`; rasterised again when that density
-/// changes (the window moved to a monitor with another scale).
+/// The app icon as a texture drawn `points` wide: the smallest of the
+/// sizes rasterised at build time (`main::embedded_icon`) that is not
+/// smaller than that on this display, minified with mipmaps. Kept in
+/// `cache`, made again when the display's scale changes (the window moved
+/// to a monitor with another scale).
 pub fn app_icon(ctx: &egui::Context, points: f32, cache: &mut Option<TextureHandle>) -> TextureHandle {
-    let px = (points * ctx.pixels_per_point()).round() as usize;
-    if cache.as_ref().is_none_or(|t| t.size() != [px, px]) {
-        let image = egui::ColorImage::from_rgba_unmultiplied([px, px], &crate::icon::rgba(px as u32));
-        *cache = Some(ctx.load_texture(format!("app_icon_{px}"), image, TextureOptions::LINEAR));
+    let px = (points * ctx.pixels_per_point()).round() as u32;
+    let size = [64u32, 128, 256].into_iter().find(|&s| s >= px).unwrap_or(256);
+    let n = size as usize;
+    if cache.as_ref().is_none_or(|t| t.size() != [n, n]) {
+        let image = egui::ColorImage::from_rgba_unmultiplied([n, n], &crate::embedded_icon(size));
+        let options = TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
+        *cache = Some(ctx.load_texture(format!("app_icon_{size}"), image, options));
     }
     cache.clone().expect("set above")
 }

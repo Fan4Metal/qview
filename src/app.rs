@@ -10,14 +10,16 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::rc::Rc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureFilter, TextureHandle, TextureOptions, Vec2};
+use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureHandle, Vec2};
 
 use crate::folder::{self, Scan};
 use crate::input::{Arrow, Cmd, Wheel};
-use crate::loader::{Loader, Meta};
+use crate::loader::{Decoded, Loader, Meta, Pixels};
+use crate::texture::Texture;
 use crate::view::{self, View, Zoom};
 use crate::win;
 
@@ -52,15 +54,19 @@ pub fn ink_on(bg: Color32) -> Color32 {
     if luma > 140.0 { Color32::from_gray(70) } else { Color32::from_gray(170) }
 }
 
-/// Mipmaps keep downscaled images smooth (egui_glow builds them).
-const TEXTURE: TextureOptions = TextureOptions::LINEAR.with_mipmap_mode(Some(TextureFilter::Linear));
-
 /// How long a notice stays in the status bar.
 const NOTICE_TIME: Duration = Duration::from_secs(4);
 /// A window cloaked at start-up is shown after this at the latest.
 const UNCLOAK_TIMEOUT: Duration = Duration::from_secs(1);
 /// A spinner appears when an image takes longer than this.
 const SPINNER_DELAY: Duration = Duration::from_millis(250);
+/// Images decoded ahead in the direction of travel: the first always, the
+/// others within `CACHE_BUDGET`, so that every decoder thread works while
+/// a key is held. One image behind is kept for turning back.
+const AHEAD: usize = 3;
+/// Pixels of the textures kept at most, the current image included: four
+/// 24-megapixel photos, about half a gigabyte of texture memory.
+const CACHE_BUDGET: usize = 100_000_000;
 
 const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
@@ -68,7 +74,7 @@ const BACKGROUND_KEY: &str = "background";
 
 #[derive(Clone)]
 pub struct Picture {
-    pub texture: TextureHandle,
+    pub texture: Rc<Texture>,
     pub meta: Meta,
 }
 
@@ -93,6 +99,8 @@ pub enum Dialog {
 
 pub struct App {
     loader: Loader,
+    /// The OpenGL context, for the image textures (`texture::Texture`).
+    gl: Arc<glow::Context>,
     /// Images of the folder of `current`, in Explorer's order.
     pub files: Vec<PathBuf>,
     dir: Option<PathBuf>,
@@ -107,6 +115,11 @@ pub struct App {
     /// What is on screen.
     pub shown: Option<(PathBuf, Picture)>,
     pub cache: HashMap<PathBuf, Slot>,
+    /// Decoded images waiting for their texture (see `poll_decoded`).
+    pending: Vec<Decoded>,
+    /// Pixels of the textures in `cache` that start at a mip level above 0
+    /// (see `texture::Texture`), until the levels below are uploaded.
+    partial: HashMap<PathBuf, Pixels>,
     pub view: View,
     /// The image area of the last frame.
     pub viewport: Rect,
@@ -146,6 +159,12 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, loader: Loader, initial: Option<PathBuf>) -> Self {
         let ctx = &cc.egui_ctx;
         log::debug!("window created at {:.0} ms", crate::since_start_ms());
+        let gl = cc.gl.clone().expect("the glow renderer");
+        if log::log_enabled!(log::Level::Debug) {
+            use glow::HasContext;
+            let (renderer, version) = unsafe { (gl.get_parameter_string(glow::RENDERER), gl.get_parameter_string(glow::VERSION)) };
+            log::debug!("OpenGL: {renderer}, {version}");
+        }
         loader.set_context(ctx.clone());
         // Ctrl+Plus and Ctrl+Minus zoom the image, not the interface.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -183,6 +202,7 @@ impl App {
         let flag = |key: &str| cc.storage.and_then(|s| s.get_string(key)).as_deref() != Some("false");
         let mut app = Self {
             loader,
+            gl,
             files: Vec::new(),
             dir: None,
             scan: None,
@@ -191,6 +211,8 @@ impl App {
             current_since: Instant::now(),
             shown: None,
             cache: HashMap::new(),
+            pending: Vec::new(),
+            partial: HashMap::new(),
             view: View::default(),
             viewport: ctx.content_rect(),
             show_toolbar: flag(TOOLBAR_KEY),
@@ -304,36 +326,70 @@ impl App {
     }
 
     /// The current file and its neighbours, most wanted first: these are
-    /// decoded ahead and kept.
+    /// decoded ahead and kept. The current file, the next one in the
+    /// direction of travel and the previous one are always wanted; more
+    /// ahead (`AHEAD`) within `CACHE_BUDGET`, every image counted as large
+    /// as the current one, so that the set does not change while the
+    /// neighbours are decoded.
     fn wanted(&self) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = self.current.iter().cloned().collect();
-        if let Some(i) = self.index {
-            let order: [isize; 2] = if self.forward { [1, -1] } else { [-1, 1] };
-            for d in order {
-                let j = i as isize + d;
-                if j >= 0
-                    && let Some(p) = self.files.get(j as usize)
-                {
-                    paths.push(p.clone());
-                }
+        let Some(i) = self.index else { return paths };
+        let dir: isize = if self.forward { 1 } else { -1 };
+        let at = |offset: isize| usize::try_from(i as isize + offset).ok().and_then(|j| self.files.get(j)).cloned();
+        paths.extend(at(dir));
+        paths.extend(at(-dir));
+        let guess = match self.current.as_ref().and_then(|c| self.cache.get(c)) {
+            Some(Slot::Ready(pic)) => pic.meta.width as usize * pic.meta.height as usize,
+            _ => 0,
+        };
+        for k in 2..=AHEAD as isize {
+            if (paths.len() + 1) * guess > CACHE_BUDGET {
+                break;
             }
+            let Some(p) = at(k * dir) else { break };
+            paths.push(p);
         }
         paths
     }
 
-    fn poll_decoded(&mut self, ctx: &egui::Context) {
+    /// Take the decoded images and make the texture of one of them:
+    /// uploading a large texture stalls the frame, so one per frame, the
+    /// current image first; the others wait in `pending`. A texture starts
+    /// at the mip level the image is shown at; a frame with nothing new to
+    /// upload completes one of them (`partial`), the current image first.
+    fn poll_decoded(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let wanted = self.wanted();
         let max_side = ctx.input(|i| i.max_texture_side);
-        while let Some(d) = self.loader.poll() {
-            if !wanted.contains(&d.path) {
-                continue; // the user has moved on
+        self.pending.extend(std::iter::from_fn(|| self.loader.poll()));
+        // Dropped: what the user has moved past, and an image decoded
+        // before the GPU's limit was known (decoded again).
+        self.pending.retain(|d| {
+            wanted.contains(&d.path)
+                && !matches!(&d.result, Ok((p, _)) if p.width as usize > max_side || p.height as usize > max_side)
+        });
+        let is_current = |p: &PathBuf| Some(p) == self.current.as_ref();
+        if self.pending.is_empty() {
+            if let Some(path) = self.partial.keys().find(|p| is_current(p)).or(self.partial.keys().next()).cloned() {
+                self.complete(&path);
             }
+        } else {
+            let first = self.pending.iter().position(|d| is_current(&d.path)).unwrap_or(0);
+            let d = self.pending.remove(first);
             let slot = match d.result {
-                // Decoded before the GPU's limit was known: decode again.
-                Ok((image, _)) if image.size[0] > max_side || image.size[1] > max_side => continue,
-                Ok((image, meta)) => {
-                    let texture = ctx.load_texture(d.path.to_string_lossy(), image, TEXTURE);
-                    Slot::Ready(Picture { texture, meta })
+                Ok((pixels, meta)) => {
+                    let level = self.start_level(&d.path, &pixels, &meta, ctx);
+                    match Texture::new(self.gl.clone(), &pixels, level, |t| frame.register_native_glow_texture(t)) {
+                        Ok(texture) => {
+                            if texture.base_level() > 0 {
+                                self.partial.insert(d.path.clone(), pixels);
+                            }
+                            Slot::Ready(Picture { texture: Rc::new(texture), meta })
+                        }
+                        Err(e) => {
+                            log::warn!("cannot show {}: {e}", d.path.display());
+                            Slot::Failed(e)
+                        }
+                    }
                 }
                 Err(e) => {
                     log::warn!("cannot open {}: {e}", d.path.display());
@@ -342,6 +398,42 @@ impl App {
             };
             self.cache.insert(d.path, slot);
         }
+        if !self.pending.is_empty() || !self.partial.is_empty() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// The mip level the texture of `path` can start at: the one for the
+    /// scale the image is (or, for a neighbour, will be) shown at.
+    fn start_level(&self, path: &Path, pixels: &Pixels, meta: &Meta, ctx: &egui::Context) -> u32 {
+        let mut view = self.view;
+        if self.current.as_deref() != Some(path) {
+            view.next_image();
+        }
+        let size = egui::vec2(meta.width as f32, meta.height as f32);
+        // The scale refers to the file; the texture may be shrunk.
+        let scale = view.scale(size, self.viewport, ctx.pixels_per_point()) * pixels.width as f32 / meta.width as f32;
+        view::mip_level(scale)
+    }
+
+    /// Upload the levels the texture of `path` lacks.
+    fn complete(&mut self, path: &Path) {
+        if let Some(pixels) = self.partial.remove(path)
+            && let Some(Slot::Ready(picture)) = self.cache.get(path)
+        {
+            picture.texture.complete(&pixels);
+        }
+    }
+
+    /// The current image is completed at once when the view needs a level
+    /// its texture lacks (zoomed in), before the frame is painted.
+    fn complete_current_if_needed(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.current.clone() else { return };
+        let Some(Slot::Ready(picture)) = self.cache.get(&path) else { return };
+        let base = picture.texture.base_level();
+        if base > 0 && view::mip_level(self.view.scale(picture.size(), self.viewport, ctx.pixels_per_point())) < base {
+            self.complete(&path);
+        }
     }
 
     /// Ask for the wanted files that are not decoded yet and forget the
@@ -349,7 +441,10 @@ impl App {
     fn update_wanted(&mut self) {
         let wanted = self.wanted();
         self.cache.retain(|p, _| wanted.contains(p));
-        self.loader.want(wanted.into_iter().filter(|p| !self.cache.contains_key(p)));
+        self.partial.retain(|p, _| wanted.contains(p));
+        self.pending.retain(|d| wanted.contains(&d.path));
+        let have = |p: &PathBuf| self.cache.contains_key(p) || self.pending.iter().any(|d| d.path == *p);
+        self.loader.want(wanted.into_iter().filter(|p| !have(p)));
     }
 
     /// Put the current image on screen once it is decoded.
@@ -687,14 +782,26 @@ pub fn file_name(path: &Path) -> String {
 impl eframe::App for App {
     fn ui(&mut self, root_ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
-        if ctx.cumulative_frame_nr() == 0 {
-            log::debug!("first frame at {:.0} ms", crate::since_start_ms());
+        let frame_nr = ctx.cumulative_frame_nr();
+        if frame_nr == 0 {
             self.loader.set_max_side(ctx.input(|i| i.max_texture_side));
+            // The image area of this frame, near enough for the mip level
+            // the first texture starts at (`start_level`): the window less
+            // the bars; `image_area` then keeps it exact.
+            let mut area = ctx.content_rect();
+            if !Self::is_fullscreen(&ctx) {
+                area.min.y += 24.0 + if self.show_toolbar { 32.0 } else { 0.0 };
+                area.max.y -= if self.show_status_bar { 24.0 } else { 0.0 };
+            }
+            self.viewport = area;
+        }
+        if frame_nr < 8 {
+            log::debug!("frame {frame_nr} at {:.0} ms", crate::since_start_ms());
         }
         self.uncloak(&ctx);
 
         self.poll_scan();
-        self.poll_decoded(&ctx);
+        self.poll_decoded(&ctx, frame);
         self.poll_delete();
         self.handle_drop(&ctx);
         self.sync_shown();
@@ -711,6 +818,7 @@ impl eframe::App for App {
             }
             self.sync_shown();
         }
+        self.complete_current_if_needed(&ctx);
 
         let fullscreen = Self::is_fullscreen(&ctx);
         if !fullscreen {
@@ -740,6 +848,14 @@ impl eframe::App for App {
         {
             ctx.request_repaint_after(NOTICE_TIME - at.elapsed());
         }
+    }
+
+    /// The textures are deleted now, while the GL context still lives.
+    fn on_exit(&mut self, _gl: Option<&glow::Context>) {
+        self.shown = None;
+        self.cache.clear();
+        self.pending.clear();
+        self.partial.clear();
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

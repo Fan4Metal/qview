@@ -60,6 +60,13 @@ pub fn fit_scale(image: Vec2, viewport: Vec2) -> f32 {
     (viewport.x / image.x).min(viewport.y / image.y).clamp(f32::MIN_POSITIVE, 1.0)
 }
 
+/// The mip level an image shown at `scale` can start from: the one nearest
+/// to the shown size, so at most 1.4 times enlarged while the levels below
+/// are still on their way (see `texture::Texture`). 0 at 71% and above.
+pub fn mip_level(scale: f32) -> u32 {
+    if scale >= 0.71 || scale <= 0.0 { 0 } else { (-scale.log2()).round() as u32 }
+}
+
 impl View {
     /// The view for the next image: rotation and panning are dropped, a
     /// zoom chosen by steps goes back to Fit.
@@ -161,6 +168,19 @@ pub fn paint(painter: &Painter, texture: TextureId, rect: Rect, turns: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mip_level_nearest_to_the_shown_size() {
+        assert_eq!(mip_level(1.0), 0);
+        assert_eq!(mip_level(0.75), 0);
+        assert_eq!(mip_level(0.71), 0);
+        assert_eq!(mip_level(0.7), 1);
+        assert_eq!(mip_level(0.5), 1);
+        assert_eq!(mip_level(0.36), 1);
+        assert_eq!(mip_level(0.3), 2);
+        assert_eq!(mip_level(0.05), 4);
+        assert_eq!(mip_level(0.0), 0);
+    }
 
     fn viewport() -> Rect {
         Rect::from_min_size(pos2(0.0, 30.0), vec2(1000.0, 600.0))

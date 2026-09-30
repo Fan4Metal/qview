@@ -12,6 +12,8 @@ repository = "https://github.com/Fan4Metal/qview"
 # keeps downscaled photos smooth, and an OpenGL context starts faster.
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "persistence"] }
 egui = "0.36"
+# The version egui_glow uses: image textures are uploaded directly (src/texture.rs).
+glow = "0.17"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff", "ico", "tga", "qoi", "pnm", "rayon"] }
 rfd = { version = "0.17.2", default-features = false }
 raw-window-handle = "0.6"
@@ -23,6 +25,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
     "Win32_System_Time",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

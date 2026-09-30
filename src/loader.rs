@@ -5,7 +5,9 @@
 //! from the front of that list and send back ready pixels. The list is
 //! replaced on every change, so files the user has already moved past are
 //! never decoded. The loader exists before the window, so the first image
-//! is decoded while the window is being created.
+//! is decoded while the window is being created. The pixels come ready for
+//! the GPU ([`Pixels`]: the driver's native BGRA order, with the mip
+//! levels), so the UI thread has nothing left to convert.
 
 use std::collections::VecDeque;
 use std::io::Cursor;
@@ -14,7 +16,6 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 use std::time::Instant;
 
-use egui::ColorImage;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, metadata::Orientation};
 
 /// Decoder allocation limit: a 20000 x 20000 RGBA image fits, a corrupt
@@ -36,9 +37,18 @@ pub struct Meta {
     pub modified: u64,
 }
 
+/// An image as the GPU takes it: premultiplied BGRA, 8 bits per channel,
+/// the full size first and then the mip levels down to 1x1, each half the
+/// size of the one before (rounded down, at least 1).
+pub struct Pixels {
+    pub width: u32,
+    pub height: u32,
+    pub levels: Vec<Vec<u8>>,
+}
+
 pub struct Decoded {
     pub path: PathBuf,
-    pub result: Result<(ColorImage, Meta), String>,
+    pub result: Result<(Pixels, Meta), String>,
 }
 
 #[derive(Default)]
@@ -47,6 +57,9 @@ struct Queue {
     wanted: VecDeque<PathBuf>,
     /// Files being decoded now.
     busy: Vec<PathBuf>,
+    /// Files decoded and sent, but not taken by [`Loader::poll`] yet: not
+    /// to be decoded again if they are wanted meanwhile.
+    done: Vec<PathBuf>,
 }
 
 struct Shared {
@@ -98,7 +111,8 @@ impl Loader {
     /// (files being decoded now finish anyway).
     pub fn want(&self, paths: impl IntoIterator<Item = PathBuf>) {
         let mut q = self.shared.queue.lock().unwrap();
-        let wanted: VecDeque<PathBuf> = paths.into_iter().filter(|p| !q.busy.contains(p)).collect();
+        let wanted: VecDeque<PathBuf> =
+            paths.into_iter().filter(|p| !q.busy.contains(p) && !q.done.contains(p)).collect();
         if wanted != q.wanted {
             q.wanted = wanted;
             self.shared.wake.notify_all();
@@ -107,7 +121,9 @@ impl Loader {
 
     /// A decoded image, if one is ready.
     pub fn poll(&self) -> Option<Decoded> {
-        self.rx.try_recv().ok()
+        let decoded = self.rx.try_recv().ok()?;
+        self.shared.queue.lock().unwrap().done.retain(|p| *p != decoded.path);
+        Some(decoded)
     }
 }
 
@@ -127,11 +143,14 @@ fn worker(shared: &Shared, tx: &mpsc::Sender<Decoded>) {
         let result = decode(&path, shared.max_side.load(Relaxed));
         let took = start.elapsed();
         log::debug!("decoded {} in {:.1} ms", path.display(), took.as_secs_f64() * 1e3);
-        // Sent before leaving `busy`, so the UI never sees the file as
-        // neither busy nor decoded and asks for it again.
-        let sent = tx.send(Decoded { path: path.clone(), result }).is_ok();
-        shared.queue.lock().unwrap().busy.retain(|p| *p != path);
-        if !sent {
+        // Marked done before it is sent, so the UI never sees the file as
+        // neither busy, nor done, nor received, and asks for it again.
+        {
+            let mut q = shared.queue.lock().unwrap();
+            q.busy.retain(|p| *p != path);
+            q.done.push(path.clone());
+        }
+        if tx.send(Decoded { path, result }).is_err() {
             return;
         }
         if let Some(ctx) = shared.ctx.get() {
@@ -159,7 +178,7 @@ fn format_name(format: ImageFormat) -> &'static str {
 
 /// Read and decode `path`, turned upright by its EXIF orientation and
 /// shrunk to `max_side` if larger.
-pub fn decode(path: &Path, max_side: usize) -> Result<(ColorImage, Meta), String> {
+pub fn decode(path: &Path, max_side: usize) -> Result<(Pixels, Meta), String> {
     use std::os::windows::fs::MetadataExt;
     // One read of the whole file is faster than buffered reads through
     // the decoder.
@@ -192,16 +211,77 @@ pub fn decode(path: &Path, max_side: usize) -> Result<(ColorImage, Meta), String
         file_size: bytes.len() as u64,
         modified,
     };
-    Ok((color_image(img), meta))
+    Ok((to_pixels(img), meta))
 }
 
-/// Pixels for an egui texture (premultiplied RGBA).
-fn color_image(img: DynamicImage) -> ColorImage {
-    let size = [img.width() as usize, img.height() as usize];
+fn to_pixels(img: DynamicImage) -> Pixels {
+    let (width, height) = (img.width(), img.height());
+    let base = to_bgra(img);
+    let levels = mip_levels(base, width as usize, height as usize);
+    Pixels { width, height, levels }
+}
+
+/// Premultiplied BGRA of `img`.
+fn to_bgra(img: DynamicImage) -> Vec<u8> {
+    let n = img.width() as usize * img.height() as usize;
+    let mut out = vec![0u8; n * 4];
     match img {
-        DynamicImage::ImageRgb8(rgb) => ColorImage::from_rgb(size, rgb.as_raw()),
-        other => ColorImage::from_rgba_unmultiplied(size, other.into_rgba8().as_raw()),
+        DynamicImage::ImageRgb8(rgb) => {
+            for (dst, p) in out.as_chunks_mut::<4>().0.iter_mut().zip(rgb.as_raw().as_chunks::<3>().0) {
+                *dst = [p[2], p[1], p[0], 255];
+            }
+        }
+        other => {
+            let rgba = other.into_rgba8();
+            for (dst, p) in out.as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_raw().as_chunks::<4>().0) {
+                let a = p[3] as u32;
+                let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+                *dst = [pm(p[2]), pm(p[1]), pm(p[0]), p[3]];
+            }
+        }
     }
+    out
+}
+
+/// `base` (`w` x `h` BGRA) followed by its mip levels down to 1x1.
+fn mip_levels(base: Vec<u8>, w: usize, h: usize) -> Vec<Vec<u8>> {
+    let mut levels = vec![base];
+    let (mut w, mut h) = (w, h);
+    while w > 1 || h > 1 {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let next = half(levels.last().expect("base level"), w, h, nw, nh);
+        levels.push(next);
+        (w, h) = (nw, nh);
+    }
+    levels
+}
+
+/// `src` (`w` x `h` BGRA) at half size: every pixel the average of a 2x2
+/// block, as `glGenerateMipmap` makes it. An odd last row or column is
+/// dropped; a side of 1 is kept.
+fn half(src: &[u8], w: usize, h: usize, nw: usize, nh: usize) -> Vec<u8> {
+    let src = src.as_chunks::<4>().0;
+    let px = |p: [u8; 4]| u32::from_ne_bytes(p);
+    // Per-channel (a + b) / 2 on four packed bytes at once.
+    let avg = |a: u32, b: u32| (a & b) + (((a ^ b) & 0xfefe_fefe) >> 1);
+    let mut out = vec![0u8; nw * nh * 4];
+    let dst = out.as_chunks_mut::<4>().0;
+    if w >= 2 && h >= 2 {
+        // Row pairs and pixel pairs, so the loop has no bounds to check.
+        for (rows, dst) in src.chunks_exact(2 * w).zip(dst.chunks_exact_mut(nw)) {
+            let (r0, r1) = rows.split_at(w);
+            for ((a, b), d) in r0.as_chunks::<2>().0.iter().zip(r1.as_chunks::<2>().0).zip(dst) {
+                *d = avg(avg(px(a[0]), px(a[1])), avg(px(b[0]), px(b[1]))).to_ne_bytes();
+            }
+        }
+    } else {
+        // A single row or column: pairs along it.
+        for (i, d) in dst.iter_mut().enumerate() {
+            let (a, b) = (src[(2 * i).min(w * h - 1)], src[(2 * i + 1).min(w * h - 1)]);
+            *d = avg(px(a), px(b)).to_ne_bytes();
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -215,13 +295,51 @@ mod tests {
         dir
     }
 
+    /// Timings of the phases of `decode` for the file named by
+    /// `QVIEW_BENCH_FILE`, printed with `--nocapture`.
+    #[test]
+    #[ignore]
+    fn phase_timings() {
+        let path = PathBuf::from(std::env::var("QVIEW_BENCH_FILE").expect("QVIEW_BENCH_FILE"));
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+        for round in 0..3 {
+            let t = Instant::now();
+            let bytes = std::fs::read(&path).unwrap();
+            let read = ms(t);
+            let t = Instant::now();
+            let reader = ImageReader::new(Cursor::new(&bytes[..])).with_guessed_format().unwrap();
+            let mut decoder = reader.into_decoder().unwrap();
+            let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+            let mut img = DynamicImage::from_decoder(decoder).unwrap();
+            let decoded = ms(t);
+            let t = Instant::now();
+            img.apply_orientation(orientation);
+            let oriented = ms(t);
+            let (w, h) = (img.width(), img.height());
+            let t = Instant::now();
+            let base = to_bgra(img);
+            let converted = ms(t);
+            let t = Instant::now();
+            let levels = mip_levels(base, w as usize, h as usize);
+            let mips = ms(t);
+            let mp = w as f64 * h as f64 / 1e6;
+            println!("round {round}: {w}x{h} ({mp:.1} MP), {orientation:?}");
+            println!("  read {read:.1} ms, decode {decoded:.1} ms, orient {oriented:.1} ms, to BGRA {converted:.1} ms");
+            println!("  {} mip levels {mips:.1} ms", levels.len() - 1);
+        }
+    }
+
     #[test]
     fn decodes_with_metadata() {
         let dir = temp_dir("meta");
         let path = dir.join("a.png");
         image::RgbaImage::from_pixel(30, 20, image::Rgba([255, 0, 0, 128])).save(&path).unwrap();
-        let (img, meta) = decode(&path, 16384).unwrap();
-        assert_eq!(img.size, [30, 20]);
+        let (pixels, meta) = decode(&path, 16384).unwrap();
+        assert_eq!((pixels.width, pixels.height), (30, 20));
+        assert_eq!(pixels.levels.len(), 5); // 30x20, 15x10, 7x5, 3x2, 1x1
+        // Premultiplied BGRA: red at half opacity.
+        assert_eq!(&pixels.levels[0][..4], &[0, 0, 128, 128]);
+        assert_eq!(pixels.levels[4].len(), 4);
         assert_eq!((meta.width, meta.height, meta.bits, meta.format), (30, 20, 32, "PNG"));
         assert_eq!(meta.file_size, std::fs::metadata(&path).unwrap().len());
         assert!(meta.modified > 0);
@@ -238,10 +356,25 @@ mod tests {
         let dir = temp_dir("shrink");
         let path = dir.join("wide.png");
         image::RgbImage::new(400, 100).save(&path).unwrap();
-        let (img, meta) = decode(&path, 200).unwrap();
-        assert_eq!(img.size, [200, 50]);
+        let (pixels, meta) = decode(&path, 200).unwrap();
+        assert_eq!((pixels.width, pixels.height), (200, 50));
         assert_eq!((meta.width, meta.height), (400, 100));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mip_levels_average_blocks() {
+        // 3x2 pixels, one channel varied: the odd column is dropped.
+        let base: Vec<u8> = [10u8, 20, 99, 30, 40, 99].iter().flat_map(|&v| [v, 0, 0, 255]).collect();
+        let levels = mip_levels(base, 3, 2);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[1], vec![25, 0, 0, 255]);
+        // A single row keeps its height.
+        let row: Vec<u8> = [0u8, 100, 200, 250].iter().flat_map(|&v| [v, v, v, 255]).collect();
+        let levels = mip_levels(row, 4, 1);
+        assert_eq!(levels.iter().map(Vec::len).collect::<Vec<_>>(), vec![16, 8, 4]);
+        assert_eq!(&levels[1][..4], &[50, 50, 50, 255]);
+        assert_eq!(&levels[2][..4], &[137, 137, 137, 255]);
     }
 
     #[test]

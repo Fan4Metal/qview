@@ -2249,6 +2249,7 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "glow",
  "image",
  "log",
  "raw-window-handle",

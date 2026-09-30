@@ -10,6 +10,7 @@ mod format;
 mod icon;
 mod input;
 mod loader;
+mod texture;
 mod type_icon;
 mod ui;
 mod view;
@@ -33,6 +34,17 @@ pub fn since_start_ms() -> f64 {
     START.get().map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e3)
 }
 
+/// The app icon rasterised at build time (`build.rs`) as straight RGBA,
+/// `size` x `size` pixels for 64, 128 and 256. Drawing it at start-up took
+/// 6 ms before the window could be created.
+pub fn embedded_icon(size: u32) -> Vec<u8> {
+    match size {
+        64 => include_bytes!(concat!(env!("OUT_DIR"), "/app_icon_64.rgba")).to_vec(),
+        128 => include_bytes!(concat!(env!("OUT_DIR"), "/app_icon_128.rgba")).to_vec(),
+        _ => include_bytes!(concat!(env!("OUT_DIR"), "/app_icon_256.rgba")).to_vec(),
+    }
+}
+
 /// The saved window was maximized: it is created normal (see `main`), and
 /// `App::new` maximizes it while it is cloaked.
 pub static MAXIMIZE_WHEN_SHOWN: AtomicBool = AtomicBool::new(false);
@@ -45,6 +57,7 @@ fn main() -> eframe::Result {
         log.filter_module("qview", log::LevelFilter::Debug);
     }
     log.init();
+    log::debug!("main entered {:.0} ms after the process was created", win::ms_since_process_start().unwrap_or(0.0));
     i18n::set_lang(i18n::system_lang());
     install_panic_hook();
 
@@ -89,7 +102,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1024.0, 720.0])
             .with_min_inner_size([320.0, 240.0])
             .with_drag_and_drop(true)
-            .with_icon(egui::IconData { rgba: icon::rgba(64), width: 64, height: 64 }),
+            .with_icon(egui::IconData { rgba: embedded_icon(64), width: 64, height: 64 }),
         renderer: eframe::Renderer::Glow,
         // Centre only on the first run; later runs restore the saved window.
         centered: !has_saved,
@@ -100,6 +113,7 @@ fn main() -> eframe::Result {
         // created normal, and `App::new` maximizes it cloaked, uncloaking it
         // once a maximized frame is painted.
         window_builder: Some(Box::new(|mut builder| {
+            log::debug!("window builder at {:.0} ms", since_start_ms());
             if builder.maximized == Some(true) {
                 builder.maximized = Some(false);
                 MAXIMIZE_WHEN_SHOWN.store(true, Ordering::Relaxed);
@@ -108,6 +122,7 @@ fn main() -> eframe::Result {
         })),
         ..Default::default()
     };
+    log::debug!("run_native at {:.0} ms", since_start_ms());
     eframe::run_native(APP_ID, options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, loader, initial)))))
 }
 

@@ -9,7 +9,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - Start-up of about 0.2 s to the first image: decoding begins before the window is created and runs on background threads.
 - Instant browsing: the neighbours of the current image are decoded in advance.
 - Images are listed in the same order as in Explorer (numbers are compared as numbers).
-- Downscaled images are smoothed with GPU mipmaps; 100% shows one image pixel per screen pixel at any Windows display scaling.
+- Downscaled images are smoothed with mipmaps; 100% shows one image pixel per screen pixel at any Windows display scaling.
 - The EXIF orientation of photos is applied.
 - The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
 - Deletion moves the file to the Recycle Bin after a confirmation.

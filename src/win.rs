@@ -208,6 +208,24 @@ pub fn error_box(title: &str, text: &str) {
     }
 }
 
+/// Milliseconds from the creation of this process (loading the exe and its
+/// DLLs) to now, for the start-up trace.
+pub fn ms_since_process_start() -> Option<f64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    let ok = unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user) };
+    if ok == 0 {
+        return None;
+    }
+    let mut now = zero;
+    unsafe { GetSystemTimePreciseAsFileTime(&mut now) };
+    let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
+    Some(ticks(now).saturating_sub(ticks(created)) as f64 / 10_000.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
