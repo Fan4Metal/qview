@@ -39,9 +39,7 @@ impl App {
         // The key that opened a dialog this frame must not close it.
         let fresh = std::mem::take(&mut self.dialog_fresh);
         let closed = match self.dialog {
-            Some(Dialog::Shortcuts) => info_modal(ctx, "shortcuts", fresh, |ui| {
-                ui.heading(tr!("Keyboard Shortcuts", "Сочетания клавиш"));
-                ui.add_space(6.0);
+            Some(Dialog::Shortcuts) => info_modal(ctx, "shortcuts", tr!("Keyboard Shortcuts", "Сочетания клавиш"), fresh, |ui| {
                 egui::Grid::new("shortcut_grid").num_columns(2).spacing([24.0, 5.0]).striped(true).show(ui, |ui| {
                     for (keys, action) in shortcuts() {
                         ui.label(RichText::new(keys).monospace());
@@ -71,6 +69,13 @@ impl App {
         let icon = super::app_icon(ctx, ICON, &mut self.about_icon);
         let modal = egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
             ui.set_width(340.0);
+            // The cross in the top right corner, over the centred content
+            // (a child Ui takes no room in the layout).
+            let corner = egui::Rect::from_min_size(
+                egui::pos2(ui.max_rect().right() - 24.0, ui.cursor().top()),
+                egui::vec2(24.0, 24.0),
+            );
+            let closed = close_cross(&mut ui.new_child(egui::UiBuilder::new().max_rect(corner)));
             ui.vertical_centered(|ui| {
                 ui.add_space(4.0);
                 ui.image((icon.id(), egui::vec2(ICON, ICON)));
@@ -100,10 +105,8 @@ impl App {
                 };
                 ui.add_space(4.0);
                 ui.weak(tr!("Keyboard shortcuts: F1", "Сочетания клавиш: F1"));
-                ui.add_space(8.0);
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.button(tr!("Close", "Закрыть")).clicked())
-                .inner
+            closed
         });
         if modal.inner {
             return true;
@@ -315,19 +318,30 @@ fn close_cross(ui: &mut Ui) -> bool {
     response.on_hover_text(tr!("Close", "Закрыть")).clicked()
 }
 
-/// A modal with `content` and a Close button; true when it is closed
-/// (the button, Esc, Enter, F1 or a click outside). Keys are ignored in the
-/// frame the modal opens (`fresh`).
-fn info_modal(ctx: &egui::Context, id: &str, fresh: bool, content: impl FnOnce(&mut Ui)) -> bool {
-    let mut close = false;
+/// A modal with `title`, a cross that closes it (as in the associations
+/// dialog) and `content`; true when it is closed (the cross, Esc, Enter,
+/// F1 or a click outside). Keys are ignored in the frame the modal opens
+/// (`fresh`).
+fn info_modal(ctx: &egui::Context, id: &str, title: &str, fresh: bool, content: impl FnOnce(&mut Ui)) -> bool {
+    // As wide as the content, measured in the previous frame (egui does not
+    // show a new window's first frame), so that the cross sits at the right
+    // edge of the content.
+    let width_id = egui::Id::new(id).with("width");
+    let width = ctx.data(|d| d.get_temp::<f32>(width_id)).unwrap_or(400.0);
     let modal = egui::Modal::new(egui::Id::new(id)).show(ctx, |ui| {
-        ui.set_max_width(560.0);
-        content(ui);
-        ui.add_space(10.0);
-        if ui.button(tr!("Close", "Закрыть")).clicked() {
-            close = true;
-        }
+        ui.set_width(width);
+        let close = ui
+            .horizontal(|ui| {
+                ui.heading(title);
+                ui.with_layout(Layout::right_to_left(Align::Center), close_cross).inner
+            })
+            .inner;
+        ui.add_space(6.0);
+        let used = ui.scope(|ui| content(ui)).response.rect.width();
+        ctx.data_mut(|d| d.insert_temp(width_id, used));
+        close
     });
+    let close = modal.inner;
     if fresh {
         return close;
     }
