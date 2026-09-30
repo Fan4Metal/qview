@@ -68,6 +68,9 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::End if plain => Last,
         Key::Plus | Key::Equals if !m.alt => ZoomIn,
         Key::Minus if !m.alt => ZoomOut,
+        // 1 and 2 side by side; numpad `/` (and `*`, see `keys`) as well.
+        Key::Num1 if letter => Actual,
+        Key::Num2 if letter => Fit,
         Key::Slash if plain => Actual,
         Key::OpenBracket if plain => RotateLeft,
         Key::CloseBracket if plain => RotateRight,
@@ -161,6 +164,9 @@ mod tests {
         // `+` is typed with Shift on the main keyboard.
         assert_eq!(command(Key::Plus, SHIFT, false), Some(Cmd::ZoomIn));
         assert_eq!(command(Key::Slash, NONE, false), Some(Cmd::Actual));
+        assert_eq!(command(Key::Num1, NONE, false), Some(Cmd::Actual));
+        assert_eq!(command(Key::Num2, NONE, false), Some(Cmd::Fit));
+        assert_eq!(command(Key::Num1, CTRL, false), None);
         assert_eq!(command(Key::OpenBracket, NONE, false), Some(Cmd::RotateLeft));
         assert_eq!(command(Key::F, NONE, false), Some(Cmd::FullScreen));
         assert_eq!(command(Key::F, CTRL | SHIFT, false), Some(Cmd::FullScreen));

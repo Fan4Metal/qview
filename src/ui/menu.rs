@@ -97,8 +97,8 @@ impl App {
     fn zoom_items(&mut self, ui: &mut Ui, e: &Enabled) {
         self.item(ui, tr!("Zoom In", "Увеличить").into(), "+", Cmd::ZoomIn, e.image);
         self.item(ui, tr!("Zoom Out", "Уменьшить").into(), "-", Cmd::ZoomOut, e.image);
-        self.item(ui, tr!("Fit Image", "Вписать в окно").into(), "Num *", Cmd::Fit, e.image);
-        self.item(ui, tr!("Actual Size", "Реальный размер").into(), "Num /", Cmd::Actual, e.image);
+        self.item(ui, tr!("Fit Image", "Вписать в окно").into(), "2", Cmd::Fit, e.image);
+        self.item(ui, tr!("Actual Size", "Реальный размер").into(), "1", Cmd::Actual, e.image);
     }
 
     fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {

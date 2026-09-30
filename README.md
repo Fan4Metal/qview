@@ -34,8 +34,8 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Previous image | `←`, `Page Up`, `Backspace`, `Ctrl+←`, wheel up |
 | First / last image | `Home` / `End` |
 | Zoom in / out | `+`, `=`, `-`; `Ctrl+wheel` zooms at the pointer |
-| Fit to window (shrink only) | numpad `*` |
-| Actual size (100%) | numpad `/` |
+| Fit to window (shrink only) | `2`, numpad `*` |
+| Actual size (100%) | `1`, numpad `/` |
 | Scroll a zoomed image | arrow keys, dragging with the left button |
 | Rotate left / right (view only) | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
 | Full screen | `F`, `Ctrl+Shift+F`, double click, middle click |
