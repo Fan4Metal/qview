@@ -26,6 +26,10 @@ pub enum Cmd {
     ZoomIn,
     ZoomOut,
     Fit,
+    /// Fit the window, enlarging a small image too.
+    Fill,
+    /// Fill the whole window, cropping the edges.
+    Cover,
     Actual,
     RotateLeft,
     RotateRight,
@@ -36,7 +40,6 @@ pub enum Cmd {
     Delete,
     Copy,
     Open,
-    OpenDefault,
     ShowInExplorer,
     Refresh,
     ToggleToolbar,
@@ -71,13 +74,14 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         // 1 and 2 side by side; numpad `/` (and `*`, see `keys`) as well.
         Key::Num1 if letter => Actual,
         Key::Num2 if letter => Fit,
+        Key::Num3 if letter => Fill,
+        Key::Num4 if letter => Cover,
         Key::Slash if plain => Actual,
         Key::OpenBracket if plain => RotateLeft,
         Key::CloseBracket if plain => RotateRight,
         Key::F if letter || (m.ctrl && m.shift && !m.alt) => FullScreen,
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
-        Key::E if m.shift && !m.ctrl && !m.alt => OpenDefault,
         Key::W if m.ctrl && !m.alt => Close,
         Key::O if m.ctrl && !m.alt => Open,
         Key::Delete if letter => Delete,
@@ -166,13 +170,14 @@ mod tests {
         assert_eq!(command(Key::Slash, NONE, false), Some(Cmd::Actual));
         assert_eq!(command(Key::Num1, NONE, false), Some(Cmd::Actual));
         assert_eq!(command(Key::Num2, NONE, false), Some(Cmd::Fit));
+        assert_eq!(command(Key::Num3, NONE, false), Some(Cmd::Fill));
+        assert_eq!(command(Key::Num4, NONE, false), Some(Cmd::Cover));
         assert_eq!(command(Key::Num1, CTRL, false), None);
         assert_eq!(command(Key::OpenBracket, NONE, false), Some(Cmd::RotateLeft));
         assert_eq!(command(Key::F, NONE, false), Some(Cmd::FullScreen));
         assert_eq!(command(Key::F, CTRL | SHIFT, false), Some(Cmd::FullScreen));
         assert_eq!(command(Key::F, SHIFT, false), None);
-        assert_eq!(command(Key::E, SHIFT, false), Some(Cmd::OpenDefault));
-        assert_eq!(command(Key::E, NONE, false), None);
+        assert_eq!(command(Key::E, SHIFT, false), None);
         assert_eq!(command(Key::Delete, SHIFT, false), None);
     }
 

@@ -18,15 +18,39 @@ pub const STEPS: [f32; 21] = [
 pub enum Zoom {
     /// Shrink to fit the window; smaller images stay at 100%.
     Fit,
+    /// Fit the window, enlarging a smaller image too.
+    Fill,
+    /// Fill the whole window, cropping what does not fit.
+    Cover,
     /// 100%, kept for the next image.
     Actual,
-    /// Zoomed in or out by the user; the next image is fitted again.
+    /// Zoomed in or out by the user; the next image returns to the mode.
     Scale(f32),
+}
+
+impl Zoom {
+    /// Name of a mode (not of `Scale`) for the settings.
+    pub fn name(self) -> Option<&'static str> {
+        match self {
+            Zoom::Fit => Some("fit"),
+            Zoom::Fill => Some("fill"),
+            Zoom::Cover => Some("cover"),
+            Zoom::Actual => Some("actual"),
+            Zoom::Scale(_) => None,
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Zoom> {
+        [Zoom::Fit, Zoom::Fill, Zoom::Cover, Zoom::Actual].into_iter().find(|z| z.name() == Some(name))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View {
     pub zoom: Zoom,
+    /// The mode chosen with the keys 1-4 (never `Scale`): what the next
+    /// image opens in after zoom steps; kept between runs.
+    pub mode: Zoom,
     /// Clockwise quarter turns, 0..=3 (display only, the file is not
     /// changed).
     pub turns: u8,
@@ -37,7 +61,7 @@ pub struct View {
 
 impl Default for View {
     fn default() -> Self {
-        Self { zoom: Zoom::Fit, turns: 0, offset: Vec2::ZERO }
+        Self { zoom: Zoom::Fit, mode: Zoom::Fit, turns: 0, offset: Vec2::ZERO }
     }
 }
 
@@ -54,10 +78,25 @@ pub fn step_down(scale: f32) -> f32 {
 /// Scale at which `image` (pixels) fits into `viewport` (pixels), never
 /// above 1: small images are not enlarged.
 pub fn fit_scale(image: Vec2, viewport: Vec2) -> f32 {
+    fill_scale(image, viewport).min(1.0)
+}
+
+/// Scale at which `image` (pixels) fills `viewport` (pixels) in one
+/// direction, whole and with its proportions: above 1 for a small image.
+pub fn fill_scale(image: Vec2, viewport: Vec2) -> f32 {
     if image.x <= 0.0 || image.y <= 0.0 {
         return 1.0;
     }
-    (viewport.x / image.x).min(viewport.y / image.y).clamp(f32::MIN_POSITIVE, 1.0)
+    (viewport.x / image.x).min(viewport.y / image.y).max(f32::MIN_POSITIVE)
+}
+
+/// Scale at which `image` (pixels) covers all of `viewport` (pixels) with
+/// its proportions: what sticks out in the other direction is cropped.
+pub fn cover_scale(image: Vec2, viewport: Vec2) -> f32 {
+    if image.x <= 0.0 || image.y <= 0.0 {
+        return 1.0;
+    }
+    (viewport.x / image.x).max(viewport.y / image.y).max(f32::MIN_POSITIVE)
 }
 
 /// The mip level an image shown at `scale` can start from: the one nearest
@@ -69,12 +108,25 @@ pub fn mip_level(scale: f32) -> u32 {
 
 impl View {
     /// The view for the next image: rotation and panning are dropped, a
-    /// zoom chosen by steps goes back to Fit.
+    /// zoom chosen by steps goes back to the mode.
     pub fn next_image(&mut self) {
         self.turns = 0;
         self.offset = Vec2::ZERO;
         if let Zoom::Scale(_) = self.zoom {
-            self.zoom = Zoom::Fit;
+            self.zoom = self.mode;
+        }
+    }
+
+    /// Switch to `mode` (one of the four, see `mode`), from the centre.
+    pub fn choose(&mut self, mode: Zoom, size: Option<Vec2>, viewport: Rect, ppp: f32) {
+        self.mode = mode;
+        match (mode, size) {
+            // 100% keeps the point at the centre where it is.
+            (Zoom::Actual, Some(size)) => self.zoom_to(mode, size, viewport, ppp, viewport.center()),
+            _ => {
+                self.zoom = mode;
+                self.offset = Vec2::ZERO;
+            }
         }
     }
 
@@ -87,6 +139,8 @@ impl View {
     pub fn scale(&self, size: Vec2, viewport: Rect, ppp: f32) -> f32 {
         match self.zoom {
             Zoom::Fit => fit_scale(self.rotated(size), viewport.size() * ppp),
+            Zoom::Fill => fill_scale(self.rotated(size), viewport.size() * ppp),
+            Zoom::Cover => cover_scale(self.rotated(size), viewport.size() * ppp),
             Zoom::Actual => 1.0,
             Zoom::Scale(s) => s,
         }
@@ -206,6 +260,43 @@ mod tests {
     }
 
     #[test]
+    fn fill_enlarges_too() {
+        assert_eq!(fill_scale(vec2(800.0, 532.0), vec2(1920.0, 1000.0)), 1000.0 / 532.0);
+        assert_eq!(fill_scale(vec2(4000.0, 3000.0), vec2(1000.0, 600.0)), 0.2);
+        let v = View { zoom: Zoom::Fill, ..View::default() };
+        assert_eq!(v.scale(vec2(400.0, 300.0), viewport(), 1.0), viewport().height() / 300.0);
+    }
+
+    #[test]
+    fn cover_fills_the_whole_window() {
+        assert_eq!(cover_scale(vec2(800.0, 532.0), vec2(1920.0, 1000.0)), 1920.0 / 800.0);
+        assert_eq!(cover_scale(vec2(4000.0, 3000.0), vec2(1000.0, 600.0)), 0.25);
+        let v = View { zoom: Zoom::Cover, ..View::default() };
+        assert_eq!(v.scale(vec2(400.0, 300.0), viewport(), 1.0), viewport().width() / 400.0);
+    }
+
+    #[test]
+    fn zoom_steps_return_to_the_chosen_mode() {
+        let mut v = View::default();
+        v.choose(Zoom::Fill, Some(vec2(400.0, 300.0)), viewport(), 1.0);
+        v.zoom_step(true, vec2(400.0, 300.0), viewport(), 1.0, viewport().center());
+        assert!(matches!(v.zoom, Zoom::Scale(_)));
+        v.next_image();
+        assert_eq!(v.zoom, Zoom::Fill);
+        v.choose(Zoom::Actual, Some(vec2(400.0, 300.0)), viewport(), 1.0);
+        assert_eq!((v.zoom, v.mode), (Zoom::Actual, Zoom::Actual));
+    }
+
+    #[test]
+    fn mode_names_round_trip() {
+        for z in [Zoom::Fit, Zoom::Fill, Zoom::Cover, Zoom::Actual] {
+            assert_eq!(Zoom::from_name(z.name().unwrap()), Some(z));
+        }
+        assert_eq!(Zoom::Scale(2.0).name(), None);
+        assert_eq!(Zoom::from_name("x"), None);
+    }
+
+    #[test]
     fn fit_uses_the_rotated_size() {
         let mut v = View::default();
         let size = vec2(3000.0, 1000.0);
@@ -257,10 +348,10 @@ mod tests {
 
     #[test]
     fn next_image_resets_all_but_fixed_zooms() {
-        let mut v = View { zoom: Zoom::Scale(2.0), turns: 3, offset: vec2(5.0, 5.0) };
+        let mut v = View { zoom: Zoom::Scale(2.0), turns: 3, offset: vec2(5.0, 5.0), ..View::default() };
         v.next_image();
         assert_eq!(v, View::default());
-        let mut v = View { zoom: Zoom::Actual, turns: 1, offset: vec2(5.0, 5.0) };
+        let mut v = View { zoom: Zoom::Actual, turns: 1, offset: vec2(5.0, 5.0), ..View::default() };
         v.next_image();
         assert_eq!(v.zoom, Zoom::Actual);
     }

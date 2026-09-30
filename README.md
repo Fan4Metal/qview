@@ -34,8 +34,10 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Previous image | `←`, `Page Up`, `Backspace`, `Ctrl+←`, wheel up |
 | First / last image | `Home` / `End` |
 | Zoom in / out | `+`, `=`, `-`; `Ctrl+wheel` zooms at the pointer |
-| Fit to window (shrink only) | `2`, numpad `*` |
 | Actual size (100%) | `1`, numpad `/` |
+| Fit to window (shrink only) | `2`, numpad `*` |
+| Fill the window (enlarge too, proportions kept) | `3` |
+| Fill the entire window (the edges are cropped) | `4` |
 | Scroll a zoomed image | arrow keys, dragging with the left button |
 | Rotate left / right (view only) | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
 | Full screen | `F`, `Ctrl+Shift+F`, double click, middle click |
@@ -43,7 +45,6 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Move to the Recycle Bin | `Delete` (`Enter` confirms, `Esc` cancels) |
 | Copy the file to the clipboard | `Ctrl+C` |
 | Open a file | `Ctrl+O`, or dropping a file onto the window |
-| Open with the default program | `Shift+E` |
 | Reload the image and the folder | `F5` |
 | Show or hide the toolbar / status bar | `T` / `B` |
 | List of shortcuts | `F1` |
@@ -71,7 +72,7 @@ qview.exe --unregister
 
 The registration refers to the location of `qview.exe`; after the program is moved, it is registered again.
 
-The window position and size, the visibility of the toolbar and the status bar, and the background colour are kept in `%APPDATA%\qview\data\app.ron`.
+The zoom mode chosen with `1`–`4` applies to the following images as well, also after zooming in or out by steps. The window position and size, the visibility of the toolbar and the status bar, the background colour and the zoom mode are kept in `%APPDATA%\qview\data\app.ron`.
 
 ## Building
 

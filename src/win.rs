@@ -71,11 +71,6 @@ pub fn show_in_explorer(path: &Path) {
     }
 }
 
-/// Open `path` in the program Windows associates with it.
-pub fn open_default(path: &Path) -> bool {
-    shell_execute(path.as_os_str(), path.parent())
-}
-
 /// Open `target` (a file, a folder or a URI such as `ms-settings:…`) as
 /// Explorer would.
 pub fn shell_open(target: impl AsRef<OsStr>) -> bool {

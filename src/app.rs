@@ -71,6 +71,7 @@ const CACHE_BUDGET: usize = 100_000_000;
 const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
 const BACKGROUND_KEY: &str = "background";
+const ZOOM_KEY: &str = "zoom";
 
 #[derive(Clone)]
 pub struct Picture {
@@ -200,6 +201,7 @@ impl App {
             cloaked_until = Some(Instant::now() + UNCLOAK_TIMEOUT);
         }
         let flag = |key: &str| cc.storage.and_then(|s| s.get_string(key)).as_deref() != Some("false");
+        let mode = cc.storage.and_then(|s| s.get_string(ZOOM_KEY)).and_then(|v| Zoom::from_name(&v)).unwrap_or(Zoom::Fit);
         let mut app = Self {
             loader,
             gl,
@@ -213,7 +215,7 @@ impl App {
             cache: HashMap::new(),
             pending: Vec::new(),
             partial: HashMap::new(),
-            view: View::default(),
+            view: View { zoom: mode, mode, ..View::default() },
             viewport: ctx.content_rect(),
             show_toolbar: flag(TOOLBAR_KEY),
             show_status_bar: flag(STATUS_BAR_KEY),
@@ -564,15 +566,10 @@ impl App {
                     self.view.zoom_step(cmd == Cmd::ZoomIn, s, viewport, ppp, viewport.center());
                 }
             }
-            Cmd::Fit => {
-                self.view.zoom = Zoom::Fit;
-                self.view.offset = Vec2::ZERO;
-            }
-            Cmd::Actual => {
-                if let Some(s) = size {
-                    self.view.zoom_to(Zoom::Actual, s, viewport, ppp, viewport.center());
-                }
-            }
+            Cmd::Actual => self.view.choose(Zoom::Actual, size, viewport, ppp),
+            Cmd::Fit => self.view.choose(Zoom::Fit, size, viewport, ppp),
+            Cmd::Fill => self.view.choose(Zoom::Fill, size, viewport, ppp),
+            Cmd::Cover => self.view.choose(Zoom::Cover, size, viewport, ppp),
             Cmd::RotateLeft => self.view.turns = (self.view.turns + 3) % 4,
             Cmd::RotateRight => self.view.turns = (self.view.turns + 1) % 4,
             Cmd::FullScreen => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!Self::is_fullscreen(ctx))),
@@ -593,16 +590,6 @@ impl App {
                 }
             }
             Cmd::Open => self.pick_file(ctx, frame),
-            Cmd::OpenDefault => {
-                if let Some(path) = &self.current
-                    && !win::open_default(path)
-                {
-                    self.notice(tr!(
-                        "No program is associated with this file".into(),
-                        "С этим файлом не связана ни одна программа".into()
-                    ));
-                }
-            }
             Cmd::ShowInExplorer => {
                 if let Some(path) = &self.current {
                     win::show_in_explorer(path);
@@ -862,6 +849,7 @@ impl eframe::App for App {
         storage.set_string(TOOLBAR_KEY, self.show_toolbar.to_string());
         storage.set_string(STATUS_BAR_KEY, self.show_status_bar.to_string());
         storage.set_string(BACKGROUND_KEY, background_to_hex(self.background));
+        storage.set_string(ZOOM_KEY, self.view.mode.name().unwrap_or("fit").to_string());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

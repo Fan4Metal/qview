@@ -58,13 +58,6 @@ impl App {
     fn file_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
         self.item(ui, tr!("Open…", "Открыть…").into(), "Ctrl+O", Cmd::Open, true);
-        self.item(
-            ui,
-            tr!("Open with Default Program", "Открыть в программе по умолчанию").into(),
-            "Shift+E",
-            Cmd::OpenDefault,
-            e.file,
-        );
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, e.file);
@@ -97,8 +90,10 @@ impl App {
     fn zoom_items(&mut self, ui: &mut Ui, e: &Enabled) {
         self.item(ui, tr!("Zoom In", "Увеличить").into(), "+", Cmd::ZoomIn, e.image);
         self.item(ui, tr!("Zoom Out", "Уменьшить").into(), "-", Cmd::ZoomOut, e.image);
-        self.item(ui, tr!("Fit Image", "Вписать в окно").into(), "2", Cmd::Fit, e.image);
         self.item(ui, tr!("Actual Size", "Реальный размер").into(), "1", Cmd::Actual, e.image);
+        self.item(ui, tr!("Fit Image", "Вписать в окно").into(), "2", Cmd::Fit, e.image);
+        self.item(ui, tr!("Fill Window", "Заполнить окно").into(), "3", Cmd::Fill, e.image);
+        self.item(ui, tr!("Fill Entire Window", "Заполнить окно целиком").into(), "4", Cmd::Cover, e.image);
     }
 
     fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {
@@ -140,13 +135,6 @@ impl App {
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, e.file);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
-        self.item(
-            ui,
-            tr!("Open with Default Program", "Открыть в программе по умолчанию").into(),
-            "Shift+E",
-            Cmd::OpenDefault,
-            e.file,
-        );
         ui.separator();
         self.item(ui, tr!("Delete…", "Удалить…").into(), "Del", Cmd::Delete, e.file);
     }

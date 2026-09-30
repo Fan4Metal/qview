@@ -13,8 +13,10 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ("Home  End", tr!("First / last image", "Первое / последнее")),
         ("+  -", tr!("Zoom in / out", "Увеличить / уменьшить")),
         (tr!("Ctrl+Wheel", "Ctrl+колесо"), tr!("Zoom at the pointer", "Масштаб у курсора")),
-        ("2", tr!("Fit image to window", "Вписать в окно")),
         ("1", tr!("Actual size (100%)", "Реальный размер (100%)")),
+        ("2", tr!("Fit image to window", "Вписать в окно")),
+        ("3", tr!("Fill the window (enlarge too)", "Заполнить окно (и с увеличением)")),
+        ("4", tr!("Fill the entire window (crops)", "Заполнить окно целиком (с обрезкой)")),
         ("←  →  ↑  ↓", tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
         (tr!("Drag", "Перетаскивание"), tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
         ("[  ]  Ctrl+Alt+←  Ctrl+Alt+→", tr!("Rotate left / right (view only)", "Повернуть влево / вправо (только просмотр)")),
@@ -26,7 +28,6 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
         ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
         ("Ctrl+O", tr!("Open a file", "Открыть файл")),
-        ("Shift+E", tr!("Open with the default program", "Открыть в программе по умолчанию")),
         ("F5", tr!("Reload the image and the folder", "Перечитать изображение и папку")),
         ("Esc  Ctrl+W", tr!("Leave full screen / close", "Выйти из полного экрана / закрыть")),
     ]
@@ -269,13 +270,17 @@ impl App {
             ));
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.button(tr!("Delete", "Удалить")).clicked() {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let text = |s: &str| RichText::new(s).size(16.0);
+                let delete = egui::Button::new(text(tr!("Delete", "Удалить")).color(egui::Color32::WHITE))
+                    .fill(super::DANGER)
+                    .min_size(egui::vec2(160.0, 34.0));
+                if ui.add(delete).clicked() {
                     decision = Some(true);
                 }
-                if ui.button(tr!("Cancel", "Отмена")).clicked() {
+                if ui.add(egui::Button::new(text(tr!("Cancel", "Отмена"))).min_size(egui::vec2(100.0, 34.0))).clicked() {
                     decision = Some(false);
                 }
-                ui.weak(tr!("Enter: delete, Esc: cancel", "Enter — удалить, Esc — отмена"));
             });
         });
         if decision.is_none() {
