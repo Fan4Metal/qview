@@ -35,6 +35,9 @@ pub struct Meta {
     pub file_size: u64,
     /// Last write time as a FILETIME, 0 if unknown.
     pub modified: u64,
+    /// A GIF or WebP of more than one frame (see `anim`); the pixels are
+    /// its first frame.
+    pub animated: bool,
 }
 
 /// An image as the GPU takes it: premultiplied BGRA, 8 bits per channel,
@@ -208,6 +211,7 @@ pub fn read(path: &Path) -> Result<(DynamicImage, Meta), String> {
     let bits = decoder.original_color_type().bits_per_pixel();
     let mut img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
     img.apply_orientation(orientation);
+    let animated = crate::anim::is_animated(&bytes, format);
     let meta = Meta {
         width: img.width(),
         height: img.height(),
@@ -215,6 +219,7 @@ pub fn read(path: &Path) -> Result<(DynamicImage, Meta), String> {
         format: format_name(format),
         file_size: bytes.len() as u64,
         modified,
+        animated,
     };
     Ok((img, meta))
 }
@@ -348,6 +353,7 @@ mod tests {
         assert_eq!((meta.width, meta.height, meta.bits, meta.format), (30, 20, 32, "PNG"));
         assert_eq!(meta.file_size, std::fs::metadata(&path).unwrap().len());
         assert!(meta.modified > 0);
+        assert!(!meta.animated);
         // Content decides, not the extension.
         let jpeg = dir.join("really_a_jpeg.png");
         image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save_with_format(&jpeg, ImageFormat::Jpeg).unwrap();

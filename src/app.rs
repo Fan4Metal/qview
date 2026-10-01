@@ -196,6 +196,8 @@ pub struct App {
     hwnd: Option<isize>,
     /// While the window is cloaked: when to show it (see `App::uncloak`).
     cloak: Option<Cloak>,
+    /// The animation of the image on screen, while it plays.
+    player: Option<crate::anim::Player>,
 }
 
 /// The window is cloaked at start-up until its first maximized frame is on
@@ -329,6 +331,7 @@ impl App {
             first_image_logged: false,
             hwnd,
             cloak,
+            player: None,
         };
         if let Some(path) = initial {
             app.open(ctx, path);
@@ -613,6 +616,38 @@ impl App {
         self.pending.retain(|d| wanted.contains(&d.path));
         let have = |p: &PathBuf| self.cache.contains_key(p) || self.pending.iter().any(|d| d.path == *p);
         self.loader.want(wanted.into_iter().filter(|p| !have(p)));
+    }
+
+    /// Play the image on screen if it is animated: its frames replace the
+    /// contents of its texture when their time comes (see `anim`). Only
+    /// the current image in the viewer plays; it starts again from the
+    /// first frame when it comes back.
+    fn animate(&mut self, ctx: &egui::Context) {
+        let playing = self
+            .shown
+            .as_ref()
+            .filter(|(p, pic)| pic.meta.animated && !self.gallery_open && self.current.as_ref() == Some(p))
+            .map(|(p, _)| p.clone());
+        let Some(path) = playing else {
+            self.player = None;
+            return;
+        };
+        if self.player.as_ref().is_none_or(|p| p.path != path) {
+            // Every frame fills every level: nothing left to complete.
+            self.partial.remove(&path);
+            let max_side = ctx.input(|i| i.max_texture_side);
+            self.player = Some(crate::anim::Player::start(path.clone(), max_side, ctx.clone()));
+        }
+        let Some(player) = &mut self.player else { return };
+        let (frame, wait) = player.poll(Instant::now());
+        if let Some(pixels) = frame
+            && let Some(Slot::Ready(picture)) = self.cache.get(&path)
+        {
+            picture.texture.replace(&pixels);
+        }
+        if let Some(wait) = wait {
+            ctx.request_repaint_after(wait);
+        }
     }
 
     /// Put the current image on screen once it is decoded.
@@ -1085,6 +1120,7 @@ impl eframe::App for App {
             self.sync_shown();
         }
         self.complete_current_if_needed(&ctx);
+        self.animate(&ctx);
 
         let fullscreen = Self::is_fullscreen(&ctx);
         if !fullscreen {
@@ -1122,6 +1158,7 @@ impl eframe::App for App {
 
     /// The textures are deleted now, while the GL context still lives.
     fn on_exit(&mut self, _gl: Option<&glow::Context>) {
+        self.player = None;
         self.shown = None;
         self.cache.clear();
         self.pending.clear();

@@ -17,7 +17,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour.
 - The interface is in Russian when Windows is in Russian, and in English otherwise; another language is chosen in Help → About qview.
 
-Supported formats: JPEG, PNG, GIF (first frame), WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM).
+Supported formats: JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM). Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated.
 
 ## Installation
 

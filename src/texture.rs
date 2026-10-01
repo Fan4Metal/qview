@@ -28,6 +28,8 @@ pub struct Texture {
     gl: Arc<glow::Context>,
     native: glow::Texture,
     id: egui::TextureId,
+    /// Size of level 0 and the number of levels.
+    size: (u32, u32, usize),
     /// The smallest level uploaded so far; the texture is shown from it.
     base_level: Cell<u32>,
 }
@@ -72,7 +74,8 @@ impl Texture {
             started.elapsed().as_secs_f64() * 1e3
         );
         let id = register(native);
-        Ok(Self { gl, native, id, base_level: Cell::new(first) })
+        let size = (pixels.width, pixels.height, pixels.levels.len());
+        Ok(Self { gl, native, id, size, base_level: Cell::new(first) })
     }
 
     pub fn id(&self) -> egui::TextureId {
@@ -105,6 +108,41 @@ impl Texture {
             pixels.height,
             started.elapsed().as_secs_f64() * 1e3
         );
+    }
+}
+
+impl Texture {
+    /// Replace the picture with `pixels`, every level (the next frame of
+    /// an animation). The same size is written into the texture's memory,
+    /// which is not allocated anew.
+    pub fn replace(&self, pixels: &Pixels) {
+        let size = (pixels.width, pixels.height, pixels.levels.len());
+        unsafe {
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(self.native));
+            if size == self.size {
+                self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
+                for (level, data) in pixels.levels.iter().enumerate() {
+                    self.gl.tex_sub_image_2d(
+                        glow::TEXTURE_2D,
+                        level as i32,
+                        0,
+                        0,
+                        (pixels.width >> level).max(1) as i32,
+                        (pixels.height >> level).max(1) as i32,
+                        glow::BGRA,
+                        glow::UNSIGNED_INT_8_8_8_8_REV,
+                        glow::PixelUnpackData::Slice(Some(data)),
+                    );
+                }
+            } else {
+                log::warn!("a frame of {}x{} for a texture of {}x{}", size.0, size.1, self.size.0, self.size.1);
+                upload_levels(&self.gl, pixels, 0..pixels.levels.len() as u32);
+                self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, pixels.levels.len() as i32 - 1);
+            }
+            self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, 0);
+            self.gl.bind_texture(glow::TEXTURE_2D, None);
+        }
+        self.base_level.set(0);
     }
 }
 

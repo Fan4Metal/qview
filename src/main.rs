@@ -2,6 +2,7 @@
 
 #[macro_use]
 mod i18n;
+mod anim;
 mod app;
 mod assoc;
 mod filetypes;

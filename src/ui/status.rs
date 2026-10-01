@@ -32,7 +32,8 @@ impl App {
             (Some((path, picture)), _, _) if path == current => {
                 let m = &picture.meta;
                 fields.push(format::file_size(m.file_size));
-                fields.push(format!("{}x{}x{}b {}", m.width, m.height, m.bits, m.format));
+                let animated = if m.animated { tr!(", animated", ", анимация") } else { "" };
+                fields.push(format!("{}x{}x{}b {}{animated}", m.width, m.height, m.bits, m.format));
                 modified(&mut fields, m.modified);
                 if !self.gallery_open {
                     let zoom = format::zoom(self.view.scale(picture.size(), self.viewport, ppp));
