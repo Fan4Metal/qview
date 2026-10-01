@@ -177,13 +177,15 @@ impl Gallery {
     }
 
     /// Drop the thumbnails seen longest ago while over `BUDGET`, down to
-    /// three quarters of it; those drawn in this frame stay.
+    /// three quarters of it. Those drawn in the last frame stay: this runs
+    /// in `poll`, before the grid is drawn, so they are the visible ones.
     fn evict(&mut self) {
         if self.pixels <= BUDGET {
             return;
         }
+        let frame = self.frame;
         let mut by_age: Vec<(u64, PathBuf)> =
-            self.cache.iter().filter(|(_, t)| t.used < self.frame).map(|(p, t)| (t.used, p.clone())).collect();
+            self.cache.iter().filter(|(_, t)| t.used + 1 < frame).map(|(p, t)| (t.used, p.clone())).collect();
         by_age.sort_unstable_by_key(|(used, _)| *used);
         for (_, path) in by_age {
             if self.pixels <= BUDGET / 4 * 3 {

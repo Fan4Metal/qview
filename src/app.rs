@@ -424,8 +424,20 @@ impl App {
             }
         }
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
-        if self.current.is_none() && !self.files.is_empty() {
-            self.go(0);
+        if self.index.is_some() || self.files.is_empty() {
+            return;
+        }
+        match self.current.clone() {
+            None => self.go(0),
+            // The file is gone (deleted or renamed, or it never existed):
+            // without a place in the folder nothing could be browsed. The
+            // next image takes its place, as after a deletion.
+            Some(missing) => {
+                let i = folder::insertion_point(&self.files, &missing).min(self.files.len() - 1);
+                let name = file_name(&missing);
+                self.notice(tr!(format!("File not found: {name}"), format!("Файл не найден: {name}")));
+                self.go(i);
+            }
         }
     }
 

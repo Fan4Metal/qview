@@ -27,6 +27,12 @@ pub fn position(files: &[PathBuf], path: &Path) -> Option<usize> {
     files.iter().position(|f| same_path(f, path))
 }
 
+/// The order of [`sort`]: by file name as Explorer sorts, then by path.
+fn order(a: &Path, b: &Path) -> std::cmp::Ordering {
+    let name = |p: &Path| crate::win::wide(p.file_name().unwrap_or_default());
+    crate::win::logical_cmp(&name(a), &name(b)).then_with(|| a.cmp(b))
+}
+
 /// Sort `files` by file name as Explorer does (see `win::logical_cmp`);
 /// names Explorer considers equal keep a fixed order.
 pub fn sort(files: &mut Vec<PathBuf>) {
@@ -36,6 +42,12 @@ pub fn sort(files: &mut Vec<PathBuf>) {
         .collect();
     keyed.sort_by(|(a, pa), (b, pb)| crate::win::logical_cmp(a, b).then_with(|| pa.cmp(pb)));
     *files = keyed.into_iter().map(|(_, p)| p).collect();
+}
+
+/// Where `path`, which is not in `files` (sorted by [`sort`]), would be:
+/// the index of the first file after it, `files.len()` past the last.
+pub fn insertion_point(files: &[PathBuf], path: &Path) -> usize {
+    files.partition_point(|f| order(f, path).is_lt())
 }
 
 /// Image files of `dir`, sorted. `keep` (the file being shown) is listed
@@ -125,6 +137,13 @@ mod tests {
         // The file being shown stays listed whatever its extension.
         let files = list(&dir, Some(&dir.join("odd.xyz"))).unwrap();
         assert_eq!(names(files), ["1.JPG", "2.png", "10.jpg", "odd.xyz", "а.bmp", "Б.gif"]);
+        // A file that is not there would go before the first one after it.
+        let files = list(&dir, None).unwrap();
+        assert_eq!(insertion_point(&files, &dir.join("0.jpg")), 0);
+        assert_eq!(insertion_point(&files, &dir.join("5.jpg")), 2);
+        assert_eq!(insertion_point(&files, &dir.join("аб.png")), 4);
+        assert_eq!(insertion_point(&files, &dir.join("б.png")), 5);
+        assert_eq!(insertion_point(&files, &dir.join("я.png")), 5);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
