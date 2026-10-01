@@ -58,8 +58,43 @@ pub fn recycle(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Open Explorer on the folder of `path` with the file selected.
+/// Open Explorer on the folder of `path` with the file selected, in front
+/// of qview. `explorer.exe /select` is not used: the process it starts
+/// hands the folder to the Explorer already running, which Windows then
+/// does not let in front of the window the user clicked in (its taskbar
+/// button flashes instead). `SHOpenFolderAndSelectItems` asks that
+/// Explorer itself and lets it come forward. On a thread: the shell may
+/// take a while.
 pub fn show_in_explorer(path: &Path) {
+    use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    let owned = path.to_path_buf();
+    let spawned = std::thread::Builder::new().name("show in explorer".into()).spawn(move || {
+        let path = owned;
+        com_init();
+        let wide = wide(&path);
+        let shown = unsafe {
+            let item = ILCreateFromPathW(wide.as_ptr());
+            if item.is_null() {
+                false
+            } else {
+                // No items: `item` itself is selected in its folder.
+                let hr = SHOpenFolderAndSelectItems(item, 0, std::ptr::null(), 0);
+                ILFree(item);
+                hr >= 0
+            }
+        };
+        if !shown {
+            log::warn!("SHOpenFolderAndSelectItems failed for {}", path.display());
+            explorer_select(&path);
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("cannot start a thread to show {}: {e}", path.display());
+    }
+}
+
+/// `explorer.exe /select,<path>`, should the shell call fail.
+fn explorer_select(path: &Path) {
     use std::os::windows::process::CommandExt;
     // raw_arg: Explorer parses its own command line. Paths cannot contain
     // quotes on Windows, so plain quoting is safe.
