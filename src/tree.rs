@@ -346,7 +346,7 @@ impl Tree {
                 );
                 // The second click of a double click is a click too; the
                 // first one has chosen the folder already.
-                if response.double_clicked() && has_children && !on_arrow {
+                if crate::input::double_clicked(&response) && has_children && !on_arrow {
                     toggled = Some(id);
                 } else if response.clicked() {
                     if has_children && on_arrow {

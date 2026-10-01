@@ -58,10 +58,6 @@ pub fn ink_on(bg: Color32) -> Color32 {
     if luma > 140.0 { Color32::from_gray(70) } else { Color32::from_gray(170) }
 }
 
-/// A double click on the image this soon after leaving the gallery belongs
-/// to the clicks on a thumbnail that left it (a triple click), not a
-/// request to go back.
-const DOUBLE_CLICK_GUARD: Duration = Duration::from_millis(600);
 /// How long a notice stays in the status bar.
 const NOTICE_TIME: Duration = Duration::from_secs(4);
 /// A window cloaked at start-up is shown after this at the latest.
@@ -145,8 +141,10 @@ pub struct App {
     pub gallery: Option<Gallery>,
     /// The gallery is shown instead of the image.
     pub gallery_open: bool,
-    /// When the gallery was last left (see `DOUBLE_CLICK_GUARD`).
-    left_gallery: Option<Instant>,
+    /// The image area got the last click. A double click on it counts only
+    /// then: the third click of a triple click on a thumbnail, which lands
+    /// on the image the first two opened, is not a request to go back.
+    image_clicked: bool,
     /// Size of the gallery's thumbnails, in points.
     pub thumb_size: f32,
     /// Width of the gallery's folder tree, in points.
@@ -204,7 +202,11 @@ impl App {
         }
         loader.set_context(ctx.clone());
         // Ctrl+Plus and Ctrl+Minus zoom the image, not the interface.
-        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        // A double click as slow as Windows allows, not egui's 300 ms.
+        ctx.options_mut(|o| {
+            o.zoom_with_keyboard = false;
+            o.input_options.max_double_click_delay = win::double_click_time();
+        });
         crate::ui::style(ctx);
         // The window is created with the Windows theme and egui turns it
         // dark only at the end of the first frame; Windows 10 would then
@@ -265,7 +267,7 @@ impl App {
             confirm_delete: None,
             gallery: None,
             gallery_open: false,
-            left_gallery: None,
+            image_clicked: false,
             thumb_size: number(THUMB_SIZE_KEY)
                 .unwrap_or(gallery::DEFAULT_SIZE)
                 .clamp(gallery::MIN_SIZE, gallery::MAX_SIZE),
@@ -337,7 +339,7 @@ impl App {
     /// Back to the image, the current one.
     pub fn leave_gallery(&mut self) {
         self.gallery_open = false;
-        self.left_gallery = Some(Instant::now());
+        self.image_clicked = false;
         if let Some(gallery) = &mut self.gallery {
             gallery.want(Vec::new());
             gallery.hovered = None;
@@ -825,8 +827,11 @@ impl App {
             }
         }
 
-        if response.double_clicked() && self.left_gallery.is_none_or(|t| t.elapsed() > DOUBLE_CLICK_GUARD) {
+        if crate::input::double_clicked(&response) && self.image_clicked {
             self.clicked.push(Cmd::Gallery);
+        }
+        if response.clicked() {
+            self.image_clicked = true;
         }
         if response.middle_clicked() {
             self.clicked.push(Cmd::FullScreen);

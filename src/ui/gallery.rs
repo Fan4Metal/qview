@@ -238,7 +238,7 @@ impl App {
             if response.clicked() || response.secondary_clicked() {
                 self.go(i);
             }
-            if response.double_clicked() {
+            if crate::input::double_clicked(&response) {
                 opened = Some(i);
             }
             response.context_menu(|ui| self.cell_menu(ui));

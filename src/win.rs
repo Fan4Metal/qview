@@ -248,6 +248,16 @@ pub fn is_visible_folder(attributes: u32) -> bool {
     attributes & FILE_ATTRIBUTE_DIRECTORY != 0 && attributes & FILE_ATTRIBUTE_HIDDEN == 0
 }
 
+/// The longest pause between the clicks of a double click set in Windows,
+/// in seconds (500 ms by default).
+pub fn double_click_time() -> f64 {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetDoubleClickTime() -> u32;
+    }
+    unsafe { GetDoubleClickTime() as f64 / 1000.0 }
+}
+
 /// Show `text` in a system message box with an error icon, waiting until
 /// it is closed. It needs no window of the app, so it also works when the
 /// app is failing.

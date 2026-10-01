@@ -127,6 +127,14 @@ pub fn keys(ctx: &egui::Context, gallery: bool) -> Vec<Cmd> {
     })
 }
 
+/// A double click on `response`. egui counts a click soon after a double
+/// click as a triple click, which is not a double click: a click that
+/// selects a thumbnail followed at once by a double click on it would be
+/// lost. Any click of a series after the first counts here.
+pub fn double_clicked(response: &egui::Response) -> bool {
+    response.double_clicked() || response.triple_clicked()
+}
+
 /// Mouse wheel notches, counted whole across frames: a precise wheel or a
 /// touchpad sends fractions.
 #[derive(Default)]
