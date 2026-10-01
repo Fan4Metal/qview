@@ -11,7 +11,7 @@ qview is a Windows-only image viewer, written in Rust with egui/eframe 0.36. Pri
 ```
 uv run build.py                  # closes a qview.exe running from target\, then cargo build --release
 cargo test                       # unit tests (view geometry, key map, folder order, decoder, mip levels, formats, thumbnails, folder tree, gallery grid)
-cargo clippy --release --all-targets   # must stay warning-free (CI, .github/workflows/ci.yml, runs it with -D warnings and cargo test on every push)
+cargo clippy --release --all-targets   # must stay warning-free
 python tools/make_release.py     # tests, release build, dist\qview_<ver>_Setup.exe (Inno Setup 6, tools/setup.iss) and _portable.zip
 $env:QVIEW_TRACE=1; .\target\release\qview.exe <file>   # start-up, decode and texture upload timings on stderr
 $env:QVIEW_BENCH_FILE="<file>"; cargo test --release phase_timings -- --ignored --nocapture   # decode phases of one file

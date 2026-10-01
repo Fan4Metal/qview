@@ -124,8 +124,6 @@ git push origin v0.1.0
 
 Running the workflow manually (Actions → Release → Run workflow) only builds the files and attaches them to the run, without a release.
 
-The **CI** workflow (`.github/workflows/ci.yml`) runs the tests and clippy on every push and pull request.
-
 ## License
 
 MIT, see [LICENSE](LICENSE).
