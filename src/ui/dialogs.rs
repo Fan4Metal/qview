@@ -93,7 +93,13 @@ impl App {
                     ui.label(tr!(format!("Author: {authors}"), format!("Автор: {authors}")));
                 }
                 if !REPOSITORY.is_empty() {
-                    ui.hyperlink_to(tr!("Homepage", "Сайт проекта"), REPOSITORY).on_hover_text(REPOSITORY);
+                    // Not `hyperlink_to`: eframe opens links only with its `links`
+                    // feature (the webbrowser crate), which is off.
+                    if ui.link(tr!("Homepage", "Сайт проекта")).on_hover_text(REPOSITORY).clicked()
+                        && !crate::win::shell_open(REPOSITORY)
+                    {
+                        log::warn!("could not open {REPOSITORY}");
+                    }
                 }
                 if !LICENSE.is_empty() {
                     ui.weak(tr!(format!("{LICENSE} License"), format!("Лицензия {LICENSE}")));
