@@ -78,6 +78,8 @@ const BACKGROUND_KEY: &str = "background";
 const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
 const TREE_WIDTH_KEY: &str = "tree_width";
+const THUMB_FILL_KEY: &str = "thumb_fill";
+const THUMB_ASPECT_KEY: &str = "thumb_aspect";
 
 #[derive(Clone)]
 pub struct Picture {
@@ -149,6 +151,10 @@ pub struct App {
     pub thumb_size: f32,
     /// Width of the gallery's folder tree, in points.
     pub tree_width: f32,
+    /// The gallery's thumbnails fill their cells, cropped.
+    pub thumb_fill: bool,
+    /// Proportions of the gallery's cells, one of `gallery::ASPECTS`.
+    pub thumb_aspect: f32,
     deleting: Option<mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     pub dialog: Option<Dialog>,
     /// `dialog` was opened this frame.
@@ -272,6 +278,12 @@ impl App {
                 .unwrap_or(gallery::DEFAULT_SIZE)
                 .clamp(gallery::MIN_SIZE, gallery::MAX_SIZE),
             tree_width: number(TREE_WIDTH_KEY).unwrap_or(240.0).clamp(140.0, 640.0),
+            thumb_fill: cc.storage.and_then(|s| s.get_string(THUMB_FILL_KEY)).as_deref() == Some("true"),
+            thumb_aspect: cc
+                .storage
+                .and_then(|s| s.get_string(THUMB_ASPECT_KEY))
+                .and_then(|v| gallery::ASPECTS.iter().find(|(n, _)| *n == v).map(|(_, a)| *a))
+                .unwrap_or(1.0),
             deleting: None,
             dialog: None,
             dialog_fresh: false,
@@ -1050,6 +1062,9 @@ impl eframe::App for App {
         storage.set_string(ZOOM_KEY, self.view.mode.name().unwrap_or("fit").to_string());
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
+        storage.set_string(THUMB_FILL_KEY, self.thumb_fill.to_string());
+        let aspect = gallery::ASPECTS.iter().find(|(_, a)| *a == self.thumb_aspect).map_or("1:1", |(n, _)| n);
+        storage.set_string(THUMB_ASPECT_KEY, aspect.to_string());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

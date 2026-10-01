@@ -15,13 +15,25 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use egui::Vec2;
+use egui::{Rect, Vec2, pos2};
 
 use crate::texture::Texture;
 use crate::thumbs::{Made, Request, Thumbs};
 use crate::tree::Tree;
 
-/// Cell sizes (the thumbnail's square, in points) of the slider's range.
+/// Proportions of the cells' frames (width over height) offered above the
+/// grid, by name (also as kept in the settings).
+pub const ASPECTS: [(&str, f32); 7] = [
+    ("1:1", 1.0),
+    ("4:3", 4.0 / 3.0),
+    ("3:2", 3.0 / 2.0),
+    ("16:9", 16.0 / 9.0),
+    ("3:4", 3.0 / 4.0),
+    ("2:3", 2.0 / 3.0),
+    ("9:16", 9.0 / 16.0),
+];
+/// Cell sizes (the long side of the thumbnail's frame, in points) of the
+/// slider's range.
 pub const MIN_SIZE: f32 = 64.0;
 pub const MAX_SIZE: f32 = 512.0;
 pub const DEFAULT_SIZE: f32 = 160.0;
@@ -219,6 +231,20 @@ impl Gallery {
     }
 }
 
+impl Thumb {
+    /// Width over height, once there is a texture.
+    pub fn ratio(&self) -> Option<f32> {
+        let [w, h] = self.px.map(|v| v.max(1) as f32);
+        self.texture.as_ref().map(|_| w / h)
+    }
+
+    /// The thumbnail is smaller than the image (or the image's size is
+    /// not known).
+    pub fn shrunk(&self) -> bool {
+        self.width == 0 || self.width > self.px[0]
+    }
+}
+
 /// Pixels of `t`'s texture, its mip levels included.
 fn texture_pixels(t: &Thumb) -> usize {
     if t.texture.is_none() { 0 } else { t.px[0] as usize * t.px[1] as usize * 4 / 3 }
@@ -227,6 +253,46 @@ fn texture_pixels(t: &Thumb) -> usize {
 /// The pixel size to make thumbnails at for cells of `px` pixels.
 pub fn side_for(px: f32) -> u32 {
     SIDES.iter().copied().find(|&s| s as f32 >= px).unwrap_or(SIDES[SIDES.len() - 1])
+}
+
+/// The frame of a thumbnail `size` points on its long side, with the
+/// proportions `aspect` (width over height).
+pub fn frame_size(size: f32, aspect: f32) -> Vec2 {
+    if aspect >= 1.0 { egui::vec2(size, size / aspect) } else { egui::vec2(size * aspect, size) }
+}
+
+/// The pixel size to make thumbnails at for frames of `frame` pixels.
+/// When the frames are filled (`fill`), the thumbnail has to cover the
+/// frame both ways: its long side follows from its proportions `ratio`
+/// (width over height; a landscape 3:2 photo's until the thumbnail shows).
+pub fn side_needed(frame: Vec2, fill: bool, ratio: Option<f32>) -> u32 {
+    if !fill {
+        return side_for(frame.max_elem());
+    }
+    let r = ratio.unwrap_or(1.5).clamp(0.25, 4.0);
+    let long = if r >= 1.0 { frame.x.max(frame.y * r) } else { frame.y.max(frame.x / r) };
+    side_for(long)
+}
+
+/// Where a thumbnail of `px` pixels goes in `frame` (points) and the part
+/// of it shown there, as `(rect, uv)`: fitted whole and never enlarged,
+/// or, with `fill`, covering the frame with what sticks out cropped,
+/// enlarged only while the thumbnail is smaller than the image (`shrunk`:
+/// a larger one is on its way). On whole pixels.
+pub fn place_thumb(frame: Rect, px: Vec2, ppp: f32, fill: bool, shrunk: bool) -> (Rect, Rect) {
+    let snap = |p: egui::Pos2| pos2((p.x * ppp).round() / ppp, (p.y * ppp).round() / ppp);
+    let frame = Rect::from_min_max(snap(frame.min), snap(frame.max));
+    let room = frame.size() * ppp;
+    let (fit, cover) = ((room.x / px.x).min(room.y / px.y), (room.x / px.x).max(room.y / px.y));
+    let scale = if fill && shrunk { cover } else if fill { cover.min(1.0) } else { fit.min(1.0) };
+    let shown = px * scale / ppp;
+    let image = Rect::from_min_size(snap(frame.center() - shown / 2.0), shown);
+    let rect = image.intersect(frame);
+    let uv = Rect::from_min_max(
+        ((rect.min - image.min) / image.size()).to_pos2(),
+        ((rect.max - image.min) / image.size()).to_pos2(),
+    );
+    (rect, uv)
 }
 
 /// The next cell size up or down from `size`.
@@ -239,8 +305,8 @@ pub fn step_size(size: f32, up: bool) -> f32 {
     next.unwrap_or(size).clamp(MIN_SIZE, MAX_SIZE)
 }
 
-/// The grid of `count` cells of thumbnails `size` points wide in a list
-/// `width` points wide: as many columns as fit, stretched to fill the
+/// The grid of `count` cells of thumbnail frames of `frame` points in a
+/// list `width` points wide: as many columns as fit, stretched to fill the
 /// width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Grid {
@@ -249,10 +315,10 @@ pub struct Grid {
     pub cell: Vec2,
 }
 
-pub fn grid(width: f32, size: f32, count: usize) -> Grid {
-    let min = size + 2.0 * PAD;
+pub fn grid(width: f32, frame: Vec2, count: usize) -> Grid {
+    let min = frame.x + 2.0 * PAD;
     let columns = ((width / min).floor() as usize).max(1);
-    Grid { columns, rows: count.div_ceil(columns), cell: egui::vec2(width / columns as f32, size + 2.0 * PAD + LABEL) }
+    Grid { columns, rows: count.div_ceil(columns), cell: egui::vec2(width / columns as f32, frame.y + 2.0 * PAD + LABEL) }
 }
 
 /// The cell `rows` rows below `i` (above for negative), in the same
@@ -273,13 +339,16 @@ mod tests {
 
     #[test]
     fn grid_fills_the_width() {
-        let g = grid(1000.0, 160.0, 69);
+        let g = grid(1000.0, frame_size(160.0, 1.0), 69);
         // 172 points a cell at least: 5 fit, stretched to 200.
         assert_eq!((g.columns, g.rows), (5, 14));
         assert_eq!(g.cell, egui::vec2(200.0, 160.0 + 2.0 * PAD + LABEL));
+        // 16:9 frames are lower; 9:16 ones narrower, so more fit.
+        assert_eq!(grid(1000.0, frame_size(160.0, 16.0 / 9.0), 69).cell.y, 90.0 + 2.0 * PAD + LABEL);
+        assert_eq!(grid(1000.0, frame_size(160.0, 9.0 / 16.0), 69).columns, 9);
         // Narrower than one cell: still one column.
-        assert_eq!(grid(50.0, 160.0, 3).columns, 1);
-        assert_eq!(grid(1000.0, 160.0, 0).rows, 0);
+        assert_eq!(grid(50.0, frame_size(160.0, 1.0), 3).columns, 1);
+        assert_eq!(grid(1000.0, frame_size(160.0, 1.0), 0).rows, 0);
     }
 
     #[test]
@@ -295,6 +364,38 @@ mod tests {
         assert_eq!(move_rows(5, 10, 4, 10), 9);
         assert_eq!(move_rows(4, 10, 4, 10), 8);
         assert_eq!(move_rows(9, -10, 4, 10), 1);
+    }
+
+    #[test]
+    fn thumbnails_fit_or_fill() {
+        let square = Rect::from_min_size(pos2(10.0, 20.0), egui::vec2(100.0, 100.0));
+        // A 3:2 thumbnail, fitted: whole, letterboxed.
+        let (rect, uv) = place_thumb(square, egui::vec2(300.0, 200.0), 1.0, false, true);
+        assert_eq!(rect.min, pos2(10.0, 37.0));
+        assert!((rect.size() - egui::vec2(100.0, 200.0 / 3.0)).length() < 1e-3, "{rect:?}");
+        assert_eq!(uv, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)));
+        // Filled: the square, the middle two thirds across.
+        let (rect, uv) = place_thumb(square, egui::vec2(300.0, 200.0), 1.0, true, true);
+        assert_eq!(rect, square);
+        assert!((uv.min.x - 1.0 / 6.0).abs() < 1e-3 && (uv.max.x - 5.0 / 6.0).abs() < 1e-3, "{uv:?}");
+        assert_eq!((uv.min.y, uv.max.y), (0.0, 1.0));
+        // A small image is not enlarged either way, only cropped.
+        let (rect, uv) = place_thumb(square, egui::vec2(150.0, 40.0), 1.0, true, false);
+        assert_eq!(rect.size(), egui::vec2(100.0, 40.0));
+        assert!((uv.width() - 100.0 / 150.0).abs() < 1e-3);
+        let (rect, _) = place_thumb(square, egui::vec2(30.0, 40.0), 1.0, false, false);
+        assert_eq!(rect.size(), egui::vec2(30.0, 40.0));
+        // Filled frames need the thumbnail to cover them both ways.
+        let square = egui::vec2(200.0, 200.0);
+        assert_eq!(side_needed(square, false, Some(1.5)), 256);
+        assert_eq!(side_needed(square, true, None), 768);
+        assert_eq!(side_needed(egui::vec2(160.0, 160.0), true, Some(1.5)), 256);
+        // A 3:2 photo in a 16:9 frame: the width decides; in a 9:16 one,
+        // the height times 1.5.
+        assert_eq!(side_needed(egui::vec2(240.0, 135.0), true, Some(1.5)), 256);
+        assert_eq!(side_needed(egui::vec2(135.0, 240.0), true, Some(1.5)), 768);
+        // A portrait photo in a portrait frame.
+        assert_eq!(side_needed(egui::vec2(135.0, 240.0), true, Some(2.0 / 3.0)), 256);
     }
 
     #[test]

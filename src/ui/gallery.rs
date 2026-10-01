@@ -7,7 +7,7 @@ use egui::{Align, Align2, Color32, FontId, Layout, Margin, Painter, Rect, Respon
 
 use super::{TEXT, TEXT_WEAK, panel_frame};
 use crate::app::{App, file_name};
-use crate::gallery::{self, HOVER_DELAY, LABEL, MAX_SIZE, MIN_SIZE, PAD, Scroll};
+use crate::gallery::{self, ASPECTS, HOVER_DELAY, LABEL, MAX_SIZE, MIN_SIZE, PAD, Scroll};
 use crate::input::Cmd;
 use crate::thumbs::Request;
 
@@ -15,7 +15,7 @@ const TREE_BG: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
 const GRID_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 const CELL_HOVER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
 const CELL_SELECTED: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
-/// The square of a thumbnail still being made.
+/// The frame of a thumbnail still being made.
 const CELL_EMPTY: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
 /// The bar above the grid: darker than the toolbar above it, with a line
 /// between them.
@@ -54,7 +54,7 @@ impl App {
 
     /// The folder and the cell size slider above the grid.
     fn gallery_bar(&mut self, root_ui: &mut Ui) {
-        let before = self.thumb_size;
+        let before = (self.thumb_size, self.thumb_aspect);
         egui::Panel::top("gallery_bar")
             .frame(panel_frame(BAR_BG, Margin::symmetric(8, 3)))
             .show_separator_line(false)
@@ -75,6 +75,24 @@ impl App {
                         .handle_shape(egui::style::HandleShape::Circle);
                     ui.add(slider).on_hover_text(tip);
                     size_icon(ui, 7.0);
+                    ui.add_space(12.0);
+                    ui.checkbox(&mut self.thumb_fill, tr!("Fill cells", "Заполнять ячейки")).on_hover_text(tr!(
+                        "Thumbnails fill their cells, the edges cropped",
+                        "Миниатюры заполняют ячейки, края обрезаются"
+                    ));
+                    ui.add_space(12.0);
+                    let name = ASPECTS.iter().find(|(_, a)| *a == self.thumb_aspect).map_or("1:1", |(n, _)| n);
+                    egui::ComboBox::from_id_salt("cell_aspect")
+                        .selected_text(name)
+                        .width(64.0)
+                        .show_ui(ui, |ui| {
+                            for (name, aspect) in ASPECTS {
+                                ui.selectable_value(&mut self.thumb_aspect, aspect, name);
+                            }
+                        })
+                        .response
+                        .on_hover_text(tr!("Proportions of the cells", "Пропорции ячеек"));
+                    ui.add_space(8.0);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         if let Some(dir) = &self.dir {
                             let text = RichText::new(dir.display().to_string()).size(12.5).color(TEXT_WEAK);
@@ -83,7 +101,7 @@ impl App {
                     });
                 });
             });
-        if self.thumb_size != before {
+        if (self.thumb_size, self.thumb_aspect) != before {
             self.thumb_size_changed();
         }
     }
@@ -123,8 +141,8 @@ impl App {
             }
             return None;
         }
-        let size = self.thumb_size;
-        let grid = gallery::grid(rect.width(), size, n);
+        let frame = gallery::frame_size(self.thumb_size, self.thumb_aspect);
+        let grid = gallery::grid(rect.width(), frame, n);
         gallery.columns = grid.columns;
         gallery.page_rows = ((rect.height() / grid.cell.y).floor() as usize).max(1);
 
@@ -151,7 +169,8 @@ impl App {
             area = area.vertical_scroll_offset(y);
         }
 
-        let side = gallery::side_for(size * ppp);
+        let fill = self.thumb_fill;
+        let frame_px = frame * ppp;
         let mut requests = Vec::new();
         let mut cells: Vec<(usize, Response)> = Vec::new();
         let mut hovered = None;
@@ -179,7 +198,9 @@ impl App {
                 if response.hovered() {
                     hovered = Some(path.clone());
                 }
-                let square = Rect::from_min_size(pos2(cell.center().x - size / 2.0, cell.top() + PAD), vec2(size, size));
+                let square = Rect::from_min_size(pos2(cell.center().x - frame.x / 2.0, cell.top() + PAD), frame);
+                let ratio = gallery.cache.get(path).and_then(|t| t.ratio());
+                let side = gallery::side_needed(frame_px, fill, ratio);
                 if gallery.needs(path, side) {
                     requests.push(Request { path: path.clone(), side });
                 }
@@ -187,13 +208,8 @@ impl App {
                     Some(t) => match &t.texture {
                         Some(texture) => {
                             let px = vec2(t.px[0] as f32, t.px[1] as f32);
-                            // Fitted, never enlarged, on whole pixels.
-                            let scale = (size * ppp / px.x).min(size * ppp / px.y).min(1.0);
-                            let shown = px * scale / ppp;
-                            let min = square.center() - shown / 2.0;
-                            let min = pos2((min.x * ppp).round() / ppp, (min.y * ppp).round() / ppp);
-                            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                            painter.image(texture.id(), Rect::from_min_size(min, shown), uv, Color32::WHITE);
+                            let (rect, uv) = gallery::place_thumb(square, px, ppp, fill, t.shrunk());
+                            painter.image(texture.id(), rect, uv, Color32::WHITE);
                         }
                         None => {
                             let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
@@ -201,7 +217,7 @@ impl App {
                         }
                     },
                     None => {
-                        painter.rect_filled(square.shrink(size * 0.08), 2.0, CELL_EMPTY);
+                        painter.rect_filled(square.shrink(frame.min_elem() * 0.08), 2.0, CELL_EMPTY);
                     }
                 }
                 label(&painter, &file_name(path), cell, square.bottom() + 2.0);
@@ -217,6 +233,8 @@ impl App {
         let ahead = last * grid.columns..((last + page) * grid.columns).min(n);
         let back = first.saturating_sub(page / 2 + 1) * grid.columns..first * grid.columns;
         for i in ahead.chain(back) {
+            let ratio = gallery.cache.get(&self.files[i]).and_then(|t| t.ratio());
+            let side = gallery::side_needed(frame_px, fill, ratio);
             if gallery.needs(&self.files[i], side) {
                 requests.push(Request { path: self.files[i].clone(), side });
             }

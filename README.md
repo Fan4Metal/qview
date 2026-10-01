@@ -64,7 +64,7 @@ The gallery is opened with `G`, `Enter`, a double click on the image or the tool
 | Thumbnail size | the slider above the grid, `+` / `-`, `Ctrl+wheel` |
 | Back to the image | `Esc` |
 
-The selected thumbnail is the current image: deletion, copying and Show in Explorer apply to it, also from the context menu of a thumbnail. Thumbnails are taken from the Windows thumbnail cache, which Explorer fills too, so a folder seen before appears at once; for formats Windows has no thumbnails of, qview makes them itself. The image under the pointer and the selected one are decoded in advance, so a double click shows the image without delay. The thumbnail size and the width of the tree are kept between runs.
+The selected thumbnail is the current image: deletion, copying and Show in Explorer apply to it, also from the context menu of a thumbnail. Thumbnails are taken from the Windows thumbnail cache, which Explorer fills too, so a folder seen before appears at once; for formats Windows has no thumbnails of, qview makes them itself. The image under the pointer and the selected one are decoded in advance, so a double click shows the image without delay. The list above the grid sets the proportions of the cells: 1:1, 4:3, 3:2, 16:9 or the portrait 3:4, 2:3, 9:16; the slider sets their long side. The "Fill cells" check box makes the thumbnails fill their cells, with the edges of the images cropped; otherwise each image is shown whole. The thumbnail size, these choices and the width of the tree are kept between runs.
 
 ## Usage
 
