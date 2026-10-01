@@ -44,6 +44,8 @@ pub enum Cmd {
     Refresh,
     ToggleToolbar,
     ToggleStatusBar,
+    /// The next images keep the zoom and the panning, or no longer do.
+    KeepZoom,
     Shortcuts,
     About,
     Associations,
@@ -87,6 +89,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::F if letter || (m.ctrl && m.shift && !m.alt) => FullScreen,
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
+        Key::L if letter => KeepZoom,
         Key::G if letter => Gallery,
         Key::Enter if plain && !m.shift => Gallery,
         Key::W if m.ctrl && !m.alt => Close,
@@ -208,6 +211,8 @@ mod tests {
         assert_eq!(command(Key::G, NONE, false), Some(Cmd::Gallery));
         assert_eq!(command(Key::Enter, NONE, false), Some(Cmd::Gallery));
         assert_eq!(command(Key::Enter, NONE, true), None);
+        assert_eq!(command(Key::L, NONE, false), Some(Cmd::KeepZoom));
+        assert_eq!(command(Key::L, NONE, true), None);
     }
 
     #[test]

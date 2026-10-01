@@ -21,6 +21,7 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ("2  Num *", tr!("Fit image to window", "Вписать в окно")),
         ("3", tr!("Fill the window (enlarge too)", "Заполнить окно (и с увеличением)")),
         ("4", tr!("Fill the entire window (crops)", "Заполнить окно целиком (с обрезкой)")),
+        ("L", tr!("Keep zoom and position for the next images", "Сохранять масштаб и положение для следующих")),
         ("←  →  ↑  ↓", tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
         (tr!("Drag", "Перетаскивание"), tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
         ("[  ]  Ctrl+Alt+←  Ctrl+Alt+→", tr!("Rotate left / right (view only)", "Повернуть влево / вправо (только просмотр)")),

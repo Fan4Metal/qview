@@ -57,11 +57,14 @@ pub struct View {
     /// Centre of the image relative to the centre of the viewport, in
     /// points.
     pub offset: Vec2,
+    /// The next image keeps the zoom and the panning (L): a series of
+    /// photos is compared at the same place and scale.
+    pub keep: bool,
 }
 
 impl Default for View {
     fn default() -> Self {
-        Self { zoom: Zoom::Fit, mode: Zoom::Fit, turns: 0, offset: Vec2::ZERO }
+        Self { zoom: Zoom::Fit, mode: Zoom::Fit, turns: 0, offset: Vec2::ZERO, keep: false }
     }
 }
 
@@ -108,9 +111,14 @@ pub fn mip_level(scale: f32) -> u32 {
 
 impl View {
     /// The view for the next image: rotation and panning are dropped, a
-    /// zoom chosen by steps goes back to the mode.
+    /// zoom chosen by steps goes back to the mode; with `keep`, only the
+    /// rotation is dropped (the scale is in the file's pixels, so photos
+    /// of a series show the same part at the same size).
     pub fn next_image(&mut self) {
         self.turns = 0;
+        if self.keep {
+            return;
+        }
         self.offset = Vec2::ZERO;
         if let Zoom::Scale(_) = self.zoom {
             self.zoom = self.mode;
@@ -344,6 +352,19 @@ mod tests {
         let after = v.place(size, viewport(), 1.0);
         let moved = after.min + image_point * after.width() - anchor;
         assert!(moved.length() < 1.0, "{moved:?}");
+    }
+
+    #[test]
+    fn kept_zoom_and_panning_survive_the_next_image() {
+        let mut v = View { zoom: Zoom::Scale(2.0), turns: 1, offset: vec2(-300.0, 40.0), keep: true, ..View::default() };
+        v.next_image();
+        assert_eq!((v.zoom, v.turns, v.offset), (Zoom::Scale(2.0), 0, vec2(-300.0, 40.0)));
+        // A smaller image: the panning is limited to its edges.
+        let rect = v.place(vec2(1200.0, 800.0), viewport(), 1.0);
+        assert_eq!(v.offset, vec2(-300.0, 40.0));
+        assert_eq!(rect.right(), 1000.0 - 300.0 + 1200.0 - 500.0);
+        v.place(vec2(1200.0, 300.0), viewport(), 1.0);
+        assert_eq!(v.offset, vec2(-300.0, 0.0));
     }
 
     #[test]

@@ -39,6 +39,7 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Fit to window (shrink only) | `2`, numpad `*` |
 | Fill the window (enlarge too, proportions kept) | `3` |
 | Fill the entire window (the edges are cropped) | `4` |
+| Keep the zoom and position for the next images (on / off) | `L` |
 | Scroll a zoomed image | arrow keys, dragging with the left button |
 | Rotate left / right (view only) | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
 | Full screen | `F`, `Ctrl+Shift+F`, middle click |
@@ -89,7 +90,7 @@ qview.exe --unregister
 
 The registration refers to the location of `qview.exe`; after the program is moved, it is registered again.
 
-The zoom mode chosen with `1`–`4` applies to the following images as well, also after zooming in or out by steps. The window position and size, the visibility of the toolbar and the status bar, the background colour and the zoom mode are kept in `%APPDATA%\qview\data\app.ron`.
+The zoom mode chosen with `1`–`4` applies to the following images as well, also after zooming in or out by steps. With `L` (View → Keep Zoom and Position) the following images keep the zoom set by steps and the scrolled position instead, so that a series of photos is compared at the same place and scale; the status bar marks the zoom as kept. This choice is not kept between runs. The window position and size, the visibility of the toolbar and the status bar, the background colour and the zoom mode are kept in `%APPDATA%\qview\data\app.ron`.
 
 ## Building
 

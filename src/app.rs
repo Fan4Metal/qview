@@ -740,6 +740,14 @@ impl App {
             }
             Cmd::ToggleToolbar => self.show_toolbar = !self.show_toolbar,
             Cmd::ToggleStatusBar => self.show_status_bar = !self.show_status_bar,
+            Cmd::KeepZoom => {
+                self.view.keep = !self.view.keep;
+                self.notice(if self.view.keep {
+                    tr!("The next images keep the zoom and position".into(), "Следующие изображения сохранят масштаб и положение".into())
+                } else {
+                    tr!("The next images open in the zoom mode".into(), "Следующие изображения откроются в режиме масштаба".into())
+                });
+            }
             Cmd::Shortcuts | Cmd::About | Cmd::Associations => {
                 self.dialog = Some(match cmd {
                     Cmd::About => Dialog::About,

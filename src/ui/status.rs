@@ -35,7 +35,12 @@ impl App {
                 fields.push(format!("{}x{}x{}b {}", m.width, m.height, m.bits, m.format));
                 modified(&mut fields, m.modified);
                 if !self.gallery_open {
-                    fields.push(format::zoom(self.view.scale(picture.size(), self.viewport, ppp)));
+                    let zoom = format::zoom(self.view.scale(picture.size(), self.viewport, ppp));
+                    fields.push(if self.view.keep {
+                        tr!(format!("{zoom} (kept)"), format!("{zoom} (сохраняется)"))
+                    } else {
+                        zoom
+                    });
                 }
             }
             (_, Some(Slot::Failed(e)), _) => fields.push(e.clone()),
