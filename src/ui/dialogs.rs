@@ -3,6 +3,10 @@
 use egui::{Align, Key, Layout, RichText, Ui};
 
 use crate::app::{App, Dialog, file_name};
+use crate::i18n::LangChoice;
+
+/// Width of the language list in About, enough for its longest entry.
+const LANG_WIDTH: f32 = 220.0;
 
 /// The key bindings as the Shortcuts dialog lists them.
 fn shortcuts() -> Vec<(&'static str, &'static str)> {
@@ -124,6 +128,32 @@ impl App {
                 };
                 ui.add_space(4.0);
                 ui.weak(tr!("Keyboard shortcuts: F1", "Сочетания клавиш: F1"));
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                // As in disk_flashlight: the label over the list, both
+                // centred; a fixed width keeps the list from jumping when
+                // the language changes.
+                ui.weak(tr!("Interface language", "Язык интерфейса"));
+                let mut choice = self.lang;
+                // A combo box lays itself out left to right, ignoring the
+                // centring: indented by hand (`width` is its outer width).
+                ui.horizontal(|ui| {
+                    ui.add_space(((ui.available_width() - LANG_WIDTH) / 2.0).max(0.0));
+                    egui::ComboBox::from_id_salt("language")
+                        .selected_text(choice.label())
+                        .width(LANG_WIDTH)
+                        .show_ui(ui, |ui| {
+                            for c in LangChoice::ALL {
+                                ui.selectable_value(&mut choice, c, c.label());
+                            }
+                        });
+                });
+                if choice != self.lang {
+                    self.lang = choice;
+                    crate::i18n::set_lang(choice.resolve());
+                }
+                ui.add_space(4.0);
             });
             closed
         });

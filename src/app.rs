@@ -21,6 +21,7 @@ use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureHandle, V
 
 use crate::folder::{self, Scan};
 use crate::gallery::{self, Gallery, Scroll};
+use crate::i18n::LangChoice;
 use crate::input::{Arrow, Cmd, Wheel};
 use crate::loader::{Decoded, Loader, Meta, Pixels};
 use crate::texture::Texture;
@@ -80,6 +81,7 @@ const THUMB_SIZE_KEY: &str = "thumb_size";
 const TREE_WIDTH_KEY: &str = "tree_width";
 const THUMB_FILL_KEY: &str = "thumb_fill";
 const THUMB_ASPECT_KEY: &str = "thumb_aspect";
+const LANGUAGE_KEY: &str = "language";
 
 #[derive(Clone)]
 pub struct Picture {
@@ -155,6 +157,8 @@ pub struct App {
     pub thumb_fill: bool,
     /// Proportions of the gallery's cells, one of `gallery::ASPECTS`.
     pub thumb_aspect: f32,
+    /// Interface language, chosen in About.
+    pub lang: LangChoice,
     deleting: Option<mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     pub dialog: Option<Dialog>,
     /// `dialog` was opened this frame.
@@ -199,6 +203,13 @@ struct Cloak {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, loader: Loader, initial: Option<PathBuf>) -> Self {
         let ctx = &cc.egui_ctx;
+        // `main` started in the language of Windows.
+        let lang = cc
+            .storage
+            .and_then(|s| s.get_string(LANGUAGE_KEY))
+            .and_then(|v| LangChoice::from_name(&v))
+            .unwrap_or_default();
+        crate::i18n::set_lang(lang.resolve());
         log::debug!("window created at {:.0} ms", crate::since_start_ms());
         let gl = cc.gl.clone().expect("the glow renderer");
         if log::log_enabled!(log::Level::Debug) {
@@ -284,6 +295,7 @@ impl App {
                 .and_then(|s| s.get_string(THUMB_ASPECT_KEY))
                 .and_then(|v| gallery::ASPECTS.iter().find(|(n, _)| *n == v).map(|(_, a)| *a))
                 .unwrap_or(1.0),
+            lang,
             deleting: None,
             dialog: None,
             dialog_fresh: false,
@@ -1065,6 +1077,7 @@ impl eframe::App for App {
         storage.set_string(THUMB_FILL_KEY, self.thumb_fill.to_string());
         let aspect = gallery::ASPECTS.iter().find(|(_, a)| *a == self.thumb_aspect).map_or("1:1", |(n, _)| n);
         storage.set_string(THUMB_ASPECT_KEY, aspect.to_string());
+        storage.set_string(LANGUAGE_KEY, self.lang.name().to_string());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

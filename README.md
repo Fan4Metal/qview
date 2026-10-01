@@ -15,7 +15,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
 - Deletion moves the file to the Recycle Bin after a confirmation.
 - The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour.
-- The interface is in Russian when Windows is in Russian, and in English otherwise.
+- The interface is in Russian when Windows is in Russian, and in English otherwise; another language is chosen in Help → About qview.
 
 Supported formats: JPEG, PNG, GIF (first frame), WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM).
 

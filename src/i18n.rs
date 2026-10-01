@@ -1,5 +1,6 @@
-//! Interface language: Russian when Windows shows its interface in Russian,
-//! English otherwise. There is no setting for it.
+//! Interface language: English or Russian, taken from the language of the
+//! Windows interface unless chosen in the About window (as in
+//! disk_flashlight).
 //!
 //! Strings stay next to the code that shows them, both languages together:
 //! `tr!("Delete", "Удалить")` gives the one of the current language (and
@@ -14,9 +15,59 @@ pub enum Lang {
     Ru,
 }
 
+/// The language as kept in the settings: a fixed one, or the system's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LangChoice {
+    #[default]
+    System,
+    En,
+    Ru,
+}
+
+impl LangChoice {
+    pub const ALL: [LangChoice; 3] = [LangChoice::System, LangChoice::En, LangChoice::Ru];
+
+    pub fn resolve(self) -> Lang {
+        match self {
+            LangChoice::System => system_lang(),
+            LangChoice::En => Lang::En,
+            LangChoice::Ru => Lang::Ru,
+        }
+    }
+
+    /// Name in the settings.
+    pub fn name(self) -> &'static str {
+        match self {
+            LangChoice::System => "system",
+            LangChoice::En => "en",
+            LangChoice::Ru => "ru",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<LangChoice> {
+        Self::ALL.into_iter().find(|c| c.name() == name)
+    }
+
+    /// As listed in the About window: the languages in their own language,
+    /// so that they can be found whatever the interface shows.
+    pub fn label(self) -> String {
+        let own = |lang| match lang {
+            Lang::En => "English",
+            Lang::Ru => "Русский",
+        };
+        match self {
+            LangChoice::System => {
+                let own = own(system_lang());
+                crate::tr!(format!("As in Windows ({own})"), format!("Как в Windows ({own})"))
+            }
+            LangChoice::En | LangChoice::Ru => own(self.resolve()).into(),
+        }
+    }
+}
+
 static LANG: AtomicU8 = AtomicU8::new(0);
 
-/// The language the interface is shown in.
+/// The language the interface is shown in now.
 pub fn lang() -> Lang {
     match LANG.load(Relaxed) {
         1 => Lang::Ru,
@@ -46,4 +97,18 @@ macro_rules! tr {
             $crate::i18n::Lang::Ru => $ru,
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn choice_names_round_trip() {
+        for c in LangChoice::ALL {
+            assert_eq!(LangChoice::from_name(c.name()), Some(c));
+        }
+        assert_eq!(LangChoice::from_name("de"), None);
+        assert_eq!(LangChoice::Ru.label(), "Русский");
+    }
 }
