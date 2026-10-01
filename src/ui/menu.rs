@@ -28,7 +28,7 @@ impl App {
         }
     }
 
-    fn item(&mut self, ui: &mut Ui, text: String, shortcut: &str, cmd: Cmd, enabled: bool) {
+    pub(super) fn item(&mut self, ui: &mut Ui, text: String, shortcut: &str, cmd: Cmd, enabled: bool) {
         if ui.add_enabled(enabled, Button::new(text).shortcut_text(shortcut)).clicked() {
             self.clicked.push(cmd);
             ui.close();
@@ -70,6 +70,8 @@ impl App {
 
     fn view_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
+        self.check_item(ui, tr!("Gallery", "Галерея").into(), "G", Cmd::Gallery, self.gallery_open);
+        ui.separator();
         self.item(ui, tr!("Previous", "Предыдущее").into(), "Page Up", Cmd::Prev, e.prev);
         self.item(ui, tr!("Next", "Следующее").into(), "Page Down", Cmd::Next, e.next);
         self.item(ui, tr!("First", "Первое").into(), "Home", Cmd::First, e.any);
@@ -124,6 +126,8 @@ impl App {
     /// Right click on the image.
     pub(crate) fn context_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
+        self.item(ui, tr!("Gallery", "Галерея").into(), "G", Cmd::Gallery, true);
+        ui.separator();
         self.item(ui, tr!("Previous", "Предыдущее").into(), "Page Up", Cmd::Prev, e.prev);
         self.item(ui, tr!("Next", "Следующее").into(), "Page Down", Cmd::Next, e.next);
         ui.separator();

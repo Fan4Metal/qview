@@ -20,16 +20,29 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ("←  →  ↑  ↓", tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
         (tr!("Drag", "Перетаскивание"), tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
         ("[  ]  Ctrl+Alt+←  Ctrl+Alt+→", tr!("Rotate left / right (view only)", "Повернуть влево / вправо (только просмотр)")),
+        (tr!("F  Middle click", "F  Средняя кнопка"), tr!("Full screen", "Полный экран")),
         (
-            tr!("F  Double click  Middle click", "F  Двойной щелчок  Средняя кнопка"),
-            tr!("Full screen", "Полный экран"),
+            tr!("G  Enter  Double click", "G  Enter  Двойной щелчок"),
+            tr!("Gallery: open, or show the selected image", "Галерея: открыть или показать выбранное"),
         ),
+        (
+            tr!("Gallery: click  arrows  Page Up/Down", "Галерея: щелчок  стрелки  Page Up/Down"),
+            tr!("Select an image", "Выбрать изображение"),
+        ),
+        (
+            tr!("Gallery: +  -  Ctrl+Wheel", "Галерея: +  -  Ctrl+колесо"),
+            tr!("Thumbnail size", "Размер миниатюр"),
+        ),
+        (tr!("Gallery: double click", "Галерея: двойной щелчок"), tr!("Show the image", "Показать изображение")),
         ("T  B", tr!("Show or hide the toolbar / status bar", "Панель инструментов / строка состояния")),
         ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
         ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
         ("Ctrl+O", tr!("Open a file", "Открыть файл")),
         ("F5", tr!("Reload the image and the folder", "Перечитать изображение и папку")),
-        ("Esc  Ctrl+W", tr!("Leave full screen / close", "Выйти из полного экрана / закрыть")),
+        (
+            "Esc  Ctrl+W",
+            tr!("Leave full screen / the gallery / close", "Выйти из полного экрана / галереи / закрыть"),
+        ),
     ]
 }
 

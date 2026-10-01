@@ -179,6 +179,15 @@ fn format_name(format: ImageFormat) -> &'static str {
 /// Read and decode `path`, turned upright by its EXIF orientation and
 /// shrunk to `max_side` if larger.
 pub fn decode(path: &Path, max_side: usize) -> Result<(Pixels, Meta), String> {
+    let (mut img, meta) = read(path)?;
+    if img.width() as usize > max_side || img.height() as usize > max_side {
+        img = img.thumbnail(max_side as u32, max_side as u32);
+    }
+    Ok((to_pixels(img), meta))
+}
+
+/// Read and decode `path`, turned upright by its EXIF orientation.
+pub fn read(path: &Path) -> Result<(DynamicImage, Meta), String> {
     use std::os::windows::fs::MetadataExt;
     // One read of the whole file is faster than buffered reads through
     // the decoder.
@@ -199,22 +208,18 @@ pub fn decode(path: &Path, max_side: usize) -> Result<(Pixels, Meta), String> {
     let bits = decoder.original_color_type().bits_per_pixel();
     let mut img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
     img.apply_orientation(orientation);
-    let (width, height) = (img.width(), img.height());
-    if width as usize > max_side || height as usize > max_side {
-        img = img.thumbnail(max_side as u32, max_side as u32);
-    }
     let meta = Meta {
-        width,
-        height,
+        width: img.width(),
+        height: img.height(),
         bits,
         format: format_name(format),
         file_size: bytes.len() as u64,
         modified,
     };
-    Ok((to_pixels(img), meta))
+    Ok((img, meta))
 }
 
-fn to_pixels(img: DynamicImage) -> Pixels {
+pub fn to_pixels(img: DynamicImage) -> Pixels {
     let (width, height) = (img.width(), img.height());
     let base = to_bgra(img);
     let levels = mip_levels(base, width as usize, height as usize);
@@ -244,7 +249,7 @@ fn to_bgra(img: DynamicImage) -> Vec<u8> {
 }
 
 /// `base` (`w` x `h` BGRA) followed by its mip levels down to 1x1.
-fn mip_levels(base: Vec<u8>, w: usize, h: usize) -> Vec<Vec<u8>> {
+pub fn mip_levels(base: Vec<u8>, w: usize, h: usize) -> Vec<Vec<u8>> {
     let mut levels = vec![base];
     let (mut w, mut h) = (w, h);
     while w > 1 || h > 1 {

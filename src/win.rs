@@ -3,8 +3,8 @@
 
 use std::cmp::Ordering;
 use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
-use std::path::Path;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
 
 /// `s` as a NUL-terminated UTF-16 string for Win32.
 pub fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
@@ -190,6 +190,62 @@ fn dwm_set_bool(hwnd: isize, attribute: u32, on: bool) {
     unsafe {
         DwmSetWindowAttribute(hwnd, attribute, (&raw const value).cast(), 4);
     }
+}
+
+/// Initialise COM on this thread (single-threaded apartment), as the
+/// shell's thumbnail providers and `SHGetFileInfoW` need. Once per thread;
+/// the thread keeps it until it ends.
+pub fn com_init() {
+    use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
+    unsafe {
+        CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32);
+    }
+}
+
+/// The user's Pictures and Desktop folders, those that exist.
+pub fn known_folders() -> Vec<PathBuf> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_Pictures, SHGetKnownFolderPath};
+    let mut out = Vec::new();
+    for id in [FOLDERID_Pictures, FOLDERID_Desktop] {
+        let mut path = std::ptr::null_mut();
+        let hr = unsafe { SHGetKnownFolderPath(&id, 0, std::ptr::null_mut(), &mut path) };
+        if hr >= 0 && !path.is_null() {
+            let len = (0..).take_while(|&i| unsafe { *path.add(i) } != 0).count();
+            let wide = unsafe { std::slice::from_raw_parts(path, len) };
+            out.push(PathBuf::from(std::ffi::OsString::from_wide(wide)));
+        }
+        unsafe { CoTaskMemFree(path.cast()) };
+    }
+    out.retain(|p| p.is_dir());
+    out
+}
+
+/// The roots of the drives, `C:\` and on.
+pub fn drives() -> Vec<PathBuf> {
+    let mask = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
+    (0..26u8).filter(|i| mask & (1 << i) != 0).map(|i| PathBuf::from(format!("{}:\\", (b'A' + i) as char))).collect()
+}
+
+/// The name Explorer shows for `path`: `Media (H:)` for a drive, the
+/// localised name of a known folder (`Изображения`). It may wait for a
+/// slow or disconnected drive: call it off the UI thread, with COM
+/// initialised (`com_init`).
+pub fn display_name(path: &Path) -> Option<String> {
+    use windows_sys::Win32::UI::Shell::{SHFILEINFOW, SHGFI_DISPLAYNAME, SHGetFileInfoW};
+    let wide = wide(path);
+    let mut info: SHFILEINFOW = unsafe { std::mem::zeroed() };
+    let ok = unsafe { SHGetFileInfoW(wide.as_ptr(), 0, &mut info, size_of::<SHFILEINFOW>() as u32, SHGFI_DISPLAYNAME) };
+    let len = info.szDisplayName.iter().position(|&c| c == 0).unwrap_or(0);
+    (ok != 0 && len > 0).then(|| String::from_utf16_lossy(&info.szDisplayName[..len]))
+}
+
+/// Whether a file with `attributes` (from `MetadataExt::file_attributes`)
+/// is a folder Explorer shows: not hidden.
+pub fn is_visible_folder(attributes: u32) -> bool {
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    attributes & FILE_ATTRIBUTE_DIRECTORY != 0 && attributes & FILE_ATTRIBUTE_HIDDEN == 0
 }
 
 /// Show `text` in a system message box with an error icon, waiting until

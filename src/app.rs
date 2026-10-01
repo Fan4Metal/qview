@@ -7,6 +7,9 @@
 //! in `cache`, which keeps the current file and its two neighbours; the
 //! neighbours are decoded ahead ([`App::update_wanted`]), so the next image
 //! usually appears at once.
+//!
+//! The gallery (`gallery`, opened with G, Enter or a double click) shows the
+//! same folder and current file as a grid of thumbnails.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,6 +20,7 @@ use std::time::{Duration, Instant};
 use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureHandle, Vec2};
 
 use crate::folder::{self, Scan};
+use crate::gallery::{self, Gallery, Scroll};
 use crate::input::{Arrow, Cmd, Wheel};
 use crate::loader::{Decoded, Loader, Meta, Pixels};
 use crate::texture::Texture;
@@ -54,6 +58,10 @@ pub fn ink_on(bg: Color32) -> Color32 {
     if luma > 140.0 { Color32::from_gray(70) } else { Color32::from_gray(170) }
 }
 
+/// A double click on the image this soon after leaving the gallery belongs
+/// to the clicks on a thumbnail that left it (a triple click), not a
+/// request to go back.
+const DOUBLE_CLICK_GUARD: Duration = Duration::from_millis(600);
 /// How long a notice stays in the status bar.
 const NOTICE_TIME: Duration = Duration::from_secs(4);
 /// A window cloaked at start-up is shown after this at the latest.
@@ -72,6 +80,8 @@ const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
 const BACKGROUND_KEY: &str = "background";
 const ZOOM_KEY: &str = "zoom";
+const THUMB_SIZE_KEY: &str = "thumb_size";
+const TREE_WIDTH_KEY: &str = "tree_width";
 
 #[derive(Clone)]
 pub struct Picture {
@@ -104,7 +114,8 @@ pub struct App {
     gl: Arc<glow::Context>,
     /// Images of the folder of `current`, in Explorer's order.
     pub files: Vec<PathBuf>,
-    dir: Option<PathBuf>,
+    /// The folder of `files`.
+    pub dir: Option<PathBuf>,
     /// The listing of `dir` while it runs.
     pub scan: Option<Scan>,
     /// The file the user is on.
@@ -130,12 +141,22 @@ pub struct App {
     pub background: Color32,
     /// The file the delete confirmation asks about.
     pub confirm_delete: Option<PathBuf>,
+    /// Made when the gallery is first opened.
+    pub gallery: Option<Gallery>,
+    /// The gallery is shown instead of the image.
+    pub gallery_open: bool,
+    /// When the gallery was last left (see `DOUBLE_CLICK_GUARD`).
+    left_gallery: Option<Instant>,
+    /// Size of the gallery's thumbnails, in points.
+    pub thumb_size: f32,
+    /// Width of the gallery's folder tree, in points.
+    pub tree_width: f32,
     deleting: Option<mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     pub dialog: Option<Dialog>,
     /// `dialog` was opened this frame.
     pub dialog_fresh: bool,
     notice: Option<(String, Instant)>,
-    wheel: Wheel,
+    pub wheel: Wheel,
     /// Direction of the last move, to decode ahead in that direction first.
     forward: bool,
     title: String,
@@ -218,6 +239,7 @@ impl App {
         }
         let flag = |key: &str| cc.storage.and_then(|s| s.get_string(key)).as_deref() != Some("false");
         let mode = cc.storage.and_then(|s| s.get_string(ZOOM_KEY)).and_then(|v| Zoom::from_name(&v)).unwrap_or(Zoom::Fit);
+        let number = |key: &str| cc.storage.and_then(|s| s.get_string(key)).and_then(|v| v.parse::<f32>().ok());
         let mut app = Self {
             loader,
             gl,
@@ -241,6 +263,13 @@ impl App {
                 .and_then(|v| background_from_hex(&v))
                 .unwrap_or(DEFAULT_BACKGROUND),
             confirm_delete: None,
+            gallery: None,
+            gallery_open: false,
+            left_gallery: None,
+            thumb_size: number(THUMB_SIZE_KEY)
+                .unwrap_or(gallery::DEFAULT_SIZE)
+                .clamp(gallery::MIN_SIZE, gallery::MAX_SIZE),
+            tree_width: number(TREE_WIDTH_KEY).unwrap_or(240.0).clamp(140.0, 640.0),
             deleting: None,
             dialog: None,
             dialog_fresh: false,
@@ -262,15 +291,17 @@ impl App {
         app
     }
 
-    /// Show `path`, a file or the first image of a folder, and list its
-    /// folder for browsing.
+    /// Show `path`, a file, and list its folder for browsing; a folder is
+    /// shown in the gallery.
     pub fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
         let path = std::path::absolute(&path).unwrap_or(path);
         if path.is_dir() {
-            self.set_current(None);
-            self.shown = None;
-            self.start_scan(ctx, path, None);
+            self.open_folder(ctx, path);
+            self.enter_gallery(ctx);
             return;
+        }
+        if self.gallery_open {
+            self.leave_gallery();
         }
         let dir = path.parent().map(Path::to_path_buf);
         let listed =
@@ -281,6 +312,35 @@ impl App {
             && let Some(dir) = dir
         {
             self.start_scan(ctx, dir, Some(path));
+        }
+    }
+
+    /// List `dir`; its first image becomes the current one.
+    pub fn open_folder(&mut self, ctx: &egui::Context, dir: PathBuf) {
+        if self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir)) {
+            return;
+        }
+        self.set_current(None);
+        self.start_scan(ctx, dir, None);
+    }
+
+    /// Show the gallery of the folder of the current file.
+    fn enter_gallery(&mut self, ctx: &egui::Context) {
+        let gallery = self.gallery.get_or_insert_with(|| Gallery::new(ctx));
+        if let Some(dir) = &self.dir {
+            gallery.tree.reveal(dir);
+        }
+        gallery.scroll = Some(Scroll::Centre);
+        self.gallery_open = true;
+    }
+
+    /// Back to the image, the current one.
+    pub fn leave_gallery(&mut self) {
+        self.gallery_open = false;
+        self.left_gallery = Some(Instant::now());
+        if let Some(gallery) = &mut self.gallery {
+            gallery.want(Vec::new());
+            gallery.hovered = None;
         }
     }
 
@@ -297,7 +357,7 @@ impl App {
     }
 
     /// Go to `files[i]`.
-    fn go(&mut self, i: usize) {
+    pub fn go(&mut self, i: usize) {
         if self.index == Some(i) {
             return;
         }
@@ -351,6 +411,17 @@ impl App {
     /// neighbours are decoded.
     fn wanted(&self) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = self.current.iter().cloned().collect();
+        if self.gallery_open {
+            // The selected image, and the one under the pointer, which is
+            // likely to be clicked; the thumbnails need the threads more.
+            if let Some((path, since)) = self.gallery.as_ref().and_then(|g| g.hovered.as_ref())
+                && since.elapsed() >= gallery::HOVER_DELAY
+                && !paths.contains(path)
+            {
+                paths.push(path.clone());
+            }
+            return paths;
+        }
         let Some(i) = self.index else { return paths };
         let dir: isize = if self.forward { 1 } else { -1 };
         let at = |offset: isize| usize::try_from(i as isize + offset).ok().and_then(|j| self.files.get(j)).cloned();
@@ -556,12 +627,16 @@ impl App {
 
     /// Carry out `cmd`.
     fn run(&mut self, ctx: &egui::Context, frame: &eframe::Frame, cmd: Cmd) {
+        if self.gallery_open && self.run_in_gallery(ctx, cmd) {
+            return;
+        }
         let ppp = ctx.pixels_per_point();
         let viewport = self.viewport;
         let size = self.shown.as_ref().map(|(_, p)| p.size());
         match cmd {
-            Cmd::Next => self.step(1),
-            Cmd::Prev => self.step(-1),
+            Cmd::Next | Cmd::PageDown => self.step(1),
+            Cmd::Prev | Cmd::PageUp => self.step(-1),
+            Cmd::Gallery => self.enter_gallery(ctx),
             Cmd::First => self.go(0),
             Cmd::Last => self.go(self.files.len().saturating_sub(1)),
             Cmd::Arrow(arrow) => {
@@ -635,6 +710,49 @@ impl App {
         }
     }
 
+    /// Carry out `cmd` the gallery's way; false for the commands that work
+    /// as in the viewer.
+    fn run_in_gallery(&mut self, ctx: &egui::Context, cmd: Cmd) -> bool {
+        let Some(gallery) = &self.gallery else { return false };
+        let (columns, page) = (gallery.columns, gallery.page_rows as isize);
+        let rows = |app: &mut Self, rows: isize| {
+            if let Some(i) = app.index {
+                app.go(gallery::move_rows(i, rows, columns, app.files.len()));
+            }
+        };
+        match cmd {
+            Cmd::Arrow(Arrow::Left) => self.step(-1),
+            Cmd::Arrow(Arrow::Right) => self.step(1),
+            Cmd::Arrow(Arrow::Up) => rows(self, -1),
+            Cmd::Arrow(Arrow::Down) => rows(self, 1),
+            Cmd::PageUp => rows(self, -page),
+            Cmd::PageDown => rows(self, page),
+            Cmd::ZoomIn | Cmd::ZoomOut => {
+                self.thumb_size = gallery::step_size(self.thumb_size, cmd == Cmd::ZoomIn);
+                if let Some(gallery) = &mut self.gallery {
+                    gallery.scroll = Some(Scroll::Visible);
+                }
+            }
+            // Nothing to zoom or turn.
+            Cmd::Actual | Cmd::Fit | Cmd::Fill | Cmd::Cover | Cmd::RotateLeft | Cmd::RotateRight => {}
+            Cmd::Gallery => self.leave_gallery(),
+            Cmd::Escape if !Self::is_fullscreen(ctx) => self.leave_gallery(),
+            Cmd::Refresh => {
+                // The thumbnails and the tree too; the folder is read again
+                // as in the viewer.
+                if let Some(gallery) = &mut self.gallery {
+                    gallery.forget(&self.files);
+                    if let Some(dir) = &self.dir {
+                        gallery.tree.refresh(dir);
+                    }
+                }
+                return false;
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn pick_file(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let mut dialog = rfd::FileDialog::new()
             .set_title(tr!("Open image", "Открыть изображение"))
@@ -660,7 +778,17 @@ impl App {
         let response = ui.allocate_rect(rect, Sense::CLICK | Sense::DRAG);
         let painter = ui.painter_at(rect);
 
-        if let Some((_, picture)) = self.shown.clone() {
+        // Still decoding the current image.
+        let waiting = self.current.as_ref().is_some_and(|c| {
+            !self.cache.contains_key(c) && self.shown.as_ref().is_none_or(|(p, _)| p != c)
+        }) || (self.current.is_none() && self.scan.is_some());
+        if let Some((texture, size)) = self.placeholder().filter(|_| waiting) {
+            // Its thumbnail, where the image will be, rather than the
+            // previous image.
+            let mut view = self.view;
+            view.next_image();
+            view::paint(&painter, texture, view.place(size, rect, ppp), 0);
+        } else if let Some((_, picture)) = self.shown.clone() {
             let size = picture.size();
             if response.dragged_by(PointerButton::Primary) {
                 self.view.pan(response.drag_delta(), size, rect, ppp);
@@ -687,10 +815,6 @@ impl App {
             }
         }
 
-        // Still decoding the current image.
-        let waiting = self.current.as_ref().is_some_and(|c| {
-            !self.cache.contains_key(c) && self.shown.as_ref().is_none_or(|(p, _)| p != c)
-        }) || (self.current.is_none() && self.scan.is_some());
         if waiting {
             let late = self.current_since.elapsed() > SPINNER_DELAY;
             if late {
@@ -701,7 +825,10 @@ impl App {
             }
         }
 
-        if response.double_clicked() || response.middle_clicked() {
+        if response.double_clicked() && self.left_gallery.is_none_or(|t| t.elapsed() > DOUBLE_CLICK_GUARD) {
+            self.clicked.push(Cmd::Gallery);
+        }
+        if response.middle_clicked() {
             self.clicked.push(Cmd::FullScreen);
         }
         // Windows sends the wheel to the window under the pointer, so it
@@ -726,6 +853,19 @@ impl App {
         response.context_menu(|ui| self.context_menu(ui));
     }
 
+    /// The gallery's thumbnail of the current image and the image's size,
+    /// to show while the image is decoded.
+    fn placeholder(&self) -> Option<(egui::TextureId, Vec2)> {
+        let thumb = self.gallery.as_ref()?.cache.get(self.current.as_ref()?)?;
+        let texture = thumb.texture.as_ref()?;
+        let size = if thumb.width > 0 && thumb.height > 0 {
+            egui::vec2(thumb.width as f32, thumb.height as f32)
+        } else {
+            egui::vec2(thumb.px[0] as f32, thumb.px[1] as f32)
+        };
+        Some((texture.id(), size))
+    }
+
     /// Show the cloaked window (see `Cloak`) once a frame of what it waits
     /// for has been presented: called before anything changes in this
     /// frame, so what is true now was painted in the previous one.
@@ -748,6 +888,9 @@ impl App {
     /// The current image, or its error, is what is on screen; with no
     /// current image, the folder being opened has been listed.
     fn current_on_screen(&self) -> bool {
+        if self.gallery_open {
+            return self.scan.is_none();
+        }
         match &self.current {
             None => self.scan.is_none(),
             Some(c) => {
@@ -772,16 +915,17 @@ impl App {
         );
         ui.add_space(18.0);
         ui.label(egui::RichText::new(tr!(
-            "Open an image with Ctrl+O or drop a file here",
-            "Откройте изображение: Ctrl+O или перетащите файл сюда"
+            "Open an image with Ctrl+O or drop a file here; G opens the gallery",
+            "Откройте изображение: Ctrl+O или перетащите файл сюда; G — галерея"
         ))
         .color(ink));
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
-        let title = match &self.current {
-            Some(p) => format!("{} - qview", file_name(p)),
-            None => "qview".into(),
+        let title = match (&self.current, &self.dir) {
+            (_, Some(dir)) if self.gallery_open => format!("{} - qview", file_name(dir)),
+            (Some(p), _) => format!("{} - qview", file_name(p)),
+            _ => "qview".into(),
         };
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -828,6 +972,9 @@ impl eframe::App for App {
         }
         self.poll_scan();
         self.poll_decoded(&ctx, frame);
+        if let Some(gallery) = &mut self.gallery {
+            gallery.poll(&self.gl, frame, &ctx);
+        }
         self.poll_delete();
         self.handle_drop(&ctx);
         self.sync_shown();
@@ -839,7 +986,7 @@ impl eframe::App for App {
             if let Some(id) = ctx.memory(|m| m.focused()) {
                 ctx.memory_mut(|m| m.surrender_focus(id));
             }
-            for cmd in crate::input::keys(&ctx) {
+            for cmd in crate::input::keys(&ctx, self.gallery_open) {
                 self.run(&ctx, frame, cmd);
             }
             self.sync_shown();
@@ -856,7 +1003,11 @@ impl eframe::App for App {
                 self.status_bar(root_ui);
             }
         }
-        egui::CentralPanel::no_frame().show(root_ui, |ui| self.image_area(ui));
+        if self.gallery_open {
+            self.gallery_ui(root_ui);
+        } else {
+            egui::CentralPanel::no_frame().show(root_ui, |ui| self.image_area(ui));
+        }
         self.dialogs(&ctx);
 
         let clicked = std::mem::take(&mut self.clicked);
@@ -882,6 +1033,9 @@ impl eframe::App for App {
         self.cache.clear();
         self.pending.clear();
         self.partial.clear();
+        if let Some(gallery) = &mut self.gallery {
+            gallery.clear();
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -889,6 +1043,8 @@ impl eframe::App for App {
         storage.set_string(STATUS_BAR_KEY, self.show_status_bar.to_string());
         storage.set_string(BACKGROUND_KEY, background_to_hex(self.background));
         storage.set_string(ZOOM_KEY, self.view.mode.name().unwrap_or("fit").to_string());
+        storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
+        storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

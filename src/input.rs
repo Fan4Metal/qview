@@ -47,6 +47,11 @@ pub enum Cmd {
     Shortcuts,
     About,
     Associations,
+    /// Opens the gallery, or leaves it for the selected image.
+    Gallery,
+    /// A page of the gallery up or down (Page Up / Page Down there).
+    PageUp,
+    PageDown,
 }
 
 /// The command of a key press with `m` held, if any. `repeat` is set for
@@ -82,6 +87,8 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::F if letter || (m.ctrl && m.shift && !m.alt) => FullScreen,
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
+        Key::G if letter => Gallery,
+        Key::Enter if plain && !m.shift => Gallery,
         Key::W if m.ctrl && !m.alt => Close,
         Key::O if m.ctrl && !m.alt => Open,
         Key::Delete if letter => Delete,
@@ -90,17 +97,28 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::F1 => Shortcuts,
         _ => return None,
     };
-    let repeats = matches!(cmd, Next | Prev | First | Last | Arrow(_) | ZoomIn | ZoomOut);
+    let repeats = matches!(cmd, Next | Prev | First | Last | Arrow(_) | ZoomIn | ZoomOut | PageUp | PageDown);
     (!repeat || repeats).then_some(cmd)
 }
 
-/// Commands of this frame's key presses.
-pub fn keys(ctx: &egui::Context) -> Vec<Cmd> {
+/// The command of a key press in the gallery: Page Up and Page Down move
+/// a page there, the other keys are the viewer's (see [`command`]).
+pub fn gallery_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
+    match key {
+        Key::PageUp if !m.ctrl && !m.alt => Some(Cmd::PageUp),
+        Key::PageDown if !m.ctrl && !m.alt => Some(Cmd::PageDown),
+        _ => command(key, m, repeat),
+    }
+}
+
+/// Commands of this frame's key presses, in the gallery or the viewer.
+pub fn keys(ctx: &egui::Context, gallery: bool) -> Vec<Cmd> {
+    let map = if gallery { gallery_command } else { command };
     ctx.input(|i| {
         i.events
             .iter()
             .filter_map(|e| match e {
-                Event::Key { key, pressed: true, repeat, modifiers, .. } => command(*key, *modifiers, *repeat),
+                Event::Key { key, pressed: true, repeat, modifiers, .. } => map(*key, *modifiers, *repeat),
                 Event::Text(t) if t == "*" => Some(Cmd::Fit),
                 Event::Copy => Some(Cmd::Copy),
                 _ => None,
@@ -179,6 +197,18 @@ mod tests {
         assert_eq!(command(Key::F, SHIFT, false), None);
         assert_eq!(command(Key::E, SHIFT, false), None);
         assert_eq!(command(Key::Delete, SHIFT, false), None);
+        assert_eq!(command(Key::G, NONE, false), Some(Cmd::Gallery));
+        assert_eq!(command(Key::Enter, NONE, false), Some(Cmd::Gallery));
+        assert_eq!(command(Key::Enter, NONE, true), None);
+    }
+
+    #[test]
+    fn gallery_keys() {
+        assert_eq!(gallery_command(Key::PageDown, NONE, true), Some(Cmd::PageDown));
+        assert_eq!(gallery_command(Key::PageUp, NONE, false), Some(Cmd::PageUp));
+        assert_eq!(gallery_command(Key::ArrowDown, NONE, false), Some(Cmd::Arrow(Arrow::Down)));
+        assert_eq!(gallery_command(Key::Enter, NONE, false), Some(Cmd::Gallery));
+        assert_eq!(command(Key::PageDown, NONE, false), Some(Cmd::Next));
     }
 
     #[test]

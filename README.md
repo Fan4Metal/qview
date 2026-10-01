@@ -9,6 +9,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - Start-up of about 0.2 s to the first image: decoding begins before the window is created and runs on background threads.
 - Instant browsing: the neighbours of the current image are decoded in advance.
 - Images are listed in the same order as in Explorer (numbers are compared as numbers).
+- The gallery shows the folder tree and the images of a folder as thumbnails (see [Gallery](#gallery)).
 - Downscaled images are smoothed with mipmaps; 100% shows one image pixel per screen pixel at any Windows display scaling.
 - The EXIF orientation of photos is applied.
 - The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
@@ -40,8 +41,9 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Fill the entire window (the edges are cropped) | `4` |
 | Scroll a zoomed image | arrow keys, dragging with the left button |
 | Rotate left / right (view only) | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
-| Full screen | `F`, `Ctrl+Shift+F`, double click, middle click |
-| Leave full screen / close | `Esc`; `Ctrl+W` and `Alt+F4` close |
+| Full screen | `F`, `Ctrl+Shift+F`, middle click |
+| Gallery | `G`, `Enter`, double click |
+| Leave full screen / the gallery / close | `Esc`; `Ctrl+W` and `Alt+F4` close |
 | Move to the Recycle Bin | `Delete` (`Enter` confirms, `Esc` cancels) |
 | Copy the file to the clipboard | `Ctrl+C` |
 | Open a file | `Ctrl+O`, or dropping a file onto the window |
@@ -49,7 +51,20 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Show or hide the toolbar / status bar | `T` / `B` |
 | List of shortcuts | `F1` |
 
-The arrow keys scroll an image that is larger than the window in that direction; otherwise they browse. Letter keys also work with the Russian keyboard layout. Double click switches to full screen.
+The arrow keys scroll an image that is larger than the window in that direction; otherwise they browse. Letter keys also work with the Russian keyboard layout.
+
+## Gallery
+
+The gallery is opened with `G`, `Enter`, a double click on the image or the toolbar button, and shows the folder of the current image: the folder tree on the left and the images as a grid of thumbnails on the right, under a bar with the path of the folder and the thumbnail size slider. The tree lists the Pictures and Desktop folders and the drives; a folder is shown by clicking it and expanded by clicking its arrow or double-clicking it.
+
+| Action | Keys and mouse |
+|---|---|
+| Select an image | click, arrow keys, `Page Up` / `Page Down`, `Home` / `End` |
+| Show the selected image | `Enter`, `G`, double click on a thumbnail |
+| Thumbnail size | the slider above the grid, `+` / `-`, `Ctrl+wheel` |
+| Back to the image | `Esc` |
+
+The selected thumbnail is the current image: deletion, copying and Show in Explorer apply to it, also from the context menu of a thumbnail. Thumbnails are taken from the Windows thumbnail cache, which Explorer fills too, so a folder seen before appears at once; for formats Windows has no thumbnails of, qview makes them itself. The image under the pointer and the selected one are decoded in advance, so a double click shows the image without delay. The thumbnail size and the width of the tree are kept between runs.
 
 ## Usage
 
@@ -57,7 +72,7 @@ The arrow keys scroll an image that is larger than the window in that direction;
 qview.exe [FILE | FOLDER]
 ```
 
-A file is shown together with the other images of its folder; a folder is opened at its first image.
+A file is shown together with the other images of its folder; a folder is opened in the gallery.
 
 Only one window of qview is open at a time: when qview is already running, a file opened later (from Explorer or the command line) is shown in the existing window, which is brought to the foreground. Copies of qview started from different folders work independently.
 

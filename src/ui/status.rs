@@ -20,17 +20,33 @@ impl App {
         });
         let Some(current) = &self.current else { return fields };
         fields.push(file_name(current));
-        match (&self.shown, self.cache.get(current)) {
-            (Some((path, picture)), _) if path == current => {
+        let modified = |fields: &mut Vec<String>, modified: u64| {
+            if let Some(date) = crate::win::local_date_time(modified).filter(|_| modified != 0) {
+                fields.push(tr!(format!("Modified Date: {date}"), format!("Дата изменения: {date}")));
+            }
+        };
+        // In the gallery, what the thumbnail found out until the image is
+        // decoded.
+        let thumb = self.gallery.as_ref().filter(|_| self.gallery_open).and_then(|g| g.cache.get(current));
+        match (&self.shown, self.cache.get(current), thumb) {
+            (Some((path, picture)), _, _) if path == current => {
                 let m = &picture.meta;
                 fields.push(format::file_size(m.file_size));
                 fields.push(format!("{}x{}x{}b {}", m.width, m.height, m.bits, m.format));
-                if let Some(date) = crate::win::local_date_time(m.modified).filter(|_| m.modified != 0) {
-                    fields.push(tr!(format!("Modified Date: {date}"), format!("Дата изменения: {date}")));
+                modified(&mut fields, m.modified);
+                if !self.gallery_open {
+                    fields.push(format::zoom(self.view.scale(picture.size(), self.viewport, ppp)));
                 }
-                fields.push(format::zoom(self.view.scale(picture.size(), self.viewport, ppp)));
             }
-            (_, Some(Slot::Failed(e))) => fields.push(e.clone()),
+            (_, Some(Slot::Failed(e)), _) => fields.push(e.clone()),
+            (_, _, Some(t)) if t.file_size > 0 => {
+                fields.push(format::file_size(t.file_size));
+                if t.width > 0 {
+                    fields.push(format!("{}x{}", t.width, t.height));
+                }
+                modified(&mut fields, t.modified);
+            }
+            _ if self.gallery_open => {}
             _ => fields.push(tr!("Loading…", "Загрузка…").into()),
         }
         fields

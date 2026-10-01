@@ -18,6 +18,7 @@ const DIVIDER: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
 
 #[derive(Clone, Copy)]
 enum Icon {
+    Gallery,
     Prev,
     Next,
     RotateLeft,
@@ -29,7 +30,10 @@ enum Icon {
 
 impl App {
     pub(crate) fn toolbar(&mut self, root_ui: &mut Ui) {
-        let has_image = self.shown.is_some();
+        let gallery = self.gallery_open;
+        // In the gallery the zoom buttons size the thumbnails.
+        let has_image = self.shown.is_some() && !gallery;
+        let zoom = has_image || gallery;
         let prev = self.index.is_some_and(|i| i > 0);
         let next = self.index.is_some_and(|i| i + 1 < self.files.len());
         let file = self.current.is_some();
@@ -39,7 +43,8 @@ impl App {
             .show(root_ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    let buttons: [&[(Icon, Cmd, String, bool)]; 4] = [
+                    let buttons: [&[(Icon, Cmd, String, bool)]; 5] = [
+                        &[(Icon::Gallery, Cmd::Gallery, tr!("Gallery (G)", "Галерея (G)").into(), true)],
                         &[
                             (Icon::Prev, Cmd::Prev, tr!("Previous (Page Up)", "Предыдущее (Page Up)").into(), prev),
                             (Icon::Next, Cmd::Next, tr!("Next (Page Down)", "Следующее (Page Down)").into(), next),
@@ -49,8 +54,8 @@ impl App {
                             (Icon::RotateRight, Cmd::RotateRight, tr!("Rotate Right (])", "Повернуть вправо (])").into(), has_image),
                         ],
                         &[
-                            (Icon::ZoomIn, Cmd::ZoomIn, tr!("Zoom In (+)", "Увеличить (+)").into(), has_image),
-                            (Icon::ZoomOut, Cmd::ZoomOut, tr!("Zoom Out (-)", "Уменьшить (-)").into(), has_image),
+                            (Icon::ZoomIn, Cmd::ZoomIn, tr!("Zoom In (+)", "Увеличить (+)").into(), zoom),
+                            (Icon::ZoomOut, Cmd::ZoomOut, tr!("Zoom Out (-)", "Уменьшить (-)").into(), zoom),
                         ],
                         &[(Icon::Delete, Cmd::Delete, tr!("Delete (Del)", "Удалить (Del)").into(), file)],
                     ];
@@ -59,7 +64,8 @@ impl App {
                             divider(ui);
                         }
                         for (icon, cmd, tip, enabled) in group.iter() {
-                            if icon_button(ui, *icon, tip, *enabled) {
+                            let on = matches!(icon, Icon::Gallery) && gallery;
+                            if icon_button(ui, *icon, tip, *enabled, on) {
                                 self.clicked.push(*cmd);
                             }
                         }
@@ -74,13 +80,14 @@ fn divider(ui: &mut Ui) {
     ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0, DIVIDER));
 }
 
-/// A square button with `icon`; true when clicked.
-fn icon_button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool) -> bool {
+/// A square button with `icon`, shown pressed while `on`; true when
+/// clicked.
+fn icon_button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool, on: bool) -> bool {
     // CLICK without FOCUSABLE: Space and Enter belong to the viewer.
     let sense = if enabled { Sense::CLICK } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(vec2(32.0, 28.0), sense);
     let painter = ui.painter();
-    if enabled && response.is_pointer_button_down_on() {
+    if enabled && (on || response.is_pointer_button_down_on()) {
         painter.rect_filled(rect, 3.0, PRESSED);
     } else if enabled && response.hovered() {
         painter.rect_filled(rect, 3.0, HOVER);
@@ -112,6 +119,13 @@ fn mirror(points: &mut [Pos2], x: f32) {
 fn paint_icon(painter: &Painter, icon: Icon, c: Pos2, color: Color32) {
     let stroke = Stroke::new(1.8, color);
     match icon {
+        Icon::Gallery => {
+            // Four thumbnails.
+            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let centre = c + vec2(dx, dy) * 4.0;
+                painter.rect_filled(egui::Rect::from_center_size(centre, vec2(6.0, 6.0)), 1.0, color);
+            }
+        }
         Icon::Prev | Icon::Next => {
             let mut shaft = vec![pos2(c.x - 7.5, c.y), pos2(c.x + 7.0, c.y)];
             let mut head = vec![pos2(c.x + 1.5, c.y - 5.5), pos2(c.x + 7.5, c.y), pos2(c.x + 1.5, c.y + 5.5)];
