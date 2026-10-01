@@ -70,6 +70,7 @@ fn main() -> eframe::Result {
     // `args_os`: `args` panics on a path that is not valid Unicode.
     let first = std::env::args_os().nth(1).and_then(|a| a.into_string().ok());
     if first.as_deref() == Some("--export-icon") {
+        win::attach_parent_console();
         let Some(path) = std::env::args_os().nth(2) else {
             eprintln!("usage: qview --export-icon <file.ico>");
             std::process::exit(2);

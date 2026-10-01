@@ -95,7 +95,7 @@ impl Tree {
         std::thread::Builder::new()
             .name("drive names".into())
             .spawn(move || {
-                crate::win::com_init();
+                let _com = crate::win::com_init();
                 for (id, path) in roots {
                     if let Some(name) = crate::win::display_name(&path) {
                         let _ = tx.send(Message::Named(id, name));

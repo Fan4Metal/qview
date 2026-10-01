@@ -124,7 +124,7 @@ impl Thumbs {
 
 fn worker(shared: &Shared, tx: &mpsc::Sender<Made>) {
     // The shell's thumbnail providers are COM objects.
-    crate::win::com_init();
+    let _com = crate::win::com_init();
     loop {
         let (request, generation) = {
             let mut q = shared.queue.lock().unwrap();
@@ -333,7 +333,7 @@ mod tests {
     /// here. Either way upright, fitted, with the image's size.
     #[test]
     fn makes_thumbnails() {
-        crate::win::com_init();
+        let _com = crate::win::com_init();
         let dir = temp_dir("make");
         let png = dir.join("wide.png");
         image::RgbImage::from_pixel(600, 300, image::Rgb([200, 30, 30])).save(&png).unwrap();
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     #[ignore]
     fn thumbnail_timings() {
-        crate::win::com_init();
+        let _com = crate::win::com_init();
         let dir = PathBuf::from(std::env::var("QVIEW_THUMB_DIR").expect("QVIEW_THUMB_DIR"));
         let files = crate::folder::list(&dir, None).unwrap();
         let started = Instant::now();

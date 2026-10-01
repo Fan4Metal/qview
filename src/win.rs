@@ -72,7 +72,7 @@ pub fn show_in_explorer(path: &Path) {
     let owned = path.to_path_buf();
     let spawned = std::thread::Builder::new().name("show in explorer".into()).spawn(move || {
         let path = owned;
-        com_init();
+        let _com = com_init();
         let wide = wide(&path);
         let shown = unsafe {
             let item = ILCreateFromPathW(wide.as_ptr());
@@ -233,12 +233,53 @@ fn dwm_set_bool(hwnd: isize, attribute: u32, on: bool) -> bool {
 }
 
 /// Initialise COM on this thread (single-threaded apartment), as the
-/// shell's thumbnail providers and `SHGetFileInfoW` need. Once per thread;
-/// the thread keeps it until it ends.
-pub fn com_init() {
+/// shell's thumbnail providers and `SHGetFileInfoW` need, until the guard
+/// is dropped. Once per thread.
+#[must_use = "COM is released when the guard is dropped"]
+pub fn com_init() -> Com {
     use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
-    unsafe {
-        CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32);
+    let hr = unsafe { CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32) };
+    Com { initialised: hr >= 0 }
+}
+
+/// COM on this thread (see [`com_init`]); released when dropped, if it was
+/// initialised.
+pub struct Com {
+    initialised: bool,
+}
+
+impl Drop for Com {
+    fn drop(&mut self) {
+        if self.initialised {
+            unsafe { windows_sys::Win32::System::Com::CoUninitialize() };
+        }
+    }
+}
+
+/// Give a command-line mode the console of the process that started it
+/// as standard error when it has none: the release build is a GUI program,
+/// and a parent such as Python's `subprocess` (the release script) passes
+/// it no handles, so `eprintln!` went nowhere. Attaching alone leaves the
+/// handle empty: the console's output is opened and set as standard error.
+pub fn attach_parent_console() {
+    use std::os::windows::io::IntoRawHandle;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(id: u32) -> isize;
+        fn SetStdHandle(id: u32, handle: isize) -> i32;
+        fn AttachConsole(pid: u32) -> i32;
+    }
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    let handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+    if (handle != 0 && handle != -1) || unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } == 0 {
+        return;
+    }
+    // Read access too: Rust's stderr checks with GetConsoleMode, which needs
+    // it, that the handle is a console, and then writes Unicode to it.
+    if let Ok(console) = std::fs::OpenOptions::new().read(true).write(true).open("CONOUT$") {
+        // Kept open for the rest of the process.
+        unsafe { SetStdHandle(STD_ERROR_HANDLE, console.into_raw_handle() as isize) };
     }
 }
 
