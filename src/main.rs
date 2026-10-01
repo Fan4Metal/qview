@@ -8,6 +8,7 @@ mod filetypes;
 mod folder;
 mod format;
 mod gallery;
+mod header;
 mod icon;
 mod input;
 mod instance;

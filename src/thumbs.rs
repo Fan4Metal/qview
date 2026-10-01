@@ -192,10 +192,10 @@ pub fn make(path: &Path, side: u32) -> Result<Thumbnail, String> {
 }
 
 /// Size of the image in `path` from its header, turned to match the
-/// thumbnail `tw` x `th` (Windows applies the EXIF orientation, the header
-/// does not).
+/// thumbnail `tw` x `th`: whatever orientation Windows applied to it.
 fn image_size(path: &Path, tw: u32, th: u32) -> Option<(u32, u32)> {
-    let (w, h) = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_dimensions().ok()?;
+    let size = crate::header::read(path)?;
+    let (w, h) = (size.width, size.height);
     let aspect = |a: u32, b: u32| a as f32 / b.max(1) as f32;
     let thumb = aspect(tw, th);
     if (aspect(h, w) - thumb).abs() < (aspect(w, h) - thumb).abs() { Some((h, w)) } else { Some((w, h)) }

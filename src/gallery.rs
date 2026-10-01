@@ -12,7 +12,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use egui::{Rect, Vec2, pos2};
@@ -32,6 +33,9 @@ pub const ASPECTS: [(&str, f32); 7] = [
     ("2:3", 2.0 / 3.0),
     ("9:16", 9.0 / 16.0),
 ];
+/// Images of a folder whose proportions decide the Auto cells: all of a
+/// smaller folder, this many spread over a larger one.
+const AUTO_SAMPLE: usize = 200;
 /// Cell sizes (the long side of the thumbnail's frame, in points) of the
 /// slider's range.
 pub const MIN_SIZE: f32 = 64.0;
@@ -77,12 +81,15 @@ pub struct Thumb {
 }
 
 /// Where to scroll the grid to on the next frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Scroll {
     /// The current image in the middle (on entering the gallery).
     Centre,
     /// The current image just into view (after a key).
     Visible,
+    /// The current image's row this many points below the top of the
+    /// grid, where it was before the cells changed shape.
+    Keep(f32),
 }
 
 pub struct Gallery {
@@ -105,6 +112,29 @@ pub struct Gallery {
     pub hovered: Option<(PathBuf, Instant)>,
     /// Frames polled, for `Thumb::used`.
     pub frame: u64,
+    /// Height of the grid's rows in the last frame.
+    pub row_height: f32,
+    /// Proportions of the cells in the last frame: kept in Auto mode while
+    /// a folder's are being found.
+    pub shown_aspect: f32,
+    /// The Auto proportions of the folders seen (see `auto_aspect`).
+    auto: HashMap<PathBuf, f32>,
+    finding: Option<Finding>,
+    ctx: egui::Context,
+}
+
+/// The proportions of a folder's images being found on a thread; it stops
+/// when this is dropped.
+struct Finding {
+    dir: PathBuf,
+    rx: mpsc::Receiver<Option<f32>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for Finding {
+    fn drop(&mut self) {
+        self.cancel.store(true, Relaxed);
+    }
 }
 
 impl Gallery {
@@ -123,7 +153,64 @@ impl Gallery {
             scrolled_to: None,
             hovered: None,
             frame: 0,
+            row_height: 0.0,
+            shown_aspect: 1.0,
+            auto: HashMap::new(),
+            finding: None,
+            ctx: ctx.clone(),
         }
+    }
+
+    /// The cells' proportions in Auto mode for folder `dir` listing
+    /// `files`: those most of its images have (see `common_aspect`), read
+    /// from their headers on a thread. `None` until found.
+    pub fn auto_aspect(&mut self, dir: &Path, files: &[PathBuf]) -> Option<f32> {
+        if let Some(&aspect) = self.auto.get(dir) {
+            return Some(aspect);
+        }
+        if let Some(finding) = self.finding.as_ref().filter(|f| f.dir == dir) {
+            match finding.rx.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => return None,
+                found => {
+                    // No image could be read: square cells.
+                    let aspect = found.ok().flatten().unwrap_or(1.0);
+                    self.auto.insert(dir.to_path_buf(), aspect);
+                    self.finding = None;
+                    return Some(aspect);
+                }
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let (sample, stop, ctx) = (sample(files), cancel.clone(), self.ctx.clone());
+        let spawned = std::thread::Builder::new().name("cell proportions".into()).spawn(move || {
+            let started = Instant::now();
+            let mut ratios = Vec::with_capacity(sample.len());
+            for path in &sample {
+                if stop.load(Relaxed) {
+                    return;
+                }
+                if let Some((w, h)) = crate::header::read(path).map(crate::header::Size::upright) {
+                    ratios.push(w as f32 / h.max(1) as f32);
+                }
+            }
+            let aspect = common_aspect(ratios);
+            log::debug!(
+                "cell proportions {aspect:?} from {} images in {:.0} ms",
+                sample.len(),
+                started.elapsed().as_secs_f64() * 1e3
+            );
+            if tx.send(aspect).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("cannot start a thread for the cell proportions: {e}");
+            self.auto.insert(dir.to_path_buf(), 1.0);
+            return Some(1.0);
+        }
+        self.finding = Some(Finding { dir: dir.to_path_buf(), rx, cancel });
+        None
     }
 
     /// Upload the thumbnails made since the last frame, for `UPLOAD_TIME`
@@ -224,6 +311,9 @@ impl Gallery {
     pub fn forget(&mut self, paths: &[PathBuf]) {
         self.thumbs.forget();
         self.made.clear();
+        // The images may have changed too.
+        self.auto.clear();
+        self.finding = None;
         for p in paths {
             if let Some(t) = self.cache.remove(p) {
                 self.pixels -= texture_pixels(&t);
@@ -314,6 +404,41 @@ pub fn place_thumb(frame: Rect, px: Vec2, ppp: f32, fill: bool, shrunk: bool) ->
         ((rect.max - image.min) / image.size()).to_pos2(),
     );
     (rect, uv)
+}
+
+/// The files whose proportions decide the Auto cells (see
+/// `AUTO_SAMPLE`).
+fn sample(files: &[PathBuf]) -> Vec<PathBuf> {
+    if files.len() <= AUTO_SAMPLE {
+        return files.to_vec();
+    }
+    (0..AUTO_SAMPLE).map(|k| files[k * files.len() / AUTO_SAMPLE].clone()).collect()
+}
+
+/// The proportions of `ASPECTS` nearest to `ratio` (width over height),
+/// compared as logarithms, so that 1:2 is as far from 1:1 as 2:1.
+pub fn nearest_aspect(ratio: f32) -> f32 {
+    let distance = |a: f32| (a.ln() - ratio.ln()).abs();
+    ASPECTS.iter().map(|(_, a)| *a).min_by(|a, b| distance(*a).total_cmp(&distance(*b))).unwrap_or(1.0)
+}
+
+/// The proportions of `ASPECTS` most of `ratios` are nearest to, the
+/// earlier of equally common ones; `None` for no ratios.
+pub fn common_aspect(ratios: impl IntoIterator<Item = f32>) -> Option<f32> {
+    let mut votes = [0usize; ASPECTS.len()];
+    for r in ratios.into_iter().filter(|r| r.is_finite() && *r > 0.0) {
+        let a = nearest_aspect(r);
+        if let Some(i) = ASPECTS.iter().position(|(_, x)| *x == a) {
+            votes[i] += 1;
+        }
+    }
+    let (i, &n) = votes.iter().enumerate().max_by_key(|&(i, n)| (*n, std::cmp::Reverse(i)))?;
+    (n > 0).then_some(ASPECTS[i].1)
+}
+
+/// The name of `aspect`, one of `ASPECTS`.
+pub fn aspect_name(aspect: f32) -> &'static str {
+    ASPECTS.iter().find(|(_, a)| *a == aspect).map_or("1:1", |(n, _)| n)
 }
 
 /// The next cell size up or down from `size`.
@@ -426,6 +551,30 @@ mod tests {
         // Prefetching stays within what eviction keeps.
         assert_eq!(cells_in_budget(256), 411);
         assert_eq!(cells_in_budget(768), 45);
+    }
+
+    #[test]
+    fn auto_proportions() {
+        assert_eq!(nearest_aspect(1.5), 1.5);
+        assert_eq!(nearest_aspect(1.0), 1.0);
+        // A 2:1 panorama: 16:9 is the widest.
+        assert_eq!(nearest_aspect(2.0), 16.0 / 9.0);
+        assert_eq!(nearest_aspect(1080.0 / 2400.0), 9.0 / 16.0);
+        assert_eq!(nearest_aspect(1.4), 4.0 / 3.0);
+        // Mostly 3:2 photos, a few portrait ones.
+        assert_eq!(common_aspect([1.5, 1.5, 0.667, 1.499, 1.333]), Some(1.5));
+        // Phone screenshots.
+        assert_eq!(common_aspect([0.45, 0.46, 0.5625, 1.78]), Some(9.0 / 16.0));
+        // A tie: the earlier of ASPECTS.
+        assert_eq!(common_aspect([1.5, 1.0]), Some(1.0));
+        assert_eq!(common_aspect([]), None);
+        assert_eq!(common_aspect([f32::NAN, 0.0]), None);
+        let files: Vec<PathBuf> = (0..1000).map(|i| PathBuf::from(format!("{i}.jpg"))).collect();
+        let s = sample(&files);
+        assert_eq!(s.len(), AUTO_SAMPLE);
+        assert_eq!((s[0].as_path(), s[199].as_path()), (Path::new("0.jpg"), Path::new("995.jpg")));
+        assert_eq!(sample(&files[..3]).len(), 3);
+        assert_eq!(aspect_name(16.0 / 9.0), "16:9");
     }
 
     #[test]

@@ -81,6 +81,8 @@ const THUMB_SIZE_KEY: &str = "thumb_size";
 const TREE_WIDTH_KEY: &str = "tree_width";
 const THUMB_FILL_KEY: &str = "thumb_fill";
 const THUMB_ASPECT_KEY: &str = "thumb_aspect";
+/// `thumb_aspect` in the settings when it is Auto.
+const AUTO: &str = "auto";
 const LANGUAGE_KEY: &str = "language";
 
 #[derive(Clone)]
@@ -155,8 +157,9 @@ pub struct App {
     pub tree_width: f32,
     /// The gallery's thumbnails fill their cells, cropped.
     pub thumb_fill: bool,
-    /// Proportions of the gallery's cells, one of `gallery::ASPECTS`.
-    pub thumb_aspect: f32,
+    /// Proportions of the gallery's cells, one of `gallery::ASPECTS`;
+    /// `None`: Auto, those of most images of the folder.
+    pub thumb_aspect: Option<f32>,
     /// Interface language, chosen in About.
     pub lang: LangChoice,
     deleting: Option<mpsc::Receiver<(PathBuf, Result<(), String>)>>,
@@ -290,11 +293,10 @@ impl App {
                 .clamp(gallery::MIN_SIZE, gallery::MAX_SIZE),
             tree_width: number(TREE_WIDTH_KEY).unwrap_or(240.0).clamp(140.0, 640.0),
             thumb_fill: cc.storage.and_then(|s| s.get_string(THUMB_FILL_KEY)).as_deref() == Some("true"),
-            thumb_aspect: cc
-                .storage
-                .and_then(|s| s.get_string(THUMB_ASPECT_KEY))
-                .and_then(|v| gallery::ASPECTS.iter().find(|(n, _)| *n == v).map(|(_, a)| *a))
-                .unwrap_or(1.0),
+            thumb_aspect: match cc.storage.and_then(|s| s.get_string(THUMB_ASPECT_KEY)).as_deref() {
+                Some(AUTO) => None,
+                v => Some(v.and_then(|v| gallery::ASPECTS.iter().find(|(n, _)| *n == v)).map_or(1.0, |(_, a)| *a)),
+            },
             lang,
             deleting: None,
             dialog: None,
@@ -1088,7 +1090,7 @@ impl eframe::App for App {
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
         storage.set_string(THUMB_FILL_KEY, self.thumb_fill.to_string());
-        let aspect = gallery::ASPECTS.iter().find(|(_, a)| *a == self.thumb_aspect).map_or("1:1", |(n, _)| n);
+        let aspect = self.thumb_aspect.map_or(AUTO, gallery::aspect_name);
         storage.set_string(THUMB_ASPECT_KEY, aspect.to_string());
         storage.set_string(LANGUAGE_KEY, self.lang.name().to_string());
     }

@@ -55,6 +55,7 @@ impl App {
     /// The folder and the cell size slider above the grid.
     fn gallery_bar(&mut self, root_ui: &mut Ui) {
         let before = (self.thumb_size, self.thumb_aspect);
+        let shown = self.gallery.as_ref().map_or(1.0, |g| g.shown_aspect);
         egui::Panel::top("gallery_bar")
             .frame(panel_frame(BAR_BG, Margin::symmetric(8, 3)))
             .show_separator_line(false)
@@ -81,17 +82,27 @@ impl App {
                         "Миниатюры заполняют ячейки, края обрезаются"
                     ));
                     ui.add_space(12.0);
-                    let name = ASPECTS.iter().find(|(_, a)| *a == self.thumb_aspect).map_or("1:1", |(n, _)| n);
+                    let name = match self.thumb_aspect {
+                        Some(a) => gallery::aspect_name(a).to_string(),
+                        None => {
+                            let shown = gallery::aspect_name(shown);
+                            tr!(format!("Auto ({shown})"), format!("Авто ({shown})"))
+                        }
+                    };
                     egui::ComboBox::from_id_salt("cell_aspect")
                         .selected_text(name)
-                        .width(64.0)
+                        .width(96.0)
                         .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.thumb_aspect, None, tr!("Auto", "Авто"));
                             for (name, aspect) in ASPECTS {
-                                ui.selectable_value(&mut self.thumb_aspect, aspect, name);
+                                ui.selectable_value(&mut self.thumb_aspect, Some(aspect), name);
                             }
                         })
                         .response
-                        .on_hover_text(tr!("Proportions of the cells", "Пропорции ячеек"));
+                        .on_hover_text(tr!(
+                            "Proportions of the cells; Auto: those of most images of the folder",
+                            "Пропорции ячеек; «Авто» — как у большинства изображений папки"
+                        ));
                     ui.add_space(8.0);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         if let Some(dir) = &self.dir {
@@ -141,9 +152,29 @@ impl App {
             }
             return None;
         }
-        let frame = gallery::frame_size(self.thumb_size, self.thumb_aspect);
+        // Auto: the folder's proportions once found, the last ones until
+        // then.
+        let aspect = match (self.thumb_aspect, &self.dir) {
+            (Some(a), _) => a,
+            (None, Some(dir)) if self.scan.is_none() => {
+                gallery.auto_aspect(dir, &self.files).unwrap_or(gallery.shown_aspect)
+            }
+            (None, _) => gallery.shown_aspect,
+        };
+        if aspect != gallery.shown_aspect {
+            // The current image stays where it was on screen.
+            if let Some(i) = self.index
+                && gallery.row_height > 0.0
+            {
+                let y = (i / gallery.columns.max(1)) as f32 * gallery.row_height;
+                gallery.scroll = Some(Scroll::Keep(y - gallery.top));
+            }
+            gallery.shown_aspect = aspect;
+        }
+        let frame = gallery::frame_size(self.thumb_size, aspect);
         let grid = gallery::grid(rect.width(), frame, n);
         gallery.columns = grid.columns;
+        gallery.row_height = grid.cell.y;
         gallery.page_rows = ((rect.height() / grid.cell.y).floor() as usize).max(1);
 
         // Follow the current image when it changes (keys, a deletion).
@@ -159,6 +190,7 @@ impl App {
                 Scroll::Visible if y < top => Some(y),
                 Scroll::Visible if y + grid.cell.y > top + height => Some(y + grid.cell.y - height),
                 Scroll::Visible => None,
+                Scroll::Keep(below) => Some((y - below.clamp(0.0, (height - grid.cell.y).max(0.0))).max(0.0)),
             };
             gallery.scroll = None;
             gallery.scrolled_to = self.current.clone();
