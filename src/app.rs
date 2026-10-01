@@ -644,8 +644,9 @@ impl App {
     pub fn delete(&mut self, ctx: &egui::Context, path: PathBuf) {
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
+        let owner = self.hwnd;
         std::thread::spawn(move || {
-            let result = win::recycle(&path);
+            let result = win::recycle(&path, owner);
             let _ = tx.send((path, result));
             ctx.request_repaint();
         });

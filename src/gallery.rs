@@ -42,6 +42,9 @@ const SIZE_STEPS: [f32; 12] = [64.0, 80.0, 96.0, 128.0, 160.0, 192.0, 224.0, 256
 /// Pixel sizes thumbnails are made at: those Windows keeps in its
 /// thumbnail cache, so that they come from it without scaling.
 const SIDES: [u32; 4] = [96, 256, 768, 1280];
+/// How much a thumbnail may be enlarged before a larger one is made (see
+/// `side_needed`).
+const ENLARGE: f32 = 1.5;
 /// Pixels of the thumbnail textures kept: about 1000 thumbnails of 256
 /// pixels, 250 MB of texture memory with the mip levels.
 const BUDGET: usize = 48_000_000;
@@ -216,8 +219,11 @@ impl Gallery {
         self.thumbs.want(requests);
     }
 
-    /// Forget the thumbnails of `paths` (the folder is read again).
+    /// Forget the thumbnails of `paths` (the folder is read again), and
+    /// any made or being made before now.
     pub fn forget(&mut self, paths: &[PathBuf]) {
+        self.thumbs.forget();
+        self.made.clear();
         for p in paths {
             if let Some(t) = self.cache.remove(p) {
                 self.pixels -= texture_pixels(&t);
@@ -267,26 +273,39 @@ pub fn frame_size(size: f32, aspect: f32) -> Vec2 {
 /// When the frames are filled (`fill`), the thumbnail has to cover the
 /// frame both ways: its long side follows from its proportions `ratio`
 /// (width over height; a landscape 3:2 photo's until the thumbnail shows).
+/// A thumbnail may be enlarged up to `ENLARGE` times: the next size, 768,
+/// is rarely in Windows' cache, and it is made anew (~30 ms) and nine
+/// times the pixels of 256.
 pub fn side_needed(frame: Vec2, fill: bool, ratio: Option<f32>) -> u32 {
-    if !fill {
-        return side_for(frame.max_elem());
-    }
-    let r = ratio.unwrap_or(1.5).clamp(0.25, 4.0);
-    let long = if r >= 1.0 { frame.x.max(frame.y * r) } else { frame.y.max(frame.x / r) };
-    side_for(long)
+    let long = if fill {
+        let r = ratio.unwrap_or(1.5).clamp(0.25, 4.0);
+        if r >= 1.0 { frame.x.max(frame.y * r) } else { frame.y.max(frame.x / r) }
+    } else {
+        frame.max_elem()
+    };
+    side_for(long / ENLARGE)
+}
+
+/// How many cells' thumbnails of `side` pixels fit into the part of
+/// `BUDGET` eviction keeps, counting each as square: the grid asks for no
+/// more ahead of and behind the visible ones, or what it made would be
+/// evicted and made again.
+pub fn cells_in_budget(side: u32) -> usize {
+    BUDGET / 4 * 3 / (side as usize * side as usize * 4 / 3).max(1)
 }
 
 /// Where a thumbnail of `px` pixels goes in `frame` (points) and the part
-/// of it shown there, as `(rect, uv)`: fitted whole and never enlarged,
-/// or, with `fill`, covering the frame with what sticks out cropped,
-/// enlarged only while the thumbnail is smaller than the image (`shrunk`:
-/// a larger one is on its way). On whole pixels.
+/// of it shown there, as `(rect, uv)`: fitted whole, or, with `fill`,
+/// covering the frame with what sticks out cropped. Enlarged only while
+/// the thumbnail is smaller than the image (`shrunk`): a thumbnail of the
+/// image itself is not, so a small image keeps its size. On whole pixels.
 pub fn place_thumb(frame: Rect, px: Vec2, ppp: f32, fill: bool, shrunk: bool) -> (Rect, Rect) {
     let snap = |p: egui::Pos2| pos2((p.x * ppp).round() / ppp, (p.y * ppp).round() / ppp);
     let frame = Rect::from_min_max(snap(frame.min), snap(frame.max));
     let room = frame.size() * ppp;
     let (fit, cover) = ((room.x / px.x).min(room.y / px.y), (room.x / px.x).max(room.y / px.y));
-    let scale = if fill && shrunk { cover } else if fill { cover.min(1.0) } else { fit.min(1.0) };
+    let scale = if fill { cover } else { fit };
+    let scale = if shrunk { scale } else { scale.min(1.0) };
     let shown = px * scale / ppp;
     let image = Rect::from_min_size(snap(frame.center() - shown / 2.0), shown);
     let rect = image.intersect(frame);
@@ -387,17 +406,26 @@ mod tests {
         assert!((uv.width() - 100.0 / 150.0).abs() < 1e-3);
         let (rect, _) = place_thumb(square, egui::vec2(30.0, 40.0), 1.0, false, false);
         assert_eq!(rect.size(), egui::vec2(30.0, 40.0));
-        // Filled frames need the thumbnail to cover them both ways.
+        // A thumbnail smaller than its image is enlarged to the frame.
+        let (rect, _) = place_thumb(square, egui::vec2(60.0, 40.0), 1.0, false, true);
+        assert!((rect.size() - egui::vec2(100.0, 200.0 / 3.0)).length() < 1e-3, "{rect:?}");
+        // Filled frames need the thumbnail to cover them both ways, up to
+        // 1.5 times enlarged.
         let square = egui::vec2(200.0, 200.0);
         assert_eq!(side_needed(square, false, Some(1.5)), 256);
-        assert_eq!(side_needed(square, true, None), 768);
-        assert_eq!(side_needed(egui::vec2(160.0, 160.0), true, Some(1.5)), 256);
+        assert_eq!(side_needed(square, true, None), 256);
+        assert_eq!(side_needed(egui::vec2(400.0, 400.0), true, None), 768);
+        assert_eq!(side_needed(egui::vec2(512.0, 512.0), false, None), 768);
         // A 3:2 photo in a 16:9 frame: the width decides; in a 9:16 one,
         // the height times 1.5.
         assert_eq!(side_needed(egui::vec2(240.0, 135.0), true, Some(1.5)), 256);
-        assert_eq!(side_needed(egui::vec2(135.0, 240.0), true, Some(1.5)), 768);
+        assert_eq!(side_needed(egui::vec2(135.0, 240.0), true, Some(1.5)), 256);
+        assert_eq!(side_needed(egui::vec2(270.0, 480.0), true, Some(1.5)), 768);
         // A portrait photo in a portrait frame.
         assert_eq!(side_needed(egui::vec2(135.0, 240.0), true, Some(2.0 / 3.0)), 256);
+        // Prefetching stays within what eviction keeps.
+        assert_eq!(cells_in_budget(256), 411);
+        assert_eq!(cells_in_budget(768), 45);
     }
 
     #[test]

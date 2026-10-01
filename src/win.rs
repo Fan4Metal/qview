@@ -30,9 +30,10 @@ pub fn logical_cmp(a: &[u16], b: &[u16]) -> Ordering {
 /// Move `path` to the Recycle Bin through the shell, which asks before
 /// deleting for good a file that cannot be recycled (a network drive, a
 /// file too large for the bin). Blocks until done, so call it off the UI
-/// thread. `Err` says why it stopped; either way, check what is left on
-/// disk.
-pub fn recycle(path: &Path) -> Result<(), String> {
+/// thread. The shell's questions are owned by window `owner`, so they come
+/// in front of it. `Err` says why it stopped; either way, check what is
+/// left on disk.
+pub fn recycle(path: &Path, owner: Option<isize>) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::{
         FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, FOF_WANTNUKEWARNING, SHFILEOPSTRUCTW,
         SHFileOperationW,
@@ -41,6 +42,7 @@ pub fn recycle(path: &Path) -> Result<(), String> {
     let mut from = wide(path);
     from.push(0);
     let mut op = SHFILEOPSTRUCTW {
+        hwnd: owner.unwrap_or(0) as windows_sys::Win32::Foundation::HWND,
         wFunc: FO_DELETE,
         pFrom: from.as_ptr(),
         // The confirmation is the app's own; the shell still warns before a
@@ -187,11 +189,14 @@ pub fn local_date_time(filetime: u64) -> Option<String> {
 /// Give window `hwnd` the dark caption and frame
 /// (`DWMWA_USE_IMMERSIVE_DARK_MODE`). Called while the window is still
 /// hidden, it is shown dark from the start; set later, Windows 10 would keep
-/// the old colours until the next repaint of the frame. dwmapi is declared
-/// by hand, to spare another `windows-sys` feature.
+/// the old colours until the next repaint of the frame.
 pub fn dark_caption(hwnd: isize) {
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
-    dwm_set_bool(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, true);
+    // The attribute's number before Windows 10 20H1 (1809 to 1909).
+    const DWMWA_USE_IMMERSIVE_DARK_MODE_OLD: u32 = 19;
+    if !dwm_set_bool(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, true) {
+        dwm_set_bool(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, true);
+    }
 }
 
 /// Hide window `hwnd` from the screen (`DWMWA_CLOAK`) or show it again,
@@ -199,7 +204,9 @@ pub fn dark_caption(hwnd: isize) {
 /// and painted unseen.
 pub fn cloak(hwnd: isize, on: bool) {
     const DWMWA_CLOAK: u32 = 13;
-    dwm_set_bool(hwnd, DWMWA_CLOAK, on);
+    if !dwm_set_bool(hwnd, DWMWA_CLOAK, on) {
+        log::warn!("DWMWA_CLOAK {on} failed");
+    }
 }
 
 /// Show window `hwnd` maximized.
@@ -214,17 +221,15 @@ pub fn show_maximized(hwnd: isize) {
     }
 }
 
-/// A BOOL window attribute of DWM. dwmapi is declared by hand, to spare
-/// another `windows-sys` feature.
-fn dwm_set_bool(hwnd: isize, attribute: u32, on: bool) {
+/// Set a BOOL window attribute of DWM; false if DWM refused it. dwmapi is
+/// declared by hand, to spare another `windows-sys` feature.
+fn dwm_set_bool(hwnd: isize, attribute: u32, on: bool) -> bool {
     #[link(name = "dwmapi")]
     unsafe extern "system" {
         fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, value: *const core::ffi::c_void, size: u32) -> i32;
     }
     let value = i32::from(on);
-    unsafe {
-        DwmSetWindowAttribute(hwnd, attribute, (&raw const value).cast(), 4);
-    }
+    unsafe { DwmSetWindowAttribute(hwnd, attribute, (&raw const value).cast(), 4) >= 0 }
 }
 
 /// Initialise COM on this thread (single-threaded apartment), as the

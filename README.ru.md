@@ -124,6 +124,8 @@ git push origin v0.1.0
 
 Ручной запуск workflow (Actions → Release → Run workflow) только собирает файлы и прикрепляет их к запуску, не создавая выпуск.
 
+Workflow **CI** (`.github/workflows/ci.yml`) запускает тесты и clippy при каждой отправке изменений и для каждого pull request.
+
 ## Лицензия
 
 MIT, текст приведён в файле [LICENSE](LICENSE).

@@ -120,9 +120,15 @@ fn main() -> eframe::Result {
         // frame, but winit shows a window created maximized at once, which
         // flashes an empty white window. So a restored maximized window is
         // created normal, and `App::new` maximizes it cloaked, uncloaking it
-        // once a maximized frame is painted.
+        // once a maximized frame is painted. A window closed in full screen
+        // (saved with the screen's size) opens maximized the same way: a
+        // full-screen window would also be shown before it is painted.
         window_builder: Some(Box::new(|mut builder| {
             log::debug!("window builder at {:.0} ms", since_start_ms());
+            if builder.fullscreen == Some(true) {
+                builder.fullscreen = Some(false);
+                builder.maximized = Some(true);
+            }
             if builder.maximized == Some(true) {
                 builder.maximized = Some(false);
                 MAXIMIZE_WHEN_SHOWN.store(true, Ordering::Relaxed);

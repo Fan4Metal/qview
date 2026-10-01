@@ -227,12 +227,14 @@ impl App {
         });
         gallery.top = out.state.offset.y;
 
-        // A screen ahead, then half a screen back.
+        // A screen ahead, then half a screen back, as many as the budget
+        // keeps besides the visible ones.
         let (first, last) = out.inner;
         let page = (last - first).max(1);
+        let room = gallery::cells_in_budget(gallery::side_needed(frame_px, fill, None)).saturating_sub(cells.len());
         let ahead = last * grid.columns..((last + page) * grid.columns).min(n);
         let back = first.saturating_sub(page / 2 + 1) * grid.columns..first * grid.columns;
-        for i in ahead.chain(back) {
+        for i in ahead.chain(back.rev()).take(room) {
             let ratio = gallery.cache.get(&self.files[i]).and_then(|t| t.ratio());
             let side = gallery::side_needed(frame_px, fill, ratio);
             if gallery.needs(&self.files[i], side) {

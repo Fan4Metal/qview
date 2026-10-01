@@ -1,0 +1,27 @@
+# Tests and clippy on every push and pull request, so that a broken build
+# is found before a release tag (see release.yml).
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings

@@ -15,6 +15,7 @@
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 use std::time::Instant;
 
@@ -31,6 +32,8 @@ pub struct Request {
 pub struct Made {
     pub request: Request,
     pub result: Result<Thumbnail, String>,
+    /// `Shared::generation` when it was started.
+    generation: u64,
 }
 
 pub struct Thumbnail {
@@ -57,6 +60,8 @@ struct Shared {
     queue: Mutex<Queue>,
     wake: Condvar,
     ctx: OnceLock<egui::Context>,
+    /// Raised by [`Thumbs::forget`]: what was started before is dropped.
+    generation: AtomicU64,
 }
 
 pub struct Thumbs {
@@ -68,7 +73,12 @@ impl Thumbs {
     /// Start `workers` threads; they repaint `ctx` when a thumbnail is
     /// ready.
     pub fn new(workers: usize, ctx: egui::Context) -> Self {
-        let shared = Arc::new(Shared { queue: Mutex::default(), wake: Condvar::new(), ctx: OnceLock::new() });
+        let shared = Arc::new(Shared {
+            queue: Mutex::default(),
+            wake: Condvar::new(),
+            ctx: OnceLock::new(),
+            generation: AtomicU64::new(0),
+        });
         let _ = shared.ctx.set(ctx);
         let (tx, rx) = mpsc::channel();
         for i in 0..workers.max(1) {
@@ -96,9 +106,19 @@ impl Thumbs {
 
     /// A thumbnail, if one is ready.
     pub fn poll(&self) -> Option<Made> {
-        let made = self.rx.try_recv().ok()?;
-        self.shared.queue.lock().unwrap().done.retain(|r| *r != made.request);
-        Some(made)
+        loop {
+            let made = self.rx.try_recv().ok()?;
+            self.shared.queue.lock().unwrap().done.retain(|r| *r != made.request);
+            if made.generation == self.shared.generation.load(Relaxed) {
+                return Some(made);
+            }
+        }
+    }
+
+    /// Drop the thumbnails being made now, and those made but not polled
+    /// yet: the files may have changed (F5).
+    pub fn forget(&self) {
+        self.shared.generation.fetch_add(1, Relaxed);
     }
 }
 
@@ -106,12 +126,14 @@ fn worker(shared: &Shared, tx: &mpsc::Sender<Made>) {
     // The shell's thumbnail providers are COM objects.
     crate::win::com_init();
     loop {
-        let request = {
+        let (request, generation) = {
             let mut q = shared.queue.lock().unwrap();
             loop {
                 if let Some(r) = q.wanted.pop_front() {
                     q.busy.push(r.clone());
-                    break r;
+                    // Read under the lock: `forget` and a later `want` are
+                    // seen in that order.
+                    break (r, shared.generation.load(Relaxed));
                 }
                 q = shared.wake.wait(q).unwrap();
             }
@@ -122,7 +144,7 @@ fn worker(shared: &Shared, tx: &mpsc::Sender<Made>) {
             q.busy.retain(|r| *r != request);
             q.done.push(request.clone());
         }
-        if tx.send(Made { request, result }).is_err() {
+        if tx.send(Made { request, result, generation }).is_err() {
             return;
         }
         if let Some(ctx) = shared.ctx.get() {
