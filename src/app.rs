@@ -236,9 +236,11 @@ impl App {
         loader.set_context(ctx.clone());
         // Ctrl+Plus and Ctrl+Minus zoom the image, not the interface.
         // A double click as slow as Windows allows, not egui's 300 ms.
+        // A wheel notch scrolls 60 points instead of egui's 40.
         ctx.options_mut(|o| {
             o.zoom_with_keyboard = false;
             o.input_options.max_double_click_delay = win::double_click_time();
+            o.input_options.line_scroll_speed = 60.0;
         });
         crate::ui::style(ctx);
         // The window is created with the Windows theme and egui turns it
