@@ -59,6 +59,8 @@ qview.exe [FILE | FOLDER]
 
 A file is shown together with the other images of its folder; a folder is opened at its first image.
 
+Only one window of qview is open at a time: when qview is already running, a file opened later (from Explorer or the command line) is shown in the existing window, which is brought to the foreground. Copies of qview started from different folders work independently.
+
 ## File associations
 
 File → File Associations… registers qview with Windows for the current user (no administrator rights are needed): each supported format gets its own file type with an icon, qview appears in "Open with" and in Settings → Default apps. Each icon is a page with a band in the format's colour showing the extension.

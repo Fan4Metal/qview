@@ -151,9 +151,24 @@ pub struct App {
     first_image_logged: bool,
     /// The window handle, when it is a Win32 window.
     hwnd: Option<isize>,
-    /// The window is cloaked until its first maximized frame is on screen
-    /// (see `App::new`); uncloaked at this time at the latest.
-    cloaked_until: Option<Instant>,
+    /// While the window is cloaked: when to show it (see `App::uncloak`).
+    cloak: Option<Cloak>,
+}
+
+/// The window is cloaked at start-up until its first maximized frame is on
+/// screen (see `App::new`), and when restored from minimized with a new
+/// file until that image is on screen (see `instance`).
+struct Cloak {
+    /// Uncloaked at this time at the latest, so that it can never stay
+    /// invisible.
+    until: Instant,
+    /// Wait for the window to be maximized.
+    maximized: bool,
+    /// Wait for the current image (or its error) to be on screen.
+    image: bool,
+    /// The frame in which the window was cloaked: a later frame starts
+    /// once that one has been presented.
+    frame: u64,
 }
 
 impl App {
@@ -184,6 +199,7 @@ impl App {
         };
         if let Some(hwnd) = hwnd {
             win::dark_caption(hwnd);
+            crate::instance::listen(ctx, hwnd);
         }
         // A window saved maximized is created normal (see
         // `main::MAXIMIZE_WHEN_SHOWN`). Showing and maximizing it now would
@@ -192,13 +208,13 @@ impl App {
         // then the maximized one). So it is maximized now but cloaked,
         // painted unseen at its final size, and uncloaked in `ui` once a
         // maximized frame is on screen.
-        let mut cloaked_until = None;
+        let mut cloak = None;
         if let Some(hwnd) = hwnd
             && crate::MAXIMIZE_WHEN_SHOWN.swap(false, std::sync::atomic::Ordering::Relaxed)
         {
             win::cloak(hwnd, true);
             win::show_maximized(hwnd);
-            cloaked_until = Some(Instant::now() + UNCLOAK_TIMEOUT);
+            cloak = Some(Cloak { until: Instant::now() + UNCLOAK_TIMEOUT, maximized: true, image: false, frame: 0 });
         }
         let flag = |key: &str| cc.storage.and_then(|s| s.get_string(key)).as_deref() != Some("false");
         let mode = cc.storage.and_then(|s| s.get_string(ZOOM_KEY)).and_then(|v| Zoom::from_name(&v)).unwrap_or(Zoom::Fit);
@@ -238,7 +254,7 @@ impl App {
             clicked: Vec::new(),
             first_image_logged: false,
             hwnd,
-            cloaked_until,
+            cloak,
         };
         if let Some(path) = initial {
             app.open(ctx, path);
@@ -710,20 +726,33 @@ impl App {
         response.context_menu(|ui| self.context_menu(ui));
     }
 
-    /// Show the window cloaked in `App::new` once a frame at its maximized
-    /// size has been presented (this frame follows it), or when that takes
-    /// too long, so that it can never stay invisible.
+    /// Show the cloaked window (see `Cloak`) once a frame of what it waits
+    /// for has been presented: called before anything changes in this
+    /// frame, so what is true now was painted in the previous one.
     fn uncloak(&mut self, ctx: &egui::Context) {
-        let Some(deadline) = self.cloaked_until else { return };
-        let maximized = ctx.input(|i| i.viewport().maximized == Some(true));
-        if (maximized && ctx.cumulative_frame_nr() >= 1) || Instant::now() >= deadline {
+        let Some(cloak) = &self.cloak else { return };
+        let ready = ctx.cumulative_frame_nr() > cloak.frame
+            && (!cloak.maximized || ctx.input(|i| i.viewport().maximized == Some(true)))
+            && (!cloak.image || self.current_on_screen());
+        if ready || Instant::now() >= cloak.until {
             if let Some(hwnd) = self.hwnd {
                 win::cloak(hwnd, false);
             }
-            self.cloaked_until = None;
+            self.cloak = None;
             log::debug!("window uncloaked at {:.0} ms", crate::since_start_ms());
         } else {
             ctx.request_repaint();
+        }
+    }
+
+    /// The current image, or its error, is what is on screen; with no
+    /// current image, the folder being opened has been listed.
+    fn current_on_screen(&self) -> bool {
+        match &self.current {
+            None => self.scan.is_none(),
+            Some(c) => {
+                self.shown.as_ref().is_some_and(|(p, _)| p == c) || matches!(self.cache.get(c), Some(Slot::Failed(_)))
+            }
         }
     }
 
@@ -787,6 +816,16 @@ impl eframe::App for App {
         }
         self.uncloak(&ctx);
 
+        // A file opened while qview is running (see `instance`).
+        let received = crate::instance::take();
+        if let Some(path) = received.path {
+            self.confirm_delete = None;
+            self.open(&ctx, path);
+        }
+        if received.cloaked {
+            self.cloak = Some(Cloak { until: Instant::now() + UNCLOAK_TIMEOUT, maximized: false, image: true, frame: frame_nr });
+            ctx.request_repaint();
+        }
         self.poll_scan();
         self.poll_decoded(&ctx, frame);
         self.poll_delete();

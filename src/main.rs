@@ -9,6 +9,7 @@ mod folder;
 mod format;
 mod icon;
 mod input;
+mod instance;
 mod loader;
 mod texture;
 mod type_icon;
@@ -88,6 +89,10 @@ fn main() -> eframe::Result {
     }
 
     let initial = std::env::args_os().nth(1).map(|a| normalize(&a.to_string_lossy()));
+    // qview is already open: it shows the file instead.
+    if instance::forward(initial.as_deref()) {
+        return Ok(());
+    }
     // Decoding starts now, while the window is being created.
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 3));
     let loader = loader::Loader::new(workers);
