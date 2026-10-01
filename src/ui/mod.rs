@@ -2,7 +2,7 @@
 //! all as `impl App` methods, in a dark look.
 
 mod dialogs;
-mod gallery;
+pub mod gallery;
 mod menu;
 mod status;
 mod toolbar;

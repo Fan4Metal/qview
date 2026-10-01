@@ -1081,8 +1081,10 @@ impl eframe::App for App {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // The image area has no frame: this is its background.
-        self.background.to_normalized_gamma_f32()
+        // The image area has no frame: this is its background. In the
+        // gallery, the grid's: it shows through between the panels.
+        let color = if self.gallery_open { crate::ui::gallery::GRID_BG } else { self.background };
+        color.to_normalized_gamma_f32()
     }
 
     fn persist_egui_memory(&self) -> bool {

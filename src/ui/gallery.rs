@@ -12,7 +12,7 @@ use crate::input::Cmd;
 use crate::thumbs::Request;
 
 const TREE_BG: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
-const GRID_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
+pub const GRID_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 const CELL_HOVER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
 const CELL_SELECTED: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
 /// The frame of a thumbnail still being made.
