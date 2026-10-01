@@ -1,8 +1,22 @@
-# qview
+<p align="center">
+  <img src="images/icon.png" width="128" height="128" alt="qview icon">
+</p>
 
-English | [Русский](README.ru.md)
+<h1 align="center">qview</h1>
+
+<p align="center">A fast and simple image viewer for Windows</p>
+
+<p align="center">
+  <a href="https://github.com/Fan4Metal/qview/releases/latest"><img src="https://img.shields.io/github/v/release/Fan4Metal/qview?label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Windows-10%2B-0078D6" alt="Windows 10 or later">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Fan4Metal/qview?label=license" alt="MIT license"></a>
+</p>
+
+<p align="center"><b>English</b> | <a href="README.ru.md">Русский</a></p>
 
 qview is a fast and simple image viewer for Windows. It opens an image in a fraction of a second, browses the other images of its folder without delays and has no settings dialog: the few options are in the menus.
+
+![qview showing a photo with its context menu open, under the menu bar and the toolbar, above the status bar](images/screenshot.png)
 
 ## Features
 
@@ -55,6 +69,8 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 The arrow keys scroll an image that is larger than the window in that direction; otherwise they browse. Letter keys also work with the Russian keyboard layout.
 
 ## Gallery
+
+![The gallery: the folder tree on the left, the thumbnails of the folder on the right](images/gallery.png)
 
 The gallery is opened with `G`, `Enter`, a double click on the image or the toolbar button, and shows the folder of the current image: the folder tree on the left and the images as a grid of thumbnails on the right, under a bar with the path of the folder and the thumbnail size slider. The tree lists the Pictures and Desktop folders and the drives; a folder is shown by clicking it and expanded by clicking its arrow or double-clicking it.
 
