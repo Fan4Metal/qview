@@ -162,9 +162,15 @@ fn paint_icon(painter: &Painter, icon: Icon, c: Pos2, color: Color32) {
             }
         }
         Icon::Delete => {
-            let s = Stroke::new(2.0, color);
-            painter.line_segment([c + vec2(-6.0, -6.0), c + vec2(6.0, 6.0)], s);
-            painter.line_segment([c + vec2(6.0, -6.0), c + vec2(-6.0, 6.0)], s);
+            // A bin: the handle, the lid, the body narrowing downwards and
+            // two ribs.
+            let p = |x: f32, y: f32| c + vec2(x, y);
+            painter.add(Shape::line(vec![p(-2.5, -5.5), p(-2.5, -7.5), p(2.5, -7.5), p(2.5, -5.5)], stroke));
+            painter.line_segment([p(-7.0, -5.5), p(7.0, -5.5)], stroke);
+            painter.add(Shape::line(vec![p(-5.0, -3.0), p(-4.0, 7.0), p(4.0, 7.0), p(5.0, -3.0)], stroke));
+            let rib = Stroke::new(1.4, color);
+            painter.line_segment([p(-1.5, -0.5), p(-1.3, 4.5)], rib);
+            painter.line_segment([p(1.5, -0.5), p(1.3, 4.5)], rib);
         }
     }
 }
