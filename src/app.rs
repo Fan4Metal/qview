@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureHandle, Vec2};
 
-use crate::folder::{self, Scan};
+use crate::folder::{self, Order, Scan, SortKey};
 use crate::gallery::{self, Gallery, Scroll};
 use crate::i18n::LangChoice;
 use crate::input::{Arrow, Cmd, Wheel};
@@ -84,6 +84,8 @@ const THUMB_ASPECT_KEY: &str = "thumb_aspect";
 /// `thumb_aspect` in the settings when it is Auto.
 const AUTO: &str = "auto";
 const LANGUAGE_KEY: &str = "language";
+const SORT_KEY: &str = "sort";
+const SORT_DESCENDING_KEY: &str = "sort_descending";
 
 #[derive(Clone)]
 pub struct Picture {
@@ -120,6 +122,15 @@ pub struct App {
     pub dir: Option<PathBuf>,
     /// The listing of `dir` while it runs.
     pub scan: Option<Scan>,
+    /// The order of `files` (View → Sort).
+    pub sort: Order,
+    /// Where `current` was in `files` before the folder was listed again:
+    /// its successor takes that place if it has gone and its place in the
+    /// new listing is not known (see `poll_scan`).
+    place: Option<usize>,
+    /// Scroll the gallery to the current image once the listing is in:
+    /// it moved when the order changed.
+    centre_after_scan: bool,
     /// The file the user is on.
     pub current: Option<PathBuf>,
     /// Position of `current` in `files`, once the folder is listed.
@@ -268,6 +279,12 @@ impl App {
             files: Vec::new(),
             dir: None,
             scan: None,
+            sort: Order {
+                key: cc.storage.and_then(|s| s.get_string(SORT_KEY)).and_then(|v| SortKey::from_name(&v)).unwrap_or_default(),
+                descending: cc.storage.and_then(|s| s.get_string(SORT_DESCENDING_KEY)).as_deref() == Some("true"),
+            },
+            place: None,
+            centre_after_scan: false,
             current: None,
             index: None,
             current_since: Instant::now(),
@@ -373,10 +390,26 @@ impl App {
     }
 
     fn start_scan(&mut self, ctx: &egui::Context, dir: PathBuf, keep: Option<PathBuf>) {
+        let same = self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir));
+        self.place = self.index.filter(|_| same);
         self.files.clear();
         self.index = None;
         self.dir = Some(dir.clone());
-        self.scan = Some(folder::scan(dir, keep, ctx.clone()));
+        self.scan = Some(folder::scan(dir, keep, self.sort, ctx.clone()));
+    }
+
+    /// List the folder again in `order`. The old listing stays until then,
+    /// so the image and the gallery stay on screen.
+    fn sort_by(&mut self, ctx: &egui::Context, order: Order) {
+        if order == self.sort {
+            return;
+        }
+        self.sort = order;
+        if let Some(dir) = self.dir.clone() {
+            self.place = self.index;
+            self.centre_after_scan = true;
+            self.scan = Some(folder::scan(dir, self.current.clone(), order, ctx.clone()));
+        }
     }
 
     fn set_current(&mut self, path: Option<PathBuf>) {
@@ -426,6 +459,11 @@ impl App {
             }
         }
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
+        if std::mem::take(&mut self.centre_after_scan)
+            && let Some(gallery) = &mut self.gallery
+        {
+            gallery.scroll = Some(Scroll::Centre);
+        }
         if self.index.is_some() || self.files.is_empty() {
             return;
         }
@@ -435,7 +473,8 @@ impl App {
             // without a place in the folder nothing could be browsed. The
             // next image takes its place, as after a deletion.
             Some(missing) => {
-                let i = folder::insertion_point(&self.files, &missing).min(self.files.len() - 1);
+                let at = folder::insertion_point(&self.files, &missing, self.sort).or(self.place);
+                let i = at.unwrap_or(0).min(self.files.len() - 1);
                 let name = file_name(&missing);
                 self.notice(tr!(format!("File not found: {name}"), format!("Файл не найден: {name}")));
                 self.go(i);
@@ -740,6 +779,8 @@ impl App {
             }
             Cmd::ToggleToolbar => self.show_toolbar = !self.show_toolbar,
             Cmd::ToggleStatusBar => self.show_status_bar = !self.show_status_bar,
+            Cmd::SortBy(key) => self.sort_by(ctx, Order { key, ..self.sort }),
+            Cmd::SortDescending => self.sort_by(ctx, Order { descending: !self.sort.descending, ..self.sort }),
             Cmd::KeepZoom => {
                 self.view.keep = !self.view.keep;
                 self.notice(if self.view.keep {
@@ -1101,6 +1142,8 @@ impl eframe::App for App {
         let aspect = self.thumb_aspect.map_or(AUTO, gallery::aspect_name);
         storage.set_string(THUMB_ASPECT_KEY, aspect.to_string());
         storage.set_string(LANGUAGE_KEY, self.lang.name().to_string());
+        storage.set_string(SORT_KEY, self.sort.key.name().to_string());
+        storage.set_string(SORT_DESCENDING_KEY, self.sort.descending.to_string());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

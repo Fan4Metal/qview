@@ -176,7 +176,7 @@ mod tests {
     fn header_timings() {
         use std::time::Instant;
         let dir = PathBuf::from(std::env::var("QVIEW_THUMB_DIR").expect("QVIEW_THUMB_DIR"));
-        let files = crate::folder::list(&dir, None).unwrap();
+        let files = crate::folder::list(&dir, None, Default::default()).unwrap();
         let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
         let t = Instant::now();
         let ours: Vec<_> = files.iter().map(|f| read(f).map(|s| (s.width, s.height))).collect();

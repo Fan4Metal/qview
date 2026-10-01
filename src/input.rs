@@ -46,6 +46,10 @@ pub enum Cmd {
     ToggleStatusBar,
     /// The next images keep the zoom and the panning, or no longer do.
     KeepZoom,
+    /// Sort the folder by this (View → Sort), in the same direction.
+    SortBy(crate::folder::SortKey),
+    /// Reverse the order of the folder.
+    SortDescending,
     Shortcuts,
     About,
     Associations,

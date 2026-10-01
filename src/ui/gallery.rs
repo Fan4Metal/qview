@@ -195,6 +195,9 @@ impl App {
             gallery.scroll = None;
             gallery.scrolled_to = self.current.clone();
         }
+        // The empty space between and after the cells: its right click
+        // offers the order. Made before the cells, which are on top of it.
+        let background = ui.interact(rect, ui.id().with("grid_background"), Sense::CLICK);
         // Each folder keeps its own scroll position.
         let mut area = egui::ScrollArea::vertical().id_salt(("grid", &self.dir)).auto_shrink([false, false]);
         if let Some(y) = offset {
@@ -295,6 +298,9 @@ impl App {
             }
             response.context_menu(|ui| self.cell_menu(ui));
         }
+        background.context_menu(|ui| {
+            ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
+        });
         opened
     }
 
@@ -311,6 +317,8 @@ impl App {
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, true);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
+        ui.separator();
+        ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         ui.separator();
         self.item(ui, tr!("Delete…", "Удалить…").into(), "Del", Cmd::Delete, true);
     }

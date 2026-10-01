@@ -368,7 +368,7 @@ mod tests {
     fn thumbnail_timings() {
         let _com = crate::win::com_init();
         let dir = PathBuf::from(std::env::var("QVIEW_THUMB_DIR").expect("QVIEW_THUMB_DIR"));
-        let files = crate::folder::list(&dir, None).unwrap();
+        let files = crate::folder::list(&dir, None, Default::default()).unwrap();
         let started = Instant::now();
         let mut slowest = (0.0, PathBuf::new());
         for f in &files {

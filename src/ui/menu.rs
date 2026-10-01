@@ -76,6 +76,7 @@ impl App {
         self.item(ui, tr!("Next", "Следующее").into(), "Page Down", Cmd::Next, e.next);
         self.item(ui, tr!("First", "Первое").into(), "Home", Cmd::First, e.any);
         self.item(ui, tr!("Last", "Последнее").into(), "End", Cmd::Last, e.any);
+        ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         ui.separator();
         self.zoom_items(ui, &e);
         ui.separator();
@@ -103,6 +104,21 @@ impl App {
     fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {
         self.item(ui, tr!("Rotate Left", "Повернуть влево").into(), "[", Cmd::RotateLeft, e.image);
         self.item(ui, tr!("Rotate Right", "Повернуть вправо").into(), "]", Cmd::RotateRight, e.image);
+    }
+
+    /// The order of the folder: the key, and the direction.
+    pub(super) fn sort_menu(&mut self, ui: &mut Ui) {
+        use crate::folder::SortKey;
+        for key in SortKey::ALL {
+            let name = match key {
+                SortKey::Name => tr!("By Name", "По имени"),
+                SortKey::Modified => tr!("By Date Modified", "По дате изменения"),
+                SortKey::Size => tr!("By Size", "По размеру"),
+            };
+            self.check_item(ui, name.into(), "", Cmd::SortBy(key), self.sort.key == key);
+        }
+        ui.separator();
+        self.check_item(ui, tr!("Descending", "По убыванию").into(), "", Cmd::SortDescending, self.sort.descending);
     }
 
     /// Presets, and a picker for any other colour; the picker is drawn in
