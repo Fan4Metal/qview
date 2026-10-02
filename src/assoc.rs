@@ -17,6 +17,12 @@
 //! no user choice, no other program in `OpenWithProgids`; TGA, QOI, PNM on
 //! a fresh Windows) gets qview's ProgID as its default, the documented way
 //! of claiming an unclaimed extension.
+//!
+//! When qview was picked in "Open with" before it was registered for a
+//! type, Explorer made a ProgID of its own for it (`HEIC_auto_file`), with
+//! the command and nothing else, and keeps choosing it, even when qview is
+//! picked again: the files showed qview's app icon and "HEIC File".
+//! Registering gives such ProgIDs the icon and the name of qview's type.
 
 use std::path::Path;
 
@@ -125,6 +131,22 @@ pub fn defaults(exe: Option<&Path>) -> Vec<Opener> {
         .collect()
 }
 
+/// ProgIDs other than qview's that `.ext` may open with: its default, and
+/// with `r.system` the user's choice and those Explorer offers.
+fn other_prog_ids(r: &Roots, ext: &str) -> Vec<String> {
+    let mut found: Vec<String> = reg::get(&format!(r"{}\.{ext}", r.classes), None).into_iter().collect();
+    if r.system {
+        let explorer = format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}");
+        found.extend(reg::get(&format!(r"{explorer}\UserChoice"), Some("ProgId")));
+        found.extend(reg::value_names(reg::Root::User, &format!(r"{explorer}\OpenWithProgids")));
+    }
+    // Not qview's own, nor `Applications\qview.exe`.
+    found.retain(|p| !p.is_empty() && !p.to_lowercase().starts_with("qview.") && !p.contains('\\'));
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
 /// Whether no program handles `.ext` but qview (`id`): no default ProgID
 /// (or qview's), and with `r.system` no user choice and no other program
 /// offered for it.
@@ -151,17 +173,29 @@ fn register_in(r: &Roots, exe: &Path) -> Result<(), String> {
     let exe_text = exe.display();
     let ru = crate::i18n::lang() == crate::i18n::Lang::Ru;
     let capabilities = format!(r"{}\Capabilities", r.software);
+    let exe_lower = exe_text.to_string().to_lowercase();
     for (i, t) in FILE_TYPES.iter().enumerate() {
         let id = prog_id(t.id);
         let key = format!(r"{}\{id}", r.classes);
-        reg::set(&key, None, if ru { t.name_ru } else { t.name_en })?;
-        reg::set(&format!(r"{key}\DefaultIcon"), None, &format!("\"{exe_text}\",-{}", icon_id(i)))?;
+        let (name, icon) = (if ru { t.name_ru } else { t.name_en }, format!("\"{exe_text}\",-{}", icon_id(i)));
+        reg::set(&key, None, name)?;
+        reg::set(&format!(r"{key}\DefaultIcon"), None, &icon)?;
         reg::set(&format!(r"{key}\shell\open\command"), None, &command)?;
         for ext in t.extensions {
             if unclaimed(r, ext, &id) {
                 reg::set(&format!(r"{}\.{ext}", r.classes), None, &id)?;
             }
             reg::set(&format!(r"{}\.{ext}\OpenWithProgids", r.classes), Some(&id), "")?;
+            // Explorer's own ProgIDs that run this qview, in the user's
+            // classes: the type's icon and name.
+            for p in other_prog_ids(r, ext) {
+                let other = format!(r"{}\{p}", r.classes);
+                let command = reg::get(&format!(r"{other}\shell\open\command"), None);
+                if command.is_some_and(|c| c.to_lowercase().contains(&exe_lower)) {
+                    reg::set(&other, None, name)?;
+                    reg::set(&format!(r"{other}\DefaultIcon"), None, &icon)?;
+                }
+            }
             reg::set(&format!(r"{}\{APP_KEY}\SupportedTypes", r.classes), Some(&format!(".{ext}")), "")?;
             reg::set(&format!(r"{capabilities}\FileAssociations"), Some(&format!(".{ext}")), &id)?;
         }
@@ -181,10 +215,22 @@ fn register_in(r: &Roots, exe: &Path) -> Result<(), String> {
 }
 
 fn unregister_in(r: &Roots) -> Result<(), String> {
-    for t in FILE_TYPES {
+    for (i, t) in FILE_TYPES.iter().enumerate() {
         let id = prog_id(t.id);
         reg::delete_tree(&format!(r"{}\{id}", r.classes))?;
         for ext in t.extensions {
+            // The icon and name given to Explorer's ProgIDs; their command
+            // stays.
+            for p in other_prog_ids(r, ext) {
+                let other = format!(r"{}\{p}", r.classes);
+                let ours = |icon: String| icon.to_lowercase().contains("qview.exe") && icon.ends_with(&format!(",-{}", icon_id(i)));
+                if reg::get(&format!(r"{other}\DefaultIcon"), None).is_some_and(ours) {
+                    reg::delete_tree(&format!(r"{other}\DefaultIcon"))?;
+                    if reg::get(&other, None).is_some_and(|n| n == t.name_en || n == t.name_ru) {
+                        reg::delete_value(&other, "")?;
+                    }
+                }
+            }
             reg::delete_value(&format!(r"{}\.{ext}\OpenWithProgids", r.classes), &id)?;
             // The default it was given as an unclaimed extension.
             let key = format!(r"{}\.{ext}", r.classes);
@@ -387,6 +433,21 @@ mod tests {
         register_in(&r, exe).unwrap();
         assert_eq!(get(".jpg", None).unwrap(), "Other.jpg");
 
+        // A ProgID Explorer made for qview gets the type's icon and name,
+        // removed again with the registration; one of another program
+        // does not.
+        let auto = format!(r"{}\HEIC_auto_file", r.classes);
+        reg::set(&format!(r"{auto}\shell\open\command"), None, &open_command(exe)).unwrap();
+        reg::set(&format!(r"{}\.heic", r.classes), None, "HEIC_auto_file").unwrap();
+        let other = format!(r"{}\Other.heif", r.classes);
+        reg::set(&format!(r"{other}\shell\open\command"), None, r#""C:\Other\other.exe" "%1""#).unwrap();
+        reg::set(&format!(r"{}\.heif", r.classes), None, "Other.heif").unwrap();
+        register_in(&r, exe).unwrap();
+        assert_eq!(get(r"HEIC_auto_file\DefaultIcon", None).unwrap(), r#""C:\Program Files\qview\qview.exe",-111"#);
+        assert!(get("HEIC_auto_file", None).is_some());
+        assert_eq!(get(r"Other.heif\DefaultIcon", None), None);
+        assert_eq!(get(".heic", None).unwrap(), "HEIC_auto_file");
+
         // Another program's entry in OpenWithProgids survives.
         reg::set(&format!(r"{}\.png\OpenWithProgids", r.classes), Some("Other.png"), "").unwrap();
         unregister_in(&r).unwrap();
@@ -397,6 +458,9 @@ mod tests {
         assert_eq!(reg::get(&r.registered_apps, Some("qview")), None);
         assert_eq!(get(".qoi", None), None);
         assert_eq!(get(".jpg", None).unwrap(), "Other.jpg");
+        assert_eq!(get(r"HEIC_auto_file\DefaultIcon", None), None);
+        assert_eq!(get("HEIC_auto_file", None), None);
+        assert_eq!(get(r"HEIC_auto_file\shell\open\command", None).unwrap(), open_command(exe));
         // Unregistering twice is fine.
         unregister_in(&r).unwrap();
         reg::delete_tree(&root).unwrap();
