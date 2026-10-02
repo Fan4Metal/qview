@@ -48,9 +48,13 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+O", tr!("Open a file", "Открыть файл")),
         ("F5", tr!("Reload the image and the folder", "Перечитать изображение и папку")),
         (
-            "Esc  Ctrl+W",
-            tr!("Leave full screen / the gallery / close", "Выйти из полного экрана / галереи / закрыть"),
+            "Esc",
+            tr!(
+                "Leave full screen; then the gallery, from it close",
+                "Выйти из полного экрана; затем галерея, из неё закрыть"
+            ),
         ),
+        ("Ctrl+W  Alt+F4", tr!("Close", "Закрыть")),
     ]
 }
 

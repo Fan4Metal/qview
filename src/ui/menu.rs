@@ -65,7 +65,7 @@ impl App {
         ui.separator();
         self.item(ui, tr!("File Associations…", "Сопоставление файлов…").into(), "", Cmd::Associations, true);
         ui.separator();
-        self.item(ui, tr!("Exit", "Выход").into(), "Esc", Cmd::Close, true);
+        self.item(ui, tr!("Exit", "Выход").into(), "Ctrl+W", Cmd::Close, true);
     }
 
     fn view_menu(&mut self, ui: &mut Ui) {

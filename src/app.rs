@@ -782,7 +782,9 @@ impl App {
             Cmd::RotateRight => self.view.turns = (self.view.turns + 1) % 4,
             Cmd::FullScreen => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!Self::is_fullscreen(ctx))),
             Cmd::Escape if Self::is_fullscreen(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false)),
-            Cmd::Escape | Cmd::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            // Back to the gallery, as with G; Esc there closes.
+            Cmd::Escape => self.enter_gallery(ctx),
+            Cmd::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::Delete => {
                 if self.deleting.is_none() {
                     self.confirm_delete = self.current.clone().filter(|p| p.is_file());
@@ -863,7 +865,7 @@ impl App {
             // Nothing to zoom or turn.
             Cmd::Actual | Cmd::Fit | Cmd::Fill | Cmd::Cover | Cmd::RotateLeft | Cmd::RotateRight => {}
             Cmd::Gallery => self.leave_gallery(),
-            Cmd::Escape if !Self::is_fullscreen(ctx) => self.leave_gallery(),
+            Cmd::Escape if !Self::is_fullscreen(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::Refresh => {
                 // The thumbnails and the tree too; the folder is read again
                 // as in the viewer.

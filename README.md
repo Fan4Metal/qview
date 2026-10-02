@@ -57,8 +57,9 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Scroll a zoomed image | arrow keys, dragging with the left button |
 | Rotate left / right (view only) | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
 | Full screen | `F`, `Ctrl+Shift+F`, middle click |
-| Gallery | `G`, `Enter`, double click |
-| Leave full screen / the gallery / close | `Esc`; `Ctrl+W` and `Alt+F4` close |
+| Gallery | `G`, `Enter`, `Esc`, double click |
+| Leave full screen | `Esc` |
+| Close | `Ctrl+W`, `Alt+F4`; `Esc` in the gallery |
 | Move to the Recycle Bin | `Delete` (`Enter` confirms, `Esc` cancels) |
 | Copy the file to the clipboard | `Ctrl+C` |
 | Open a file | `Ctrl+O`, or dropping a file onto the window |
@@ -72,14 +73,14 @@ The arrow keys scroll an image that is larger than the window in that direction;
 
 ![The gallery: the folder tree on the left, the thumbnails of the folder on the right](images/gallery.png)
 
-The gallery is opened with `G`, `Enter`, a double click on the image or the toolbar button, and shows the folder of the current image: the folder tree on the left and the images as a grid of thumbnails on the right, under a bar with the path of the folder and the thumbnail size slider. The tree lists the Pictures and Desktop folders and the drives; a folder is shown by clicking it and expanded by clicking its arrow or double-clicking it.
+The gallery is opened with `G`, `Enter`, `Esc`, a double click on the image or the toolbar button, and shows the folder of the current image: the folder tree on the left and the images as a grid of thumbnails on the right, under a bar with the path of the folder and the thumbnail size slider. The tree lists the Pictures and Desktop folders and the drives; a folder is shown by clicking it and expanded by clicking its arrow or double-clicking it.
 
 | Action | Keys and mouse |
 |---|---|
 | Select an image | click, arrow keys, `Page Up` / `Page Down`, `Home` / `End` |
 | Show the selected image | `Enter`, `G`, double click on a thumbnail |
 | Thumbnail size | the slider above the grid, `+` / `-`, `Ctrl+wheel` |
-| Back to the image | `Esc` |
+| Close the program | `Esc` |
 
 The selected thumbnail is the current image: deletion, copying and Show in Explorer apply to it, also from the context menu of a thumbnail. That menu, and the one of the empty space of the grid, also offers the sort order. Thumbnails are taken from the Windows thumbnail cache, which Explorer fills too, so a folder seen before appears at once; for formats Windows has no thumbnails of, qview makes them itself. The image under the pointer and the selected one are decoded in advance, so a double click shows the image without delay. The list above the grid sets the proportions of the cells: 1:1, 4:3, 3:2, 16:9, the portrait 3:4, 2:3, 9:16, or Auto, which takes the proportions most images of the folder have (read from the headers of the files when the folder is opened; for a large folder, of 200 of them); the slider sets their long side. The "Fill cells" check box makes the thumbnails fill their cells, with the edges of the images cropped; otherwise each image is shown whole. The thumbnail size, these choices and the width of the tree are kept between runs.
 
