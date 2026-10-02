@@ -954,9 +954,11 @@ impl App {
     }
 
     fn pick_file(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let image_extensions: Vec<&str> =
+            folder::EXTENSIONS.iter().copied().chain(crate::wic::extensions().iter().map(String::as_str)).collect();
         let mut dialog = rfd::FileDialog::new()
             .set_title(tr!("Open image", "Открыть изображение"))
-            .add_filter(tr!("Images", "Изображения"), folder::EXTENSIONS)
+            .add_filter(tr!("Images", "Изображения"), &image_extensions)
             .add_filter(tr!("All files", "Все файлы"), &["*"])
             .set_parent(frame);
         if let Some(dir) = &self.dir {

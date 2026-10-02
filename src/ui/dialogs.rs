@@ -251,7 +251,15 @@ impl App {
                         ui.image((icon.id(), egui::vec2(ICON, ICON)));
                     }
                     ui.label(if ru { t.name_ru } else { t.name_en });
-                    ui.label(t.extensions.iter().map(|e| format!(".{e}")).collect::<Vec<_>>().join(" "));
+                    // RAW has dozens: the common ones and the count.
+                    let shown: Vec<String> = t.extensions.iter().take(6).map(|e| format!(".{e}")).collect();
+                    let more = t.extensions.len().saturating_sub(shown.len());
+                    let text = shown.join(" ");
+                    ui.label(if more > 0 {
+                        tr!(format!("{text} and {more} more"), format!("{text} и ещё {more}"))
+                    } else {
+                        text
+                    });
                     ui.label(if defaults.get(i) == Some(&true) { "✔" } else { "—" });
                     ui.end_row();
                 }

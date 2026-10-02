@@ -13,11 +13,12 @@ pub const EXTENSIONS: &[&str] = &[
     "pbm", "pgm", "ppm", "pam",
 ];
 
-/// Whether `path` has one of [`EXTENSIONS`].
+/// Whether `path` has one of [`EXTENSIONS`], or one Windows' codecs take
+/// (`wic::extensions`).
 pub fn is_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else { return false };
+    EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(ext))
+        || crate::wic::extensions().iter().any(|x| x.eq_ignore_ascii_case(ext))
 }
 
 /// Windows paths ignore case.
@@ -281,6 +282,8 @@ mod tests {
         assert!(is_image(Path::new("x.webp")));
         assert!(!is_image(Path::new("x.txt")));
         assert!(!is_image(Path::new("jpg")));
+        // Windows' codecs add some.
+        assert!(is_image(Path::new("IMG_0001.HEIC")));
     }
 
     #[test]

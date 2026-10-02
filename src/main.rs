@@ -20,6 +20,7 @@ mod tree;
 mod type_icon;
 mod ui;
 mod view;
+mod wic;
 mod win;
 
 use std::path::PathBuf;
@@ -107,6 +108,8 @@ fn main() -> eframe::Result {
     if let Some(path) = initial.as_ref().filter(|p| p.is_file()) {
         loader.want([path.clone()]);
     }
+    // Which formats Windows' codecs add, before the folder is listed.
+    let _ = std::thread::Builder::new().name("codecs".into()).spawn(|| wic::extensions().len());
 
     let has_saved = eframe::storage_dir(APP_ID).is_some_and(|d| d.join("app.ron").is_file());
     let options = eframe::NativeOptions {

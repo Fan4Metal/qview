@@ -28,8 +28,20 @@ impl Size {
     }
 }
 
-/// The size of the image in `path`, from its header.
+/// The size of the image in `path`, from its header; through Windows'
+/// codecs (`wic`) for the formats they take.
 pub fn read(path: &Path) -> Option<Size> {
+    if !crate::wic::takes(path)
+        && let Some(size) = from_header(path)
+    {
+        return Some(size);
+    }
+    let (width, height, orientation) = crate::wic::size(path)?;
+    // Orientations 5 to 8 turn it a quarter.
+    Some(Size { width, height, turned: (5..=8).contains(&orientation) })
+}
+
+fn from_header(path: &Path) -> Option<Size> {
     let mut file = BufReader::with_capacity(16 * 1024, File::open(path).ok()?);
     if file.fill_buf().ok()?.starts_with(&[0xff, 0xd8]) {
         return jpeg(&mut file);

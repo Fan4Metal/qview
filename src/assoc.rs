@@ -256,6 +256,8 @@ mod tests {
         assert_eq!(get(r"qview.jpeg\DefaultIcon", None).unwrap(), r#""C:\Program Files\qview\qview.exe",-101"#);
         assert_eq!(get(r".jfif\OpenWithProgids", Some("qview.jpeg")).unwrap(), "");
         assert_eq!(get(r".pgm\OpenWithProgids", Some("qview.pnm")).unwrap(), "");
+        assert_eq!(get(r".heic\OpenWithProgids", Some("qview.heif")).unwrap(), "");
+        assert_eq!(get(r".nef\OpenWithProgids", Some("qview.raw")).unwrap(), "");
         assert_eq!(
             reg::get(&format!(r"{}\Capabilities\FileAssociations", r.software), Some(".tif")).unwrap(),
             "qview.tiff"
@@ -275,12 +277,19 @@ mod tests {
         reg::delete_tree(&root).unwrap();
     }
 
+    /// The `image` crate's formats are all registered; the others go to
+    /// Windows' codecs.
     #[test]
     fn every_listed_extension_is_registered() {
-        let mut registered: Vec<&str> = FILE_TYPES.iter().flat_map(|t| t.extensions.iter().copied()).collect();
+        let own = FILE_TYPES.iter().filter(|t| !t.wic);
+        let mut registered: Vec<&str> = own.flat_map(|t| t.extensions.iter().copied()).collect();
         let mut listed = crate::folder::EXTENSIONS.to_vec();
         registered.sort_unstable();
         listed.sort_unstable();
         assert_eq!(registered, listed);
+        for ext in FILE_TYPES.iter().filter(|t| t.wic).flat_map(|t| t.extensions.iter()) {
+            assert!(!listed.contains(ext), "{ext}");
+            assert!(crate::wic::takes(Path::new(&format!("a.{ext}"))), "{ext}");
+        }
     }
 }

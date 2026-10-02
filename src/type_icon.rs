@@ -18,6 +18,7 @@ fn glyph(c: char) -> &'static [&'static str; 5] {
         'E' => &["###", "#..", "##.", "#..", "###"],
         'F' => &["###", "#..", "##.", "#..", "#.."],
         'G' => &["###", "#..", "#.#", "#.#", "###"],
+        'H' => &["#.#", "#.#", "###", "#.#", "#.#"],
         'I' => &["###", ".#.", ".#.", ".#.", "###"],
         'J' => &["..#", "..#", "..#", "#.#", "###"],
         'M' => &["#...#", "##.##", "#.#.#", "#...#", "#...#"],
@@ -25,8 +26,11 @@ fn glyph(c: char) -> &'static [&'static str; 5] {
         'O' => &["###", "#.#", "#.#", "#.#", "###"],
         'P' => &["###", "#.#", "###", "#..", "#.."],
         'Q' => &["###", "#.#", "#.#", "##.", ".##"],
+        'R' => &["##.", "#.#", "##.", "#.#", "#.#"],
         'T' => &["###", ".#.", ".#.", ".#.", ".#."],
+        'V' => &["#.#", "#.#", "#.#", "#.#", ".#."],
         'W' => &["#...#", "#...#", "#.#.#", "##.##", "#...#"],
+        'X' => &["#.#", "#.#", ".#.", "#.#", "#.#"],
         _ => &["###", "#.#", "#.#", "#.#", "###"],
     }
 }
@@ -245,7 +249,13 @@ mod tests {
                 assert!(l.text_at.0 + text_width(&l.text) * l.scale <= l.band.2, "{} at {n}", t.label);
             }
             for c in t.label.chars() {
-                assert!(matches!(c, 'A' | 'B' | 'C' | 'E' | 'F' | 'G' | 'I' | 'J' | 'M' | 'N' | 'O' | 'P' | 'Q' | 'T' | 'W'), "{c}");
+                assert!(
+                    matches!(
+                        c,
+                        'A' | 'B' | 'C' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'M' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'T' | 'V' | 'W' | 'X'
+                    ),
+                    "{c}"
+                );
             }
         }
     }
@@ -270,6 +280,24 @@ mod tests {
             }
         }
         sheet.save(path).unwrap();
+    }
+
+    /// Writes the icons of all types, 128 pixels each in rows of seven on a
+    /// transparent background, into the PNG named by `QVIEW_TYPES_IMAGE`:
+    /// `images/file_types.png` of the README.
+    #[test]
+    #[ignore]
+    fn readme_image() {
+        let path = std::env::var("QVIEW_TYPES_IMAGE").expect("QVIEW_TYPES_IMAGE");
+        let (n, gap, columns) = (128u32, 24u32, 7u32);
+        let rows = (FILE_TYPES.len() as u32).div_ceil(columns);
+        let mut out = image::RgbaImage::new(columns * n + (columns - 1) * gap, rows * n + (rows - 1) * gap);
+        for (i, t) in FILE_TYPES.iter().enumerate() {
+            let icon = image::RgbaImage::from_raw(n, n, rgba(t, n)).unwrap();
+            let (col, row) = (i as u32 % columns, i as u32 / columns);
+            image::imageops::overlay(&mut out, &icon, (col * (n + gap)) as i64, (row * (n + gap)) as i64);
+        }
+        out.save(path).unwrap();
     }
 
     #[test]

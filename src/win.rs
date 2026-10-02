@@ -232,14 +232,28 @@ fn dwm_set_bool(hwnd: isize, attribute: u32, on: bool) -> bool {
     unsafe { DwmSetWindowAttribute(hwnd, attribute, (&raw const value).cast(), 4) >= 0 }
 }
 
+thread_local! {
+    /// Guards of [`com_init`] alive on this thread that initialised COM.
+    static COM_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// Initialise COM on this thread (single-threaded apartment), as the
-/// shell's thumbnail providers and `SHGetFileInfoW` need, until the guard
-/// is dropped. Once per thread.
+/// shell's thumbnail providers, `SHGetFileInfoW` and WIC need, until the
+/// guard is dropped. Guards may nest; the outermost one releases what WIC
+/// keeps for the thread (`wic::release_kept`) before COM goes.
 #[must_use = "COM is released when the guard is dropped"]
 pub fn com_init() -> Com {
     use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
     let hr = unsafe { CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32) };
+    if hr >= 0 {
+        COM_DEPTH.set(COM_DEPTH.get() + 1);
+    }
     Com { initialised: hr >= 0 }
+}
+
+/// How many guards of [`com_init`] are alive on this thread.
+pub fn com_depth() -> u32 {
+    COM_DEPTH.get()
 }
 
 /// COM on this thread (see [`com_init`]); released when dropped, if it was
@@ -251,6 +265,11 @@ pub struct Com {
 impl Drop for Com {
     fn drop(&mut self) {
         if self.initialised {
+            let depth = COM_DEPTH.get() - 1;
+            COM_DEPTH.set(depth);
+            if depth == 0 {
+                crate::wic::release_kept();
+            }
             unsafe { windows_sys::Win32::System::Com::CoUninitialize() };
         }
     }

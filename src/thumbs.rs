@@ -6,7 +6,7 @@
 //! thumbnail (with its own codecs, the EXIF orientation applied, a JPEG
 //! decoded at a fraction of its size) and caches it for next time.
 //! Formats Windows makes no thumbnails of (QOI, TGA, PNM, ...) are decoded
-//! with the `image` crate and shrunk ([`loader::read`]).
+//! here and shrunk ([`loader::read`]).
 //!
 //! As with `loader::Loader`, the UI replaces the list of wanted thumbnails
 //! wholesale ([`Thumbs::want`], the visible cells first), so cells the user

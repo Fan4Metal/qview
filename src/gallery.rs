@@ -185,6 +185,8 @@ impl Gallery {
         let (tx, rx) = mpsc::channel();
         let (sample, stop, ctx) = (sample(files), cancel.clone(), self.ctx.clone());
         let spawned = std::thread::Builder::new().name("cell proportions".into()).spawn(move || {
+            // Windows' codecs read some of the headers (`wic`).
+            let _com = crate::win::com_init();
             let started = Instant::now();
             let mut ratios = Vec::with_capacity(sample.len());
             for path in &sample {

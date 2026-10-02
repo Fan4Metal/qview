@@ -131,6 +131,8 @@ impl Loader {
 }
 
 fn worker(shared: &Shared, tx: &mpsc::Sender<Decoded>) {
+    // For Windows' codecs (`wic`), which stay loaded while it lasts.
+    let _com = crate::win::com_init();
     loop {
         let path = {
             let mut q = shared.queue.lock().unwrap();
@@ -182,15 +184,66 @@ fn format_name(format: ImageFormat) -> &'static str {
 /// Read and decode `path`, turned upright by its EXIF orientation and
 /// shrunk to `max_side` if larger.
 pub fn decode(path: &Path, max_side: usize) -> Result<(Pixels, Meta), String> {
-    let (mut img, meta) = read(path)?;
-    if img.width() as usize > max_side || img.height() as usize > max_side {
-        img = img.thumbnail(max_side as u32, max_side as u32);
-    }
-    Ok((to_pixels(img), meta))
+    let shrink = |img: DynamicImage| {
+        if img.width() as usize > max_side || img.height() as usize > max_side {
+            img.thumbnail(max_side as u32, max_side as u32)
+        } else {
+            img
+        }
+    };
+    let first = match (!crate::wic::takes(path)).then(|| read_image(path)) {
+        Some(Ok((img, meta))) => return Ok((to_pixels(shrink(img)), meta)),
+        Some(Err(e)) => Some(e),
+        None => None,
+    };
+    // Premultiplied BGRA already: turned and shrunk as it is (the image
+    // is RGBA only by name), then only the mip levels are made.
+    let (img, meta) = read_wic(path, true).map_err(|e| first.unwrap_or(e))?;
+    let img = shrink(img);
+    let (width, height) = (img.width(), img.height());
+    let levels = mip_levels(img.into_rgba8().into_raw(), width as usize, height as usize);
+    Ok((Pixels { width, height, levels }, meta))
 }
 
-/// Read and decode `path`, turned upright by its EXIF orientation.
+/// Read and decode `path`, turned upright by its EXIF orientation: with
+/// the `image` crate, or with Windows' codecs (`wic`) what it cannot read.
 pub fn read(path: &Path) -> Result<(DynamicImage, Meta), String> {
+    let first = match (!crate::wic::takes(path)).then(|| read_image(path)) {
+        Some(Ok(read)) => return Ok(read),
+        Some(Err(e)) => Some(e),
+        None => None,
+    };
+    read_wic(path, false).map_err(|e| first.unwrap_or(e))
+}
+
+/// `path` decoded by Windows' codecs, upright: premultiplied BGRA with
+/// `bgra` (in an RGBA image only by name), otherwise RGBA. The error says
+/// which extension from the Microsoft Store the format needs.
+fn read_wic(path: &Path, bgra: bool) -> Result<(DynamicImage, Meta), String> {
+    use std::os::windows::fs::MetadataExt;
+    let file = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    let image = crate::wic::decode(path, bgra).map_err(|e| match crate::wic::needs(path) {
+        Some(needs) => format!("{e}\n\n{needs}"),
+        None => e,
+    })?;
+    let buffer = image::RgbaImage::from_raw(image.width, image.height, image.pixels).ok_or("bad image size")?;
+    let mut img = DynamicImage::ImageRgba8(buffer);
+    img.apply_orientation(Orientation::from_exif(image.orientation as u8).unwrap_or(Orientation::NoTransforms));
+    let format = ImageFormat::from_path(path).map_or_else(|_| crate::wic::format_name(path), format_name);
+    let meta = Meta {
+        width: img.width(),
+        height: img.height(),
+        bits: image.bits,
+        format,
+        file_size: file.len(),
+        modified: file.last_write_time(),
+        animated: false,
+    };
+    Ok((img, meta))
+}
+
+/// Read and decode `path` with the `image` crate, upright.
+fn read_image(path: &Path) -> Result<(DynamicImage, Meta), String> {
     use std::os::windows::fs::MetadataExt;
     // One read of the whole file is faster than buffered reads through
     // the decoder.
@@ -370,6 +423,32 @@ mod tests {
         let (pixels, meta) = decode(&path, 200).unwrap();
         assert_eq!((pixels.width, pixels.height), (200, 50));
         assert_eq!((meta.width, meta.height), (400, 100));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// What the `image` crate cannot read goes to Windows' codecs, which
+    /// give the same pixels, turned by the EXIF orientation.
+    #[test]
+    fn windows_codecs_take_over() {
+        let _com = crate::win::com_init();
+        let dir = temp_dir("wic");
+        let path = dir.join("a.png");
+        image::RgbaImage::from_pixel(30, 20, image::Rgba([255, 0, 0, 128])).save(&path).unwrap();
+        let (own, _) = decode(&path, 16384).unwrap();
+        let (img, meta) = read_wic(&path, true).unwrap();
+        assert_eq!(img.into_rgba8().into_raw(), own.levels[0]);
+        assert_eq!((meta.width, meta.height, meta.bits, meta.format), (30, 20, 32, "PNG"));
+        let mut jpeg = Vec::new();
+        image::RgbImage::new(40, 20).write_to(&mut Cursor::new(&mut jpeg), ImageFormat::Jpeg).unwrap();
+        let turned = dir.join("turned.jpg");
+        std::fs::write(&turned, crate::wic::tests::with_orientation(&jpeg, 6)).unwrap();
+        let (img, _) = read_wic(&turned, false).unwrap();
+        assert_eq!((img.width(), img.height()), (20, 40));
+        // A HEIC that is none: the error says what Windows needs.
+        let heic = dir.join("broken.heic");
+        std::fs::write(&heic, b"not an image").unwrap();
+        let e = decode(&heic, 16384).err().unwrap();
+        assert!(e.contains("HEVC"), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

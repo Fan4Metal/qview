@@ -44,7 +44,11 @@ impl App {
                     });
                 }
             }
-            (_, Some(Slot::Failed(e)), _) => fields.push(e.clone()),
+            // One line: the error and what Windows needs (see `wic::needs`)
+            // are paragraphs in the image area.
+            (_, Some(Slot::Failed(e)), _) => {
+                fields.push(e.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" — "))
+            }
             (_, _, Some(t)) if t.file_size > 0 => {
                 fields.push(format::file_size(t.file_size));
                 if t.width > 0 {

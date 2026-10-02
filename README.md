@@ -31,7 +31,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour.
 - The interface is in Russian when Windows is in Russian, and in English otherwise; another language is chosen in Help → About qview.
 
-Supported formats: JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM). Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated.
+Supported formats: JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM). In addition, every format for which Windows has a codec (Windows Imaging Component) is opened through it: HEIC/HEIF (with the HEIF Image Extensions and the HEVC Video Extensions from the Microsoft Store), AVIF (with the AV1 Video Extension), camera RAW files such as CR2, CR3, NEF, ARW and DNG (with the Raw Image Extension, included in Windows 11), JPEG XR, DDS and the formats of other installed codecs. HEIC, HEIF and AVIF files are always listed; when the extension they need is missing, the image area names it. Windows' codecs also take over the files of the formats above that qview's own decoders cannot read. Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated.
 
 ## Installation
 
@@ -98,7 +98,11 @@ Only one window of qview is open at a time: when qview is already running, a fil
 
 ## File associations
 
-File → File Associations… registers qview with Windows for the current user (no administrator rights are needed): each supported format gets its own file type with an icon, qview appears in "Open with" and in Settings → Default apps. Each icon is a page with a band in the format's colour showing the extension.
+File → File Associations… registers qview with Windows for the current user (no administrator rights are needed): each supported format gets its own file type with an icon (HEIC/HEIF, AVIF, camera RAW and JPEG XR included, opened through Windows' codecs), qview appears in "Open with" and in Settings → Default apps. Each icon is a page with a band in the format's colour showing the extension.
+
+<p align="center">
+  <img src="images/file_types.png" width="520" alt="The file type icons: JPG, PNG, GIF, BMP, TIF, WEBP, ICO, TGA, QOI, PNM, HEIC, AVIF, RAW and JXR">
+</p>
 
 Windows lets only the user choose the default program, so registration offers qview but does not take over the file types by itself. The "Choose as Default…" button opens Settings, where qview is selected under "Set defaults by app"; Windows also offers qview the next time an image is opened. The dialog shows which types qview opens by default, and "Unregister" removes everything the registration wrote. The same can be done from the command line, for example by an installer:
 
