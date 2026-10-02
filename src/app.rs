@@ -439,8 +439,12 @@ impl App {
         }
     }
 
-    /// Show the gallery of the folder of the current file.
+    /// Show the gallery of the folder of the current file, out of full
+    /// screen (Ctrl+Shift+F there brings it back, bars kept).
     fn enter_gallery(&mut self, ctx: &egui::Context) {
+        if Self::is_fullscreen(ctx) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
         let gallery = self.gallery.get_or_insert_with(|| Gallery::new(ctx));
         if let Some(dir) = &self.dir {
             gallery.tree.reveal(dir);
@@ -939,7 +943,7 @@ impl App {
             Cmd::Cover => self.view.choose(Zoom::Cover, size, viewport, ppp),
             Cmd::RotateLeft => self.view.turns = (self.view.turns + 3) % 4,
             Cmd::RotateRight => self.view.turns = (self.view.turns + 1) % 4,
-            Cmd::FullScreen => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!Self::is_fullscreen(ctx))),
+            Cmd::FullScreen | Cmd::WindowFullScreen => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!Self::is_fullscreen(ctx))),
             Cmd::Escape if Self::is_fullscreen(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false)),
             // Back to the gallery, as with G; Esc there closes.
             Cmd::Escape => self.enter_gallery(ctx),
@@ -1035,6 +1039,14 @@ impl App {
             // Nothing to zoom or turn.
             Cmd::Actual | Cmd::Fit | Cmd::Fill | Cmd::Cover | Cmd::RotateLeft | Cmd::RotateRight => {}
             Cmd::Gallery => self.leave_gallery(),
+            // F shows the image in full screen; Ctrl+Shift+F
+            // (`WindowFullScreen`) turns the gallery's window, as in the viewer.
+            Cmd::FullScreen => {
+                if self.current.is_some() {
+                    self.leave_gallery();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                }
+            }
             Cmd::Escape if !Self::is_fullscreen(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::Refresh => {
                 // The thumbnails and the tree too; the folder is read again
@@ -1296,7 +1308,9 @@ impl eframe::App for App {
         self.complete_current_if_needed(&ctx);
         self.animate(&ctx);
 
-        let fullscreen = Self::is_fullscreen(&ctx);
+        // The gallery keeps its bars in the frames before full screen is
+        // left (`enter_gallery`).
+        let fullscreen = Self::is_fullscreen(&ctx) && !self.gallery_open;
         if !fullscreen {
             self.menu_bar(root_ui);
             if self.show_toolbar {

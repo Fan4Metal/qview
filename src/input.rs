@@ -34,6 +34,9 @@ pub enum Cmd {
     RotateLeft,
     RotateRight,
     FullScreen,
+    /// Full screen without leaving the gallery (Ctrl+Shift+F there; F
+    /// shows the image in full screen).
+    WindowFullScreen,
     /// Leaves full screen, or closes the viewer.
     Escape,
     Close,
@@ -120,6 +123,7 @@ pub fn gallery_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
     match key {
         Key::PageUp if !m.ctrl && !m.alt => Some(Cmd::PageUp),
         Key::PageDown if !m.ctrl && !m.alt => Some(Cmd::PageDown),
+        Key::F if m.ctrl && m.shift && !m.alt => Some(Cmd::WindowFullScreen),
         _ => command(key, m, repeat),
     }
 }
@@ -231,6 +235,8 @@ mod tests {
         assert_eq!(gallery_command(Key::PageUp, NONE, false), Some(Cmd::PageUp));
         assert_eq!(gallery_command(Key::ArrowDown, NONE, false), Some(Cmd::Arrow(Arrow::Down)));
         assert_eq!(gallery_command(Key::Enter, NONE, false), Some(Cmd::Gallery));
+        assert_eq!(gallery_command(Key::F, NONE, false), Some(Cmd::FullScreen));
+        assert_eq!(gallery_command(Key::F, CTRL | SHIFT, false), Some(Cmd::WindowFullScreen));
         assert_eq!(command(Key::PageDown, NONE, false), Some(Cmd::Next));
     }
 
