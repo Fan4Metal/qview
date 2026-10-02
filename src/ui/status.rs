@@ -4,7 +4,7 @@
 use egui::{RichText, Stroke, Ui};
 
 use super::{STATUS_BG, TEXT, TEXT_WEAK, panel_frame};
-use crate::app::{App, Slot, file_name};
+use crate::app::{App, Slot};
 use crate::format;
 
 const SEPARATOR: egui::Color32 = egui::Color32::from_rgb(0x4a, 0x4a, 0x4a);
@@ -19,7 +19,7 @@ impl App {
             _ => "?/?".into(),
         });
         let Some(current) = &self.current else { return fields };
-        fields.push(file_name(current));
+        fields.push(self.display_name(current));
         let modified = |fields: &mut Vec<String>, modified: u64| {
             if let Some(date) = crate::win::local_date_time(modified).filter(|_| modified != 0) {
                 fields.push(tr!(format!("Modified Date: {date}"), format!("Дата изменения: {date}")));

@@ -1,9 +1,10 @@
 //! The images of a folder, in Explorer's name order or by date or size,
-//! listed on a thread.
+//! listed on a thread; with its sub-folders, folder by folder.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::{Arc, mpsc};
 
 /// Extensions of the files listed for browsing (lowercase), the formats
 /// the `image` crate is built with.
@@ -111,17 +112,26 @@ pub fn insertion_point(files: &[PathBuf], path: &Path, order: Order) -> Option<u
     Some(files.partition_point(|f| compare(&Entry::new(f.clone(), None), &missing, order).is_lt()))
 }
 
-/// Image files of `dir`, in `order`. `keep` (the file being shown) is
-/// listed even when its extension is not one of [`EXTENSIONS`], so that it
-/// keeps its place among the others.
-pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Vec<PathBuf>> {
+/// The image files of `dir`, unsorted, and with `folders` its sub-folders
+/// that Explorer shows, in its name order (as in the gallery's tree);
+/// symbolic links and junctions are left out, since they can loop.
+fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<PathBuf>)> {
+    use std::os::windows::fs::MetadataExt;
     let mut files = Vec::new();
+    let mut subfolders = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let Ok(entry) = entry else { continue };
         // The type, the size and the date come with the listing on
         // Windows: no extra call.
         let meta = entry.metadata().ok();
-        if meta.as_ref().is_some_and(|m| m.is_dir()) {
+        if let Some(m) = meta.as_ref().filter(|m| m.is_dir()) {
+            if folders
+                && crate::win::is_visible_folder(m.file_attributes())
+                && !entry.file_type().is_ok_and(|t| t.is_symlink())
+            {
+                let path = entry.path();
+                subfolders.push((crate::win::wide(path.file_name().unwrap_or_default()), path));
+            }
             continue;
         }
         let path = entry.path();
@@ -129,6 +139,15 @@ pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Ve
             files.push(Entry::new(path, meta.as_ref()));
         }
     }
+    subfolders.sort_by(|(a, _), (b, _)| crate::win::logical_cmp(a, b));
+    Ok((files, subfolders.into_iter().map(|(_, p)| p).collect()))
+}
+
+/// Image files of `dir`, in `order`. `keep` (the file being shown) is
+/// listed even when its extension is not one of [`EXTENSIONS`], so that it
+/// keeps its place among the others.
+pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Vec<PathBuf>> {
+    let (mut files, _) = read(dir, false)?;
     if let Some(keep) = keep
         && !files.iter().any(|e| same_path(&e.path, keep))
         && keep.is_file()
@@ -139,9 +158,74 @@ pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Ve
     Ok(files.into_iter().map(|e| e.path).collect())
 }
 
-/// A folder being listed on a thread; see [`scan`].
+/// What a listing holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Depth {
+    /// The images of the folder.
+    Folder,
+    /// Those of its sub-folders too, folder by folder (see [`list_deep`]).
+    ByFolder,
+    /// Those of its sub-folders too, all in one order.
+    Flat,
+}
+
+/// Image files of `dir` and of all its sub-folders. `by_folder`: folder by
+/// folder, a folder's own images in `order`, then those of each of its
+/// sub-folders in Explorer's name order, whatever `order` is; otherwise
+/// all of them in `order`. A sub-folder that cannot be read is skipped.
+/// `found` counts the images found so far; stops when `cancel` is set.
+pub fn list_deep(
+    dir: &Path,
+    order: Order,
+    by_folder: bool,
+    found: &AtomicUsize,
+    cancel: &AtomicBool,
+) -> std::io::Result<Vec<PathBuf>> {
+    fn walk(
+        dir: &Path,
+        order: Option<Order>,
+        files: &mut Vec<Entry>,
+        found: &AtomicUsize,
+        cancel: &AtomicBool,
+    ) -> std::io::Result<()> {
+        if cancel.load(Relaxed) {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
+        let (mut own, subfolders) = read(dir, true)?;
+        if let Some(order) = order {
+            own.sort_by(|a, b| compare(a, b, order));
+        }
+        files.extend(own);
+        found.store(files.len(), Relaxed);
+        for sub in subfolders {
+            match walk(&sub, order, files, found, cancel) {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Err(e),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(dir, by_folder.then_some(order), &mut files, found, cancel)?;
+    if !by_folder {
+        files.sort_by(|a, b| compare(a, b, order));
+    }
+    Ok(files.into_iter().map(|e| e.path).collect())
+}
+
+/// Where the images of each folder start in `files` (of one folder, or
+/// listed folder by folder by [`list_deep`]).
+pub fn starts(files: &[PathBuf]) -> Vec<usize> {
+    (0..files.len()).filter(|&i| i == 0 || files[i].parent() != files[i - 1].parent()).collect()
+}
+
+/// A folder being listed on a thread; see [`scan`]. Dropping it stops the
+/// listing.
 pub struct Scan {
     rx: mpsc::Receiver<Result<Vec<PathBuf>, String>>,
+    /// Images found so far in a listing with sub-folders.
+    found: Arc<AtomicUsize>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl Scan {
@@ -149,22 +233,42 @@ impl Scan {
     pub fn poll(&self) -> Option<Result<Vec<PathBuf>, String>> {
         self.rx.try_recv().ok()
     }
+
+    /// Images found so far when the sub-folders are listed too.
+    pub fn found(&self) -> usize {
+        self.found.load(Relaxed)
+    }
 }
 
-/// List `dir` in `order` on a thread (a network folder can take a while)
-/// and repaint `ctx` when done. Dropping the [`Scan`] discards the result.
-pub fn scan(dir: PathBuf, keep: Option<PathBuf>, order: Order, ctx: egui::Context) -> Scan {
+impl Drop for Scan {
+    fn drop(&mut self) {
+        self.cancel.store(true, Relaxed);
+    }
+}
+
+/// List `dir` in `order` on a thread (a network folder can take a while),
+/// as deep as `depth`, and repaint `ctx` when done. Dropping the [`Scan`]
+/// discards the result.
+pub fn scan(dir: PathBuf, depth: Depth, keep: Option<PathBuf>, order: Order, ctx: egui::Context) -> Scan {
     let (tx, rx) = mpsc::channel();
+    let found = Arc::new(AtomicUsize::new(0));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (count, stop) = (found.clone(), cancel.clone());
     std::thread::Builder::new()
         .name("folder".into())
         .spawn(move || {
-            let result = list(&dir, keep.as_deref(), order).map_err(|e| e.to_string());
+            let result = match depth {
+                Depth::Folder => list(&dir, keep.as_deref(), order),
+                Depth::ByFolder => list_deep(&dir, order, true, &count, &stop),
+                Depth::Flat => list_deep(&dir, order, false, &count, &stop),
+            };
+            let result = result.map_err(|e| e.to_string());
             if tx.send(result).is_ok() {
                 ctx.request_repaint();
             }
         })
         .expect("spawn folder thread");
-    Scan { rx }
+    Scan { rx, found, cancel }
 }
 
 #[cfg(test)]
@@ -214,6 +318,54 @@ mod tests {
         assert_eq!(names(files.clone()), ["Б.gif", "а.bmp", "10.jpg", "2.png", "1.JPG"]);
         assert_eq!(insertion_point(&files, &dir.join("5.jpg"), names_down), Some(3));
         assert_eq!(insertion_point(&files, &dir.join("5.jpg"), Order { key: SortKey::Size, ..by_name }), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lists_sub_folders_folder_by_folder() {
+        let dir = std::env::temp_dir().join(format!("qview_folder_deep_{}", std::process::id()));
+        for d in [r"b10\x", "b2", "hidden", "empty"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        // The sizes set the order within a folder; the folders keep theirs.
+        for (name, size) in [
+            ("z.jpg", 1),
+            ("a.jpg", 2),
+            (r"b2\c.png", 2),
+            (r"b2\d.png", 1),
+            (r"b2\notes.txt", 1),
+            (r"b10\e.gif", 1),
+            (r"b10\x\f.bmp", 1),
+            (r"hidden\g.jpg", 1),
+        ] {
+            std::fs::write(dir.join(name), vec![0u8; size]).unwrap();
+        }
+        let hidden = crate::win::wide(dir.join("hidden"));
+        unsafe {
+            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(hidden.as_ptr(), 0x2);
+        }
+        let relative = |order, by_folder| -> Vec<String> {
+            let (found, cancel) = (AtomicUsize::new(0), AtomicBool::new(false));
+            let files = list_deep(&dir, order, by_folder, &found, &cancel).unwrap();
+            assert_eq!(found.load(Relaxed), files.len());
+            files.iter().map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect()
+        };
+        let by_name = Order::default();
+        assert_eq!(relative(by_name, true), ["a.jpg", "z.jpg", r"b2\c.png", r"b2\d.png", r"b10\e.gif", r"b10\x\f.bmp"]);
+        let by_size = Order { key: SortKey::Size, descending: false };
+        assert_eq!(relative(by_size, true), ["z.jpg", "a.jpg", r"b2\d.png", r"b2\c.png", r"b10\e.gif", r"b10\x\f.bmp"]);
+        let names_down = Order { descending: true, ..by_name };
+        assert_eq!(relative(names_down, true), ["z.jpg", "a.jpg", r"b2\d.png", r"b2\c.png", r"b10\e.gif", r"b10\x\f.bmp"]);
+        // Not by folder: one order through all of them.
+        assert_eq!(relative(by_name, false), ["a.jpg", r"b2\c.png", r"b2\d.png", r"b10\e.gif", r"b10\x\f.bmp", "z.jpg"]);
+        assert_eq!(relative(by_size, false), [r"b2\d.png", r"b10\e.gif", r"b10\x\f.bmp", "z.jpg", "a.jpg", r"b2\c.png"]);
+        assert!(list_deep(&dir, by_size, true, &AtomicUsize::new(0), &AtomicBool::new(true)).is_err());
+        let files = list_deep(&dir, by_size, true, &AtomicUsize::new(0), &AtomicBool::new(false)).unwrap();
+        assert_eq!(starts(&files), [0, 2, 4, 5]);
+        assert!(starts(&[]).is_empty());
+        unsafe {
+            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(hidden.as_ptr(), 0x80);
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

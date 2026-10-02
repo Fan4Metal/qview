@@ -86,6 +86,7 @@ const AUTO: &str = "auto";
 const LANGUAGE_KEY: &str = "language";
 const SORT_KEY: &str = "sort";
 const SORT_DESCENDING_KEY: &str = "sort_descending";
+const BY_FOLDER_KEY: &str = "by_folder";
 
 #[derive(Clone)]
 pub struct Picture {
@@ -120,6 +121,15 @@ pub struct App {
     pub files: Vec<PathBuf>,
     /// The folder of `files`.
     pub dir: Option<PathBuf>,
+    /// `files` has the images of all the sub-folders of `dir` too, folder
+    /// by folder ("Sub-folders" above the gallery's grid; folders chosen in
+    /// the tree are listed the same way).
+    pub deep: bool,
+    /// Where each folder's images start in `files`.
+    pub starts: Vec<usize>,
+    /// With `deep`, each folder's images are ordered and shown on their
+    /// own, under a header in the gallery; otherwise in one order.
+    pub by_folder: bool,
     /// The listing of `dir` while it runs.
     pub scan: Option<Scan>,
     /// The order of `files` (View → Sort).
@@ -282,6 +292,9 @@ impl App {
             gl,
             files: Vec::new(),
             dir: None,
+            deep: false,
+            starts: Vec::new(),
+            by_folder: cc.storage.and_then(|s| s.get_string(BY_FOLDER_KEY)).as_deref() == Some("true"),
             scan: None,
             sort: Order {
                 key: cc.storage.and_then(|s| s.get_string(SORT_KEY)).and_then(|v| SortKey::from_name(&v)).unwrap_or_default(),
@@ -346,7 +359,7 @@ impl App {
     pub fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
         let path = std::path::absolute(&path).unwrap_or(path);
         if path.is_dir() {
-            self.open_folder(ctx, path);
+            self.open_folder(ctx, path, false);
             self.enter_gallery(ctx);
             return;
         }
@@ -354,24 +367,57 @@ impl App {
             self.leave_gallery();
         }
         let dir = path.parent().map(Path::to_path_buf);
-        let listed =
-            self.scan.is_none() && matches!((&self.dir, &dir), (Some(a), Some(b)) if folder::same_path(a, b));
+        let listed = self.scan.is_none()
+            && !self.deep
+            && matches!((&self.dir, &dir), (Some(a), Some(b)) if folder::same_path(a, b));
         self.index = if listed { folder::position(&self.files, &path) } else { None };
         self.set_current(Some(path.clone()));
         if self.index.is_none()
             && let Some(dir) = dir
         {
-            self.start_scan(ctx, dir, Some(path));
+            self.start_scan(ctx, dir, false, Some(path));
         }
     }
 
-    /// List `dir`; its first image becomes the current one.
-    pub fn open_folder(&mut self, ctx: &egui::Context, dir: PathBuf) {
-        if self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir)) {
+    /// List `dir`, with `deep` its sub-folders too; its first image becomes
+    /// the current one.
+    pub fn open_folder(&mut self, ctx: &egui::Context, dir: PathBuf, deep: bool) {
+        if self.deep == deep && self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir)) {
             return;
         }
         self.set_current(None);
-        self.start_scan(ctx, dir, None);
+        self.start_scan(ctx, dir, deep, None);
+    }
+
+    /// List `dir` again with or without its sub-folders. The current image
+    /// stays if the new listing has it; otherwise the first one is current.
+    pub fn set_deep(&mut self, ctx: &egui::Context, deep: bool) {
+        let Some(dir) = self.dir.clone() else {
+            self.deep = deep;
+            return;
+        };
+        let keep = self.current.clone().filter(|c| deep || c.parent().is_some_and(|p| folder::same_path(p, &dir)));
+        if keep.is_none() {
+            self.set_current(None);
+        }
+        self.centre_after_scan = true;
+        self.start_scan(ctx, dir, deep, keep);
+    }
+
+    /// What `files` lists, as a key for what the gallery keeps per folder
+    /// (the scroll position, the Auto proportions): `dir`, and with its
+    /// sub-folders `dir\*`, which no folder can be called.
+    pub fn listing(&self) -> Option<PathBuf> {
+        self.dir.as_ref().map(|d| if self.deep { d.join("*") } else { d.clone() })
+    }
+
+    /// The name of `path` for display: with the sub-folders listed, its
+    /// path from `dir`.
+    pub fn display_name(&self, path: &Path) -> String {
+        match self.dir.as_deref().filter(|_| self.deep).and_then(|d| path.strip_prefix(d).ok()) {
+            Some(relative) => relative.to_string_lossy().into_owned(),
+            None => file_name(path),
+        }
     }
 
     /// Show the gallery of the folder of the current file.
@@ -394,13 +440,25 @@ impl App {
         }
     }
 
-    fn start_scan(&mut self, ctx: &egui::Context, dir: PathBuf, keep: Option<PathBuf>) {
-        let same = self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir));
+    fn start_scan(&mut self, ctx: &egui::Context, dir: PathBuf, deep: bool, keep: Option<PathBuf>) {
+        let same = self.deep == deep && self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir));
         self.place = self.index.filter(|_| same);
         self.files.clear();
+        self.starts.clear();
         self.index = None;
         self.dir = Some(dir.clone());
-        self.scan = Some(folder::scan(dir, keep, self.sort, ctx.clone()));
+        self.deep = deep;
+        self.scan = Some(folder::scan(dir, self.depth(), keep, self.sort, ctx.clone()));
+    }
+
+    /// What the listing of `dir` holds: with the sub-folders, by folder
+    /// the order applies within each folder, otherwise through all.
+    fn depth(&self) -> folder::Depth {
+        match (self.deep, self.by_folder) {
+            (false, _) => folder::Depth::Folder,
+            (true, true) => folder::Depth::ByFolder,
+            (true, false) => folder::Depth::Flat,
+        }
     }
 
     /// List the folder again in `order`. The old listing stays until then,
@@ -410,10 +468,16 @@ impl App {
             return;
         }
         self.sort = order;
+        self.relist(ctx);
+    }
+
+    /// List the folder again as it is now to be ordered (the order, or "By
+    /// folder" with the sub-folders); the old listing stays until then.
+    pub fn relist(&mut self, ctx: &egui::Context) {
         if let Some(dir) = self.dir.clone() {
             self.place = self.index;
             self.centre_after_scan = true;
-            self.scan = Some(folder::scan(dir, self.current.clone(), order, ctx.clone()));
+            self.scan = Some(folder::scan(dir, self.depth(), self.current.clone(), self.sort, ctx.clone()));
         }
     }
 
@@ -463,6 +527,7 @@ impl App {
                 self.files = self.current.iter().cloned().collect();
             }
         }
+        self.starts = folder::starts(&self.files);
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
         if std::mem::take(&mut self.centre_after_scan)
             && let Some(gallery) = &mut self.gallery
@@ -478,7 +543,10 @@ impl App {
             // without a place in the folder nothing could be browsed. The
             // next image takes its place, as after a deletion.
             Some(missing) => {
-                let at = folder::insertion_point(&self.files, &missing, self.sort).or(self.place);
+                // Not known among the sub-folders: the names are in
+                // order only within a folder.
+                let at = if self.deep { None } else { folder::insertion_point(&self.files, &missing, self.sort) };
+                let at = at.or(self.place);
                 let i = at.unwrap_or(0).min(self.files.len() - 1);
                 let name = file_name(&missing);
                 self.notice(tr!(format!("File not found: {name}"), format!("Файл не найден: {name}")));
@@ -697,6 +765,7 @@ impl App {
         match folder::position(&self.files, &path) {
             Some(pos) => {
                 self.files.remove(pos);
+                self.starts = folder::starts(&self.files);
                 if was_current {
                     self.index = None;
                     if self.files.is_empty() {
@@ -806,14 +875,16 @@ impl App {
                 }
             }
             Cmd::Refresh => {
-                if let Some(path) = self.current.clone() {
+                if let Some(path) = &self.current {
                     // Decoded again; the old picture stays until then.
-                    self.cache.remove(&path);
-                    if let Some(dir) = path.parent() {
-                        self.start_scan(ctx, dir.to_path_buf(), Some(path));
-                    }
-                } else if let Some(dir) = self.dir.clone() {
-                    self.start_scan(ctx, dir, None);
+                    self.cache.remove(path);
+                }
+                let dir = match &self.current {
+                    Some(path) if !self.deep => path.parent().map(Path::to_path_buf),
+                    _ => self.dir.clone(),
+                };
+                if let Some(dir) = dir {
+                    self.start_scan(ctx, dir, self.deep, self.current.clone());
                 }
             }
             Cmd::ToggleToolbar => self.show_toolbar = !self.show_toolbar,
@@ -843,10 +914,12 @@ impl App {
     /// as in the viewer.
     fn run_in_gallery(&mut self, ctx: &egui::Context, cmd: Cmd) -> bool {
         let Some(gallery) = &self.gallery else { return false };
-        let (columns, page) = (gallery.columns, gallery.page_rows as isize);
+        let page = gallery.page_rows as isize;
         let rows = |app: &mut Self, rows: isize| {
-            if let Some(i) = app.index {
-                app.go(gallery::move_rows(i, rows, columns, app.files.len()));
+            if let Some(i) = app.index
+                && let Some(g) = &app.gallery
+            {
+                app.go(g.layout.move_rows(i, rows));
             }
         };
         match cmd {
@@ -1185,6 +1258,7 @@ impl eframe::App for App {
         storage.set_string(LANGUAGE_KEY, self.lang.name().to_string());
         storage.set_string(SORT_KEY, self.sort.key.name().to_string());
         storage.set_string(SORT_DESCENDING_KEY, self.sort.descending.to_string());
+        storage.set_string(BY_FOLDER_KEY, self.by_folder.to_string());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

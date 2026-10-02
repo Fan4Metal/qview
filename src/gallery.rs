@@ -62,6 +62,9 @@ pub const HOVER_DELAY: Duration = Duration::from_millis(150);
 /// Space around a thumbnail in its cell, and the height of the name.
 pub const PAD: f32 = 6.0;
 pub const LABEL: f32 = 18.0;
+/// Height of a folder's header when the images of the sub-folders are
+/// shown by folder.
+pub const HEADER: f32 = 30.0;
 
 /// A thumbnail on the GPU, or the note that there is none.
 pub struct Thumb {
@@ -100,8 +103,9 @@ pub struct Gallery {
     made: VecDeque<Made>,
     /// Pixels of the textures in `cache`.
     pixels: usize,
-    /// Columns and whole rows of the grid in the last frame, for the keys.
-    pub columns: usize,
+    /// The grid and its whole rows on screen in the last frame, for the
+    /// keys.
+    pub layout: Layout,
     pub page_rows: usize,
     pub scroll: Option<Scroll>,
     /// Scroll offset of the grid in the last frame.
@@ -112,8 +116,6 @@ pub struct Gallery {
     pub hovered: Option<(PathBuf, Instant)>,
     /// Frames polled, for `Thumb::used`.
     pub frame: u64,
-    /// Height of the grid's rows in the last frame.
-    pub row_height: f32,
     /// Proportions of the cells in the last frame: kept in Auto mode while
     /// a folder's are being found.
     pub shown_aspect: f32,
@@ -146,14 +148,13 @@ impl Gallery {
             cache: HashMap::new(),
             made: VecDeque::new(),
             pixels: 0,
-            columns: 1,
+            layout: Layout::default(),
             page_rows: 1,
             scroll: None,
             top: 0.0,
             scrolled_to: None,
             hovered: None,
             frame: 0,
-            row_height: 0.0,
             shown_aspect: 1.0,
             auto: HashMap::new(),
             finding: None,
@@ -467,16 +468,105 @@ pub fn grid(width: f32, frame: Vec2, count: usize) -> Grid {
     Grid { columns, rows: count.div_ceil(columns), cell: egui::vec2(width / columns as f32, frame.y + 2.0 * PAD + LABEL) }
 }
 
-/// The cell `rows` rows below `i` (above for negative), in the same
-/// column, stopping at the first and last rows; in a last row too short
-/// for that column, the last cell.
-pub fn move_rows(i: usize, rows: isize, columns: usize, count: usize) -> usize {
-    if count == 0 {
-        return 0;
+/// Where the cells go: rows of the [`grid`], in sections that each start
+/// a row under a header `header` points high: one per folder when the
+/// images of the sub-folders are shown by folder, otherwise one with no
+/// header.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Layout {
+    pub columns: usize,
+    pub cell: Vec2,
+    pub header: f32,
+    pub sections: Vec<Section>,
+    count: usize,
+    /// Height of the whole grid.
+    pub height: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Section {
+    /// Its first cell.
+    pub first: usize,
+    /// Rows of cells above it.
+    row: usize,
+    /// Top of its header.
+    pub y: f32,
+}
+
+impl Layout {
+    /// `count` cells in a list `width` points wide; `starts` are the first
+    /// cells of the sections, ascending (empty: one section).
+    pub fn new(width: f32, frame: Vec2, count: usize, starts: &[usize], header: f32) -> Self {
+        let g = grid(width, frame, count);
+        let starts = if starts.is_empty() { &[0][..] } else { starts };
+        let mut sections = Vec::with_capacity(starts.len());
+        let (mut row, mut y) = (0, 0.0);
+        for (k, &first) in starts.iter().enumerate() {
+            let end = starts.get(k + 1).copied().unwrap_or(count).min(count);
+            if first >= end {
+                continue;
+            }
+            sections.push(Section { first, row, y });
+            let rows = (end - first).div_ceil(g.columns);
+            row += rows;
+            y += header + rows as f32 * g.cell.y;
+        }
+        Self { columns: g.columns, cell: g.cell, header, sections, count, height: y }
     }
-    let last_row = ((count - 1) / columns) as isize;
-    let row = ((i / columns) as isize + rows).clamp(0, last_row) as usize;
-    (row * columns + i % columns).min(count - 1)
+
+    /// Cells in section `k`.
+    pub fn len(&self, k: usize) -> usize {
+        self.sections.get(k + 1).map_or(self.count, |s| s.first) - self.sections[k].first
+    }
+
+    /// The section of cell `i`.
+    fn section_of(&self, i: usize) -> usize {
+        self.sections.partition_point(|s| s.first <= i).saturating_sub(1)
+    }
+
+    /// Top left of cell `i` from the top left of the grid.
+    pub fn cell_pos(&self, i: usize) -> Vec2 {
+        let Some(s) = self.sections.get(self.section_of(i)) else { return Vec2::ZERO };
+        let local = i.saturating_sub(s.first);
+        let (row, col) = (local / self.columns, local % self.columns);
+        egui::vec2(col as f32 * self.cell.x, s.y + self.header + row as f32 * self.cell.y)
+    }
+
+    /// The cells of the rows between `top` and `bottom`, wholly or partly.
+    pub fn visible(&self, top: f32, bottom: f32) -> std::ops::Range<usize> {
+        self.index_at(top, false)..self.index_at(bottom, true).max(self.index_at(top, false))
+    }
+
+    /// The first cell of the row at `y`, or with `after` of the row after
+    /// it (the cells above `y` end there).
+    fn index_at(&self, y: f32, after: bool) -> usize {
+        let k = self.sections.partition_point(|s| s.y <= y).saturating_sub(1);
+        let Some(s) = self.sections.get(k) else { return 0 };
+        let local = (y - s.y - self.header) / self.cell.y;
+        if local <= 0.0 {
+            return s.first;
+        }
+        let rows = if after { local.ceil() } else { local.floor() } as usize;
+        (s.first + rows * self.columns).min(s.first + self.len(k))
+    }
+
+    /// Rows of cells.
+    fn rows(&self) -> usize {
+        self.sections.last().map_or(0, |s| s.row + self.len(self.sections.len() - 1).div_ceil(self.columns))
+    }
+
+    /// The cell `rows` rows below `i` (above for negative), in the same
+    /// column, stopping at the first and last rows; in a row too short for
+    /// that column, its last cell. The headers are not rows.
+    pub fn move_rows(&self, i: usize, rows: isize) -> usize {
+        let k = self.section_of(i);
+        let Some(s) = self.sections.get(k) else { return 0 };
+        let local = i.saturating_sub(s.first);
+        let row = ((s.row + local / self.columns) as isize + rows).clamp(0, self.rows() as isize - 1) as usize;
+        let t = self.sections.partition_point(|x| x.row <= row) - 1;
+        let s = &self.sections[t];
+        (s.first + (row - s.row) * self.columns + local % self.columns).min(s.first + self.len(t) - 1)
+    }
 }
 
 #[cfg(test)]
@@ -500,16 +590,53 @@ mod tests {
     #[test]
     fn rows_keep_the_column() {
         // 10 cells in rows of 4: 0-3, 4-7, 8-9.
-        assert_eq!(move_rows(1, 1, 4, 10), 5);
-        assert_eq!(move_rows(5, -1, 4, 10), 1);
-        assert_eq!(move_rows(1, -1, 4, 10), 1);
+        let frame = egui::vec2(100.0 - 2.0 * PAD, 50.0);
+        let l = Layout::new(400.0, frame, 10, &[], 0.0);
+        assert_eq!(l.columns, 4);
+        let move_rows = |i, rows| l.move_rows(i, rows);
+        assert_eq!(move_rows(1, 1), 5);
+        assert_eq!(move_rows(5, -1), 1);
+        assert_eq!(move_rows(1, -1), 1);
         // Under 6 there is no cell: the last one.
-        assert_eq!(move_rows(6, 1, 4, 10), 9);
-        assert_eq!(move_rows(9, 1, 4, 10), 9);
+        assert_eq!(move_rows(6, 1), 9);
+        assert_eq!(move_rows(9, 1), 9);
         // A page past either end stops at the first or last row.
-        assert_eq!(move_rows(5, 10, 4, 10), 9);
-        assert_eq!(move_rows(4, 10, 4, 10), 8);
-        assert_eq!(move_rows(9, -10, 4, 10), 1);
+        assert_eq!(move_rows(5, 10), 9);
+        assert_eq!(move_rows(4, 10), 8);
+        assert_eq!(move_rows(9, -10), 1);
+        assert_eq!(Layout::default().move_rows(3, 1), 0);
+    }
+
+    #[test]
+    fn sections_start_rows_under_headers() {
+        // Rows of 4 cells 80 points high; folders of 6, 2 and 5 cells:
+        // 0-3, 4-5 | 6-7 | 8-11, 12.
+        let frame = egui::vec2(100.0 - 2.0 * PAD, 80.0 - 2.0 * PAD - LABEL);
+        let l = Layout::new(400.0, frame, 13, &[0, 6, 8], 30.0);
+        assert_eq!(l.cell, egui::vec2(100.0, 80.0));
+        assert_eq!(l.sections.iter().map(|s| s.y).collect::<Vec<_>>(), [0.0, 190.0, 300.0]);
+        assert_eq!(l.height, 300.0 + 30.0 + 160.0);
+        assert_eq!((l.len(0), l.len(1), l.len(2)), (6, 2, 5));
+        assert_eq!(l.cell_pos(0), egui::vec2(0.0, 30.0));
+        assert_eq!(l.cell_pos(5), egui::vec2(100.0, 110.0));
+        assert_eq!(l.cell_pos(7), egui::vec2(100.0, 220.0));
+        assert_eq!(l.cell_pos(12), egui::vec2(0.0, 410.0));
+        // Down from the second column: the next folder's second cell; a
+        // row too short for the column ends at its last cell.
+        assert_eq!(l.move_rows(1, 1), 5);
+        assert_eq!(l.move_rows(5, 1), 7);
+        assert_eq!(l.move_rows(3, 1), 5);
+        assert_eq!(l.move_rows(7, 1), 9);
+        assert_eq!(l.move_rows(11, -1), 7);
+        assert_eq!(l.move_rows(9, 10), 12);
+        assert_eq!(l.move_rows(12, -10), 0);
+        // On screen: from the middle of the first row to a header.
+        assert_eq!(l.visible(50.0, 200.0), 0..6);
+        assert_eq!(l.visible(120.0, 230.0), 4..8);
+        assert_eq!(l.visible(195.0, 215.0), 6..6);
+        assert_eq!(l.visible(400.0, 1000.0), 8..13);
+        // Empty sections are left out.
+        assert_eq!(Layout::new(400.0, frame, 5, &[0, 0, 5], 30.0).sections.len(), 1);
     }
 
     #[test]

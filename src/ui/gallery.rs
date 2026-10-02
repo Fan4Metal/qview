@@ -7,7 +7,7 @@ use egui::{Align, Align2, Color32, FontId, Layout, Margin, Painter, Rect, Respon
 
 use super::{TEXT, TEXT_WEAK, panel_frame};
 use crate::app::{App, file_name};
-use crate::gallery::{self, ASPECTS, HOVER_DELAY, LABEL, MAX_SIZE, MIN_SIZE, PAD, Scroll};
+use crate::gallery::{self, ASPECTS, HEADER, HOVER_DELAY, LABEL, MAX_SIZE, MIN_SIZE, PAD, Scroll};
 use crate::input::Cmd;
 use crate::thumbs::Request;
 
@@ -25,6 +25,10 @@ const SLIDER_ICON: Color32 = Color32::from_rgb(0xb0, 0xb0, 0xb0);
 /// The slider's rail, darker than the bar, and its part left of the handle.
 const SLIDER_RAIL: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
 const SLIDER_FILL: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
+/// The line between groups of controls in the bar.
+const BAR_SEPARATOR: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
+/// The line of a folder's header in the grid.
+const HEADER_LINE: Color32 = Color32::from_rgb(0x48, 0x48, 0x48);
 
 impl App {
     /// The gallery in place of the image area.
@@ -39,8 +43,9 @@ impl App {
             .frame(panel_frame(TREE_BG, Margin::symmetric(0, 4)))
             .show(root_ui, |ui| gallery.tree.show(ui, selected.as_deref()));
         self.tree_width = tree.response.rect.width().round();
+        // In the mode chosen above the grid.
         if let Some(dir) = tree.inner {
-            self.open_folder(&ctx, dir);
+            self.open_folder(&ctx, dir, self.deep);
         }
         self.gallery_bar(root_ui);
         let mut open = None;
@@ -54,7 +59,8 @@ impl App {
 
     /// The folder and the cell size slider above the grid.
     fn gallery_bar(&mut self, root_ui: &mut Ui) {
-        let before = (self.thumb_size, self.thumb_aspect);
+        let before = (self.thumb_size, self.thumb_aspect, self.by_folder);
+        let mut deep = self.deep;
         let shown = self.gallery.as_ref().map_or(1.0, |g| g.shown_aspect);
         egui::Panel::top("gallery_bar")
             .frame(panel_frame(BAR_BG, Margin::symmetric(8, 3)))
@@ -103,6 +109,27 @@ impl App {
                             "Proportions of the cells; Auto: those of most images of the folder",
                             "Пропорции ячеек; «Авто» — как у большинства изображений папки"
                         ));
+                    // What is listed, set apart from how the cells look.
+                    ui.add_space(10.0);
+                    bar_separator(ui);
+                    ui.add_space(10.0);
+                    // Always there, so that nothing moves; only for the
+                    // sub-folders.
+                    let by_folder = egui::Checkbox::new(&mut self.by_folder, tr!("By folder", "По папкам"));
+                    ui.add_enabled(self.deep, by_folder)
+                        .on_hover_text(tr!(
+                            "Each folder's images sorted and shown on their own, under a header",
+                            "Изображения каждой папки сортируются и показываются отдельно, под её заголовком"
+                        ))
+                        .on_disabled_hover_text(tr!(
+                            "With the sub-folders: each folder's images on their own",
+                            "Для вложенных папок: изображения каждой папки отдельно"
+                        ));
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut deep, tr!("Sub-folders", "Вложенные папки")).on_hover_text(tr!(
+                        "The images of all sub-folders too",
+                        "Также изображения всех вложенных папок"
+                    ));
                     ui.add_space(8.0);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         if let Some(dir) = &self.dir {
@@ -112,8 +139,14 @@ impl App {
                     });
                 });
             });
-        if (self.thumb_size, self.thumb_aspect) != before {
+        if (self.thumb_size, self.thumb_aspect, self.by_folder) != before {
             self.thumb_size_changed();
+        }
+        if deep != self.deep {
+            self.set_deep(root_ui.ctx(), deep);
+        } else if self.deep && self.by_folder != before.2 {
+            // In the order of each folder, or in one through all.
+            self.relist(root_ui.ctx());
         }
     }
 
@@ -137,15 +170,26 @@ impl App {
             }
         }
         let n = self.files.len();
+        let listing = self.listing();
         let gallery = self.gallery.as_mut()?;
         if n == 0 {
             gallery.want(Vec::new());
-            let text = if self.scan.is_some() {
-                None
+            let text = if let Some(scan) = &self.scan {
+                // The sub-folders of a large folder take a while.
+                self.deep.then(|| {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    let found = scan.found();
+                    tr!(
+                        format!("Looking through the sub-folders… {found} images"),
+                        format!("Просмотр вложенных папок… изображений: {found}")
+                    )
+                })
             } else if self.dir.is_none() {
-                Some(tr!("Choose a folder on the left", "Выберите папку слева"))
+                Some(tr!("Choose a folder on the left", "Выберите папку слева").to_string())
+            } else if self.deep {
+                Some(tr!("No images in this folder and its sub-folders", "В этой папке и вложенных папках нет изображений").into())
             } else {
-                Some(tr!("No images in this folder", "В этой папке нет изображений"))
+                Some(tr!("No images in this folder", "В этой папке нет изображений").into())
             };
             if let Some(text) = text {
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(16.0), TEXT_WEAK);
@@ -154,28 +198,30 @@ impl App {
         }
         // Auto: the folder's proportions once found, the last ones until
         // then.
-        let aspect = match (self.thumb_aspect, &self.dir) {
+        let aspect = match (self.thumb_aspect, &listing) {
             (Some(a), _) => a,
-            (None, Some(dir)) if self.scan.is_none() => {
-                gallery.auto_aspect(dir, &self.files).unwrap_or(gallery.shown_aspect)
+            (None, Some(listing)) if self.scan.is_none() => {
+                gallery.auto_aspect(listing, &self.files).unwrap_or(gallery.shown_aspect)
             }
             (None, _) => gallery.shown_aspect,
         };
         if aspect != gallery.shown_aspect {
             // The current image stays where it was on screen.
             if let Some(i) = self.index
-                && gallery.row_height > 0.0
+                && !gallery.layout.sections.is_empty()
             {
-                let y = (i / gallery.columns.max(1)) as f32 * gallery.row_height;
-                gallery.scroll = Some(Scroll::Keep(y - gallery.top));
+                gallery.scroll = Some(Scroll::Keep(gallery.layout.cell_pos(i).y - gallery.top));
             }
             gallery.shown_aspect = aspect;
         }
         let frame = gallery::frame_size(self.thumb_size, aspect);
-        let grid = gallery::grid(rect.width(), frame, n);
-        gallery.columns = grid.columns;
-        gallery.row_height = grid.cell.y;
-        gallery.page_rows = ((rect.height() / grid.cell.y).floor() as usize).max(1);
+        // By folder: a section for each, under a header; not while the
+        // listing in one order is still on screen.
+        let sections = self.deep && self.by_folder && self.scan.is_none();
+        let (starts, header) = if sections { (&self.starts[..], HEADER) } else { (&[][..], 0.0) };
+        let layout = gallery::Layout::new(rect.width(), frame, n, starts, header);
+        let cell = layout.cell;
+        gallery.page_rows = ((rect.height() / cell.y).floor() as usize).max(1);
 
         // Follow the current image when it changes (keys, a deletion).
         if self.index.is_some() && self.current != gallery.scrolled_to {
@@ -183,14 +229,21 @@ impl App {
         }
         let mut offset = None;
         if let (Some(scroll), Some(i)) = (gallery.scroll, self.index) {
-            let y = (i / grid.columns) as f32 * grid.cell.y;
+            let y = layout.cell_pos(i).y;
+            // The header above the first row of a folder comes into view
+            // with it.
+            let above = if layout.sections.iter().any(|s| s.first + layout.columns > i && s.first <= i) {
+                layout.header
+            } else {
+                0.0
+            };
             let (top, height) = (gallery.top, rect.height());
             offset = match scroll {
-                Scroll::Centre => Some((y - (height - grid.cell.y) / 2.0).max(0.0)),
-                Scroll::Visible if y < top => Some(y),
-                Scroll::Visible if y + grid.cell.y > top + height => Some(y + grid.cell.y - height),
+                Scroll::Centre => Some((y - (height - cell.y) / 2.0).max(0.0)),
+                Scroll::Visible if y - above < top => Some(y - above),
+                Scroll::Visible if y + cell.y > top + height => Some(y + cell.y - height),
                 Scroll::Visible => None,
-                Scroll::Keep(below) => Some((y - below.clamp(0.0, (height - grid.cell.y).max(0.0))).max(0.0)),
+                Scroll::Keep(below) => Some((y - below.clamp(0.0, (height - cell.y).max(0.0))).max(0.0)),
             };
             gallery.scroll = None;
             gallery.scrolled_to = self.current.clone();
@@ -199,7 +252,7 @@ impl App {
         // offers the order. Made before the cells, which are on top of it.
         let background = ui.interact(rect, ui.id().with("grid_background"), Sense::CLICK);
         // Each folder keeps its own scroll position.
-        let mut area = egui::ScrollArea::vertical().id_salt(("grid", &self.dir)).auto_shrink([false, false]);
+        let mut area = egui::ScrollArea::vertical().id_salt(("grid", &listing)).auto_shrink([false, false]);
         if let Some(y) = offset {
             area = area.vertical_scroll_offset(y);
         }
@@ -211,20 +264,31 @@ impl App {
         let mut hovered = None;
         let files = &self.files;
         let index = self.index;
+        let (dir, deep) = (self.dir.as_deref(), self.deep);
         let out = area.show_viewport(ui, |ui, viewport| {
-            ui.set_height(grid.rows as f32 * grid.cell.y);
+            ui.set_height(layout.height);
             let origin = ui.max_rect().min;
-            let first = (viewport.min.y / grid.cell.y).floor().max(0.0) as usize;
-            let last = ((viewport.max.y / grid.cell.y).ceil().max(0.0) as usize).min(grid.rows);
             let painter = ui.painter().clone();
-            for i in (first * grid.columns..last * grid.columns).take_while(|&i| i < n) {
-                let (row, col) = (i / grid.columns, i % grid.columns);
-                let cell = Rect::from_min_size(
-                    origin + vec2(col as f32 * grid.cell.x, row as f32 * grid.cell.y),
-                    grid.cell,
-                );
+            if layout.header > 0.0 {
+                let first = layout.sections.partition_point(|s| s.y + layout.header <= viewport.min.y);
+                for (k, s) in layout.sections.iter().enumerate().skip(first) {
+                    if s.y >= viewport.max.y {
+                        break;
+                    }
+                    let rect = Rect::from_min_size(origin + vec2(0.0, s.y), vec2(ui.max_rect().width(), layout.header));
+                    folder_header(&painter, rect, &folder_name(dir, &files[s.first]), layout.len(k));
+                }
+            }
+            let visible = layout.visible(viewport.min.y, viewport.max.y);
+            for i in visible.clone() {
+                let cell = Rect::from_min_size(origin + layout.cell_pos(i), cell);
                 let response = ui.interact(cell, ui.id().with(("cell", i)), Sense::CLICK);
                 let path = &files[i];
+                // Which sub-folder it is in.
+                let response = match dir.filter(|_| deep).and_then(|d| path.strip_prefix(d).ok()) {
+                    Some(relative) => response.on_hover_text(relative.to_string_lossy()),
+                    None => response,
+                };
                 if index == Some(i) {
                     painter.rect_filled(cell.shrink(1.0), 3.0, CELL_SELECTED);
                 } else if response.hovered() {
@@ -258,17 +322,19 @@ impl App {
                 label(&painter, &file_name(path), cell, square.bottom() + 2.0);
                 cells.push((i, response));
             }
-            (first, last)
+            visible
         });
         gallery.top = out.state.offset.y;
+        let columns = layout.columns;
+        gallery.layout = layout;
 
         // A screen ahead, then half a screen back, as many as the budget
         // keeps besides the visible ones.
-        let (first, last) = out.inner;
-        let page = (last - first).max(1);
+        let visible = out.inner;
+        let page = visible.len().max(1);
         let room = gallery::cells_in_budget(gallery::side_needed(frame_px, fill, None)).saturating_sub(cells.len());
-        let ahead = last * grid.columns..((last + page) * grid.columns).min(n);
-        let back = first.saturating_sub(page / 2 + 1) * grid.columns..first * grid.columns;
+        let ahead = visible.end..(visible.end + page).min(n);
+        let back = visible.start.saturating_sub(page / 2 + columns)..visible.start;
         for i in ahead.chain(back.rev()).take(room) {
             let ratio = gallery.cache.get(&self.files[i]).and_then(|t| t.ratio());
             let side = gallery::side_needed(frame_px, fill, ratio);
@@ -324,6 +390,35 @@ impl App {
     }
 }
 
+/// The folder of `file` as its header shows it: its path from `dir`, the
+/// folder shown, or the name of `dir` itself.
+fn folder_name(dir: Option<&std::path::Path>, file: &std::path::Path) -> String {
+    let parent = file.parent().unwrap_or(file);
+    match dir.and_then(|d| parent.strip_prefix(d).ok()) {
+        Some(relative) if !relative.as_os_str().is_empty() => relative.to_string_lossy().into_owned(),
+        _ => file_name(dir.unwrap_or(parent)),
+    }
+}
+
+/// The header of a folder's images in the grid: its name, how many images
+/// it has, and a line to the right edge.
+fn folder_header(painter: &Painter, rect: Rect, name: &str, count: usize) {
+    let y = rect.center().y + 2.0;
+    let left = rect.left() + PAD + 4.0;
+    let mut job = LayoutJob::simple_singleline(name.to_owned(), FontId::proportional(13.0), TEXT);
+    job.wrap = TextWrapping::truncate_at_width(rect.width() * 0.7);
+    let name = painter.layout_job(job);
+    let count = painter.layout_no_wrap(count.to_string(), FontId::proportional(12.0), TEXT_WEAK);
+    painter.galley(pos2(left, y - name.size().y / 2.0), name.clone(), TEXT);
+    let x = left + name.size().x + 8.0;
+    painter.galley(pos2(x, y - count.size().y / 2.0), count.clone(), TEXT_WEAK);
+    let x = x + count.size().x + 10.0;
+    let right = rect.right() - PAD - 4.0;
+    if x < right {
+        painter.hline(x..=right, y, egui::Stroke::new(1.0, HEADER_LINE));
+    }
+}
+
 /// The file name under a thumbnail, cut short with an ellipsis.
 fn label(painter: &Painter, name: &str, cell: Rect, top: f32) {
     let mut job = LayoutJob::simple_singleline(name.to_owned(), FontId::proportional(12.0), TEXT);
@@ -331,6 +426,12 @@ fn label(painter: &Painter, name: &str, cell: Rect, top: f32) {
     let galley = painter.layout_job(job);
     let pos = pos2(cell.center().x - galley.size().x / 2.0, top + (LABEL - galley.size().y) / 2.0);
     painter.galley(pos, galley, TEXT);
+}
+
+/// A vertical line between groups of controls in the bar.
+fn bar_separator(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(vec2(1.0, 18.0), Sense::hover());
+    ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.0, BAR_SEPARATOR));
 }
 
 /// A square `side` points wide beside the slider: small thumbnails on its
