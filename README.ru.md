@@ -131,6 +131,7 @@ cargo test
 ```
 python tools/make_release.py              # тесты, сборка, установщик, архив
 python tools/make_release.py --no-tests   # то же без cargo test
+python tools/make_release.py --install    # затем тихая установка поверх установленной копии
 ```
 
 Файлы записываются в папку `dist`, версия берётся из `Cargo.toml`. Как и `build.py`, скрипт сначала закрывает `qview.exe`, запущенный из `target\release`. Сценарий установщика находится в `tools/setup.iss`; значок установщика записывает команда `qview.exe --export-icon <файл.ico>`.

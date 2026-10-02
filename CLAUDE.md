@@ -13,6 +13,7 @@ uv run build.py                  # closes a qview.exe running from target\, then
 cargo test                       # unit tests (view geometry, key map, folder order, decoder, mip levels, formats, thumbnails, folder tree, gallery grid)
 cargo clippy --release --all-targets   # must stay warning-free
 python tools/make_release.py     # tests, release build, dist\qview_<ver>_Setup.exe (Inno Setup 6, tools/setup.iss) and _portable.zip
+python tools/make_release.py --no-tests --install   # the same, then installs it silently over the installed copy (closes it first; previous tasks reused)
 $env:QVIEW_TRACE=1; .\target\release\qview.exe <file>   # start-up, decode and texture upload timings on stderr
 $env:QVIEW_BENCH_FILE="<file>"; cargo test --release phase_timings -- --ignored --nocapture   # decode phases of one file
 $env:QVIEW_ANIM_FILE="<gif or webp>"; cargo test --release file_frames -- --ignored --nocapture   # frames and delays of an animation

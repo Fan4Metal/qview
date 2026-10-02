@@ -131,6 +131,7 @@ The release script builds the executable, the installer and the portable archive
 ```
 python tools/make_release.py              # tests, release build, installer, archive
 python tools/make_release.py --no-tests   # the same without cargo test
+python tools/make_release.py --install    # then a silent installation over the installed copy
 ```
 
 The files are written to `dist`; the version is taken from `Cargo.toml`. Like `build.py`, the script first closes a `qview.exe` running from `target\release`. The installer script is `tools/setup.iss`; the installer icon is written by `qview.exe --export-icon <file.ico>`.
