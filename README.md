@@ -81,6 +81,7 @@ The gallery is opened with `G`, `Enter`, `Esc`, a double click on the image or t
 | Show the selected image | `Enter`, `G`, double click on a thumbnail |
 | Thumbnail size | the slider above the grid, `+` / `-`, `Ctrl+wheel` |
 | Show the images of the sub-folders too | the "Sub-folders" check box above the grid |
+| Read the folder, the thumbnails and the folder tree again | `F5` |
 | Close the program | `Esc` |
 
 The selected thumbnail is the current image: deletion, copying and Show in Explorer apply to it, also from the context menu of a thumbnail. That menu, and the one of the empty space of the grid, also offers the sort order. Thumbnails are taken from the Windows thumbnail cache, which Explorer fills too, so a folder seen before appears at once; for formats Windows has no thumbnails of, qview makes them itself. The image under the pointer and the selected one are decoded in advance, so a double click shows the image without delay. The list above the grid sets the proportions of the cells: 1:1, 4:3, 3:2, 16:9, the portrait 3:4, 2:3, 9:16, or Auto, which takes the proportions most images of the folder have (read from the headers of the files when the folder is opened; for a large folder, of 200 of them); the slider sets their long side. The "Fill cells" check box makes the thumbnails fill their cells, with the edges of the images cropped; otherwise each image is shown whole. The thumbnail size, these choices and the width of the tree are kept between runs.

@@ -944,9 +944,7 @@ impl App {
                 // as in the viewer.
                 if let Some(gallery) = &mut self.gallery {
                     gallery.forget(&self.files);
-                    if let Some(dir) = &self.dir {
-                        gallery.tree.refresh(dir);
-                    }
+                    gallery.tree.refresh();
                 }
                 return false;
             }

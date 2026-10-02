@@ -3,6 +3,7 @@
 //! expanded (a network or a sleeping drive can take seconds). Only the
 //! visible rows are laid out, as in disk_flashlight's tree.
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
@@ -45,6 +46,10 @@ struct Node {
     has_children: Option<bool>,
     expanded: bool,
     listing: bool,
+    /// Added to take the tree down to a folder (`Tree::reveal`) that the
+    /// listing does not show (hidden, or outside the top-level folders):
+    /// kept when the tree is read again.
+    revealed: bool,
 }
 
 impl Node {
@@ -59,8 +64,8 @@ impl Node {
 enum Message {
     /// The sub-folders of a node, sorted.
     Listed(usize, Vec<String>),
-    /// Whether each of them has sub-folders, in the same order.
-    Peeked(usize, Vec<bool>),
+    /// Whether each of them has sub-folders, by name.
+    Peeked(usize, Vec<(String, bool)>),
     /// Explorer's name of a top-level node.
     Named(usize, String),
 }
@@ -85,13 +90,21 @@ pub struct Tree {
 impl Tree {
     /// The user's Pictures and Desktop, then the drives.
     pub fn new(ctx: egui::Context) -> Self {
-        let folders = crate::win::known_folders().into_iter().map(|p| (p, Kind::Folder));
-        let drives = crate::win::drives().into_iter().map(|p| (p, Kind::Drive));
-        let tree = Self::with_roots(ctx, folders.chain(drives).collect());
-        // Explorer's names ("Изображения", "Media (H:)"): a drive that is
-        // asleep or gone can take a while to answer.
-        let roots: Vec<(usize, PathBuf)> = tree.roots.iter().map(|&r| (r, tree.nodes[r].path.clone())).collect();
-        let (tx, ctx) = (tree.tx.clone(), tree.ctx.clone());
+        let mut tree = Self::with_roots(ctx, Vec::new());
+        let added = tree.set_roots(system_roots());
+        tree.name_roots(added);
+        tree
+    }
+
+    /// Explorer's names of top-level nodes ("Изображения", "Media (H:)"),
+    /// on a thread: a drive that is asleep or gone can take a while to
+    /// answer.
+    fn name_roots(&self, ids: Vec<usize>) {
+        if ids.is_empty() {
+            return;
+        }
+        let roots: Vec<(usize, PathBuf)> = ids.into_iter().map(|r| (r, self.nodes[r].path.clone())).collect();
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         std::thread::Builder::new()
             .name("drive names".into())
             .spawn(move || {
@@ -104,7 +117,6 @@ impl Tree {
                 }
             })
             .expect("spawn drive names thread");
-        tree
     }
 
     fn with_roots(ctx: egui::Context, roots: Vec<(PathBuf, Kind)>) -> Self {
@@ -121,49 +133,128 @@ impl Tree {
             scroll_to: None,
             viewport: (0.0, 0.0),
         };
-        for (path, kind) in roots {
-            let name = match kind {
-                Kind::Drive => path.to_string_lossy().trim_end_matches('\\').to_string(),
-                Kind::Folder => path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into()),
-            };
-            let id = tree.add(path, name, 0, kind);
-            tree.roots.push(id);
-        }
+        tree.set_roots(roots);
         tree
     }
 
+    /// Make `roots` the top-level nodes, those already there kept as they
+    /// are (expanded, listed), and the ones revealed outside them too (a
+    /// network share). Returns the nodes added.
+    fn set_roots(&mut self, roots: Vec<(PathBuf, Kind)>) -> Vec<usize> {
+        let mut ids = Vec::with_capacity(roots.len());
+        let mut added = Vec::new();
+        for (path, kind) in roots {
+            match self.roots.iter().copied().find(|&r| same_path(&self.nodes[r].path, &path)) {
+                Some(r) => ids.push(r),
+                None => {
+                    let name = match kind {
+                        Kind::Drive => path.to_string_lossy().trim_end_matches('\\').to_string(),
+                        Kind::Folder => {
+                            path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into())
+                        }
+                    };
+                    let id = self.add(path, name, 0, kind);
+                    ids.push(id);
+                    added.push(id);
+                }
+            }
+        }
+        let revealed: Vec<usize> =
+            self.roots.iter().copied().filter(|&r| self.nodes[r].revealed && !ids.contains(&r)).collect();
+        ids.extend(revealed);
+        self.roots = ids;
+        self.dirty = true;
+        added
+    }
+
     fn add(&mut self, path: PathBuf, name: String, depth: u16, kind: Kind) -> usize {
-        self.nodes.push(Node { path, name, depth, kind, children: None, has_children: None, expanded: false, listing: false });
+        self.nodes.push(Node {
+            path,
+            name,
+            depth,
+            kind,
+            children: None,
+            has_children: None,
+            expanded: false,
+            listing: false,
+            revealed: false,
+        });
         self.nodes.len() - 1
     }
 
-    /// List the sub-folders of node `id` on a thread, then find out which
-    /// of them have sub-folders.
-    fn list(&mut self, id: usize) {
-        let node = &mut self.nodes[id];
-        if node.listing {
+    /// List the sub-folders of nodes `ids` on a thread, one after another,
+    /// then find out which of those have sub-folders.
+    fn list(&mut self, ids: Vec<usize>) {
+        let jobs: Vec<(usize, PathBuf)> = ids
+            .into_iter()
+            .filter_map(|id| {
+                let node = &mut self.nodes[id];
+                (!node.listing).then(|| {
+                    node.listing = true;
+                    (id, node.path.clone())
+                })
+            })
+            .collect();
+        if jobs.is_empty() {
             return;
         }
-        node.listing = true;
-        let dir = node.path.clone();
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         std::thread::Builder::new()
             .name("folder tree".into())
             .spawn(move || {
-                let names = subfolders(&dir);
-                let peek: Vec<PathBuf> =
-                    if names.len() <= PEEK_LIMIT { names.iter().map(|n| dir.join(n)).collect() } else { Vec::new() };
-                if tx.send(Message::Listed(id, names)).is_err() {
-                    return;
+                let mut peek = Vec::new();
+                for (id, dir) in jobs {
+                    let names = subfolders(&dir);
+                    if names.len() <= PEEK_LIMIT {
+                        peek.push((id, dir, names.clone()));
+                    }
+                    if tx.send(Message::Listed(id, names)).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
                 }
-                ctx.request_repaint();
-                if !peek.is_empty() {
-                    let flags = peek.iter().map(|p| has_subfolder(p)).collect();
-                    let _ = tx.send(Message::Peeked(id, flags));
+                for (id, dir, names) in peek {
+                    if names.is_empty() {
+                        continue;
+                    }
+                    let flags = names
+                        .into_iter()
+                        .map(|n| {
+                            let has = has_subfolder(&dir.join(&n));
+                            (n, has)
+                        })
+                        .collect();
+                    if tx.send(Message::Peeked(id, flags)).is_err() {
+                        return;
+                    }
                     ctx.request_repaint();
                 }
             })
             .expect("spawn folder tree thread");
+    }
+
+    /// Read the tree again (F5), keeping what is expanded: the folders
+    /// listed so far (folders made or removed since), the top-level folders
+    /// and the drives (one plugged in or removed).
+    pub fn refresh(&mut self) {
+        let added = self.set_roots(system_roots());
+        self.name_roots(added);
+        self.relist();
+    }
+
+    /// List again the folders listed so far, the visible ones first.
+    fn relist(&mut self) {
+        let mut ids = Vec::new();
+        let mut stack: Vec<usize> = self.roots.iter().rev().copied().collect();
+        while let Some(id) = stack.pop() {
+            if let Some(children) = &self.nodes[id].children {
+                ids.push(id);
+                stack.extend(children.iter().rev());
+            }
+        }
+        let expanded = |id: &usize| self.nodes[*id].expanded;
+        let (visible, rest): (Vec<usize>, Vec<usize>) = ids.into_iter().partition(expanded);
+        self.list(visible.into_iter().chain(rest).collect());
     }
 
     fn poll(&mut self) {
@@ -171,16 +262,33 @@ impl Tree {
             match message {
                 Message::Listed(id, names) => {
                     let (parent, depth) = (self.nodes[id].path.clone(), self.nodes[id].depth + 1);
-                    let children = names.into_iter().map(|n| self.add(parent.join(&n), n, depth, Kind::Folder)).collect();
+                    // Listed again: the folders still there are kept as
+                    // they are (expanded, listed).
+                    let old = self.nodes[id].children.take().unwrap_or_default();
+                    let by_name: HashMap<String, usize> =
+                        old.iter().map(|&c| (self.nodes[c].name.to_lowercase(), c)).collect();
+                    let mut children: Vec<usize> = names
+                        .into_iter()
+                        .map(|n| match by_name.get(&n.to_lowercase()) {
+                            Some(&c) => c,
+                            None => self.add(parent.join(&n), n, depth, Kind::Folder),
+                        })
+                        .collect();
+                    // A hidden folder the tree was taken down to stays.
+                    let kept: Vec<usize> =
+                        old.into_iter().filter(|&c| self.nodes[c].revealed && !children.contains(&c)).collect();
+                    children.extend(kept);
                     let node = &mut self.nodes[id];
                     node.children = Some(children);
                     node.listing = false;
                 }
                 Message::Peeked(id, flags) => {
                     let children = self.nodes[id].children.clone().unwrap_or_default();
-                    if children.len() == flags.len() {
-                        for (c, has) in children.into_iter().zip(flags) {
-                            self.nodes[c].has_children.get_or_insert(has);
+                    // In the order listed, unless listed again since.
+                    for (c, (name, has)) in children.into_iter().zip(flags) {
+                        let node = &mut self.nodes[c];
+                        if node.name == name && node.children.is_none() {
+                            node.has_children = Some(has);
                         }
                     }
                 }
@@ -195,7 +303,7 @@ impl Tree {
         let node = &mut self.nodes[id];
         node.expanded = !node.expanded;
         if node.expanded && node.children.is_none() {
-            self.list(id);
+            self.list(vec![id]);
         }
         self.dirty = true;
     }
@@ -232,6 +340,7 @@ impl Tree {
                 }
                 let n = prefix.components().count();
                 let id = self.add(prefix.clone(), prefix.to_string_lossy().trim_end_matches('\\').into(), 0, Kind::Drive);
+                self.nodes[id].revealed = true;
                 self.roots.push(id);
                 (id, n)
             }
@@ -244,7 +353,7 @@ impl Tree {
                 self.dirty = true;
             }
             let Some(children) = node.children.clone() else {
-                self.list(id);
+                self.list(vec![id]);
                 return;
             };
             let name = lower(part);
@@ -254,6 +363,7 @@ impl Tree {
                     // Hidden, or made since the parent was listed.
                     let (path, depth) = (self.nodes[id].path.join(part), self.nodes[id].depth + 1);
                     let c = self.add(path, part.to_string_lossy().into(), depth, Kind::Folder);
+                    self.nodes[c].revealed = true;
                     self.nodes[id].children.as_mut().expect("listed").push(c);
                     c
                 }
@@ -262,19 +372,6 @@ impl Tree {
         self.reveal = None;
         self.scroll_to = Some(id);
         self.dirty = true;
-    }
-
-    /// List `dir` again, if it is listed.
-    pub fn refresh(&mut self, dir: &Path) {
-        if let Some(id) = self.nodes.iter().position(|n| n.children.is_some() && same_path(&n.path, dir)) {
-            let node = &mut self.nodes[id];
-            node.children = None;
-            node.has_children = None;
-            if node.expanded {
-                self.list(id);
-            }
-            self.dirty = true;
-        }
     }
 
     fn rebuild(&mut self) {
@@ -363,6 +460,13 @@ impl Tree {
         }
         chosen
     }
+}
+
+/// The top-level nodes: the user's Pictures and Desktop, then the drives.
+fn system_roots() -> Vec<(PathBuf, Kind)> {
+    let folders = crate::win::known_folders().into_iter().map(|p| (p, Kind::Folder));
+    let drives = crate::win::drives().into_iter().map(|p| (p, Kind::Drive));
+    folders.chain(drives).collect()
 }
 
 /// The sub-folders of `dir` that Explorer shows, in its order.
@@ -472,6 +576,18 @@ mod tests {
         t.reveal(&root.join("hidden"));
         pump(&mut t, |t| t.reveal.is_none());
         assert!(names(&t).contains(&"hidden".to_string()));
+
+        // Read again: a folder made and one removed since are found, what
+        // is expanded stays so, and so does the hidden folder revealed.
+        std::fs::create_dir_all(root.join("a").join("b3")).unwrap();
+        std::fs::remove_dir(root.join("z")).unwrap();
+        t.relist();
+        pump(&mut t, |t| t.nodes.iter().all(|n| !n.listing));
+        assert_eq!(names(&t), [&root_name, "a", "b", "c", "b2", "b3", "b10", "hidden"]);
+        // The top-level nodes that are still there are kept.
+        let before = t.roots.clone();
+        assert!(t.set_roots(vec![(root.clone(), Kind::Folder)]).is_empty());
+        assert_eq!(t.roots, before);
 
         // A folder outside the roots gets a top-level row of its own.
         t.reveal(Path::new(r"\\server\share\photos"));

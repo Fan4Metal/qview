@@ -46,7 +46,13 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
         ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
         ("Ctrl+O", tr!("Open a file", "Открыть файл")),
-        ("F5", tr!("Reload the image and the folder", "Перечитать изображение и папку")),
+        (
+            "F5",
+            tr!(
+                "Reload the image and the folder; in the gallery, the folder tree too",
+                "Перечитать изображение и папку; в галерее и дерево папок"
+            ),
+        ),
         (
             "Esc",
             tr!(
