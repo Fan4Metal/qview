@@ -27,8 +27,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-/// Version from Cargo.toml, shown in the About window.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Version from Cargo.toml, shown in the About window; a development version
+/// ("0.2.0-dev") carries the commit it was built from (`build.rs`).
+pub const VERSION: &str = env!("QVIEW_VERSION");
 /// eframe app id; also names the settings folder in `%APPDATA%`.
 pub const APP_ID: &str = "qview";
 
