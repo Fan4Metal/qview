@@ -61,6 +61,9 @@ impl App {
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, e.file);
+        self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, e.file);
+        let undo = !self.renames.is_empty();
+        self.item(ui, tr!("Undo Rename", "Отменить переименование").into(), "Ctrl+Z", Cmd::Undo, undo);
         self.item(ui, tr!("Delete…", "Удалить…").into(), "Del", Cmd::Delete, e.file);
         ui.separator();
         self.item(ui, tr!("File Associations…", "Сопоставление файлов…").into(), "", Cmd::Associations, true);
@@ -156,6 +159,7 @@ impl App {
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, e.file);
+        self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, e.file);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
         self.item(ui, tr!("Delete…", "Удалить…").into(), "Del", Cmd::Delete, e.file);

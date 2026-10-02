@@ -38,6 +38,10 @@ pub enum Cmd {
     Escape,
     Close,
     Delete,
+    /// Rename the current file (F2).
+    Rename,
+    /// Undo the last rename (Ctrl+Z).
+    Undo,
     Copy,
     Open,
     ShowInExplorer,
@@ -99,6 +103,8 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::W if m.ctrl && !m.alt => Close,
         Key::O if m.ctrl && !m.alt => Open,
         Key::Delete if letter => Delete,
+        Key::F2 if letter => Rename,
+        Key::Z if m.ctrl && !m.alt && !m.shift => Undo,
         Key::Escape => Escape,
         Key::F5 => Refresh,
         Key::F1 => Shortcuts,
@@ -234,6 +240,10 @@ mod tests {
         assert_eq!(command(Key::Minus, NONE, true), Some(Cmd::ZoomOut));
         assert_eq!(command(Key::F, NONE, true), None);
         assert_eq!(command(Key::Delete, NONE, true), None);
+        assert_eq!(command(Key::F2, NONE, false), Some(Cmd::Rename));
+        assert_eq!(command(Key::F2, NONE, true), None);
+        assert_eq!(command(Key::Z, Modifiers::CTRL, false), Some(Cmd::Undo));
+        assert_eq!(command(Key::Z, NONE, false), None);
         assert_eq!(command(Key::Escape, NONE, true), None);
     }
 }

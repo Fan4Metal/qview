@@ -21,6 +21,33 @@ pub fn is_image(path: &Path) -> bool {
         || crate::wic::extensions().iter().any(|x| x.eq_ignore_ascii_case(ext))
 }
 
+/// Why `name` cannot be a file name, if it cannot: what Explorer refuses.
+pub fn check_name(name: &str) -> Result<(), &'static str> {
+    if name.trim().is_empty() {
+        return Err(tr!("Enter a name", "Введите имя"));
+    }
+    if name.chars().any(|c| c < ' ' || "<>:\"/\\|?*".contains(c)) {
+        return Err(tr!(
+            "A file name cannot contain any of \\ / : * ? \" < > |",
+            "Имя файла не может содержать символы \\ / : * ? \" < > |"
+        ));
+    }
+    if name.ends_with(['.', ' ']) {
+        return Err(tr!("A file name cannot end with a dot or a space", "Имя файла не может заканчиваться точкой или пробелом"));
+    }
+    // CON, NUL, COM1 and the like, with any extension.
+    let stem = name.split('.').next().unwrap_or(name).trim_end().to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0');
+    if device {
+        return Err(tr!("This name is reserved by Windows", "Это имя зарезервировано Windows"));
+    }
+    Ok(())
+}
+
 /// Windows paths ignore case.
 pub fn same_path(a: &Path, b: &Path) -> bool {
     a == b || a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
@@ -284,6 +311,16 @@ mod tests {
         assert!(!is_image(Path::new("jpg")));
         // Windows' codecs add some.
         assert!(is_image(Path::new("IMG_0001.HEIC")));
+    }
+
+    #[test]
+    fn file_names() {
+        assert!(check_name("Отпуск 2026.jpg").is_ok());
+        assert!(check_name(".hidden").is_ok());
+        assert!(check_name("com10.png").is_ok());
+        for bad in ["", "  ", "a/b.jpg", "a:b", "what?.png", "a\tb", "name.", "name ", "CON", "nul.jpg", "Com1.png", "lpt9"] {
+            assert!(check_name(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

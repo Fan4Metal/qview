@@ -72,6 +72,8 @@ const AHEAD: usize = 3;
 /// Pixels of the textures kept at most, the current image included: four
 /// 24-megapixel photos, about half a gigabyte of texture memory.
 const CACHE_BUDGET: usize = 100_000_000;
+/// Renames Ctrl+Z can undo, the latest last.
+const UNDO_RENAMES: usize = 20;
 
 const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
@@ -104,6 +106,18 @@ impl Picture {
 pub enum Slot {
     Ready(Picture),
     Failed(String),
+}
+
+/// A file being renamed (F2): the name as typed, and why it could not be
+/// used.
+pub struct Rename {
+    pub path: PathBuf,
+    pub name: String,
+    pub error: Option<String>,
+    /// Focus the name on the next frame, and with `select` select it but
+    /// the extension, as Explorer does.
+    pub focus: bool,
+    pub select: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +178,9 @@ pub struct App {
     pub background: Color32,
     /// The file the delete confirmation asks about.
     pub confirm_delete: Option<PathBuf>,
+    pub rename: Option<Rename>,
+    /// The renames of this session, `(old, new)`, for Ctrl+Z.
+    pub renames: Vec<(PathBuf, PathBuf)>,
     /// Made when the gallery is first opened.
     pub gallery: Option<Gallery>,
     /// The gallery is shown instead of the image.
@@ -319,6 +336,8 @@ impl App {
                 .and_then(|v| background_from_hex(&v))
                 .unwrap_or(DEFAULT_BACKGROUND),
             confirm_delete: None,
+            rename: None,
+            renames: Vec::new(),
             gallery: None,
             gallery_open: false,
             image_clicked: false,
@@ -477,6 +496,77 @@ impl App {
         if let Some(dir) = self.dir.clone() {
             self.place = self.index;
             self.centre_after_scan = true;
+            self.scan = Some(folder::scan(dir, self.depth(), self.current.clone(), self.sort, ctx.clone()));
+        }
+    }
+
+    /// A modal dialog is open: keys and the wheel are its own.
+    pub fn modal_open(&self) -> bool {
+        self.confirm_delete.is_some() || self.rename.is_some() || self.dialog.is_some()
+    }
+
+    /// Rename `path` to `name` in its folder, so that Ctrl+Z can undo it;
+    /// why not, if it cannot be.
+    pub fn rename_to(&mut self, ctx: &egui::Context, path: &Path, name: &str) -> Result<(), String> {
+        folder::check_name(name)?;
+        let new = path.with_file_name(name);
+        if new == path {
+            return Ok(());
+        }
+        self.move_file(ctx, path, &new)?;
+        if self.renames.len() == UNDO_RENAMES {
+            self.renames.remove(0);
+        }
+        self.renames.push((path.to_path_buf(), new));
+        Ok(())
+    }
+
+    /// Give the last rename's file its old name back (Ctrl+Z).
+    fn undo_rename(&mut self, ctx: &egui::Context) {
+        let Some((old, new)) = self.renames.pop() else { return };
+        let from = file_name(&new);
+        let text = match self.move_file(ctx, &new, &old) {
+            Ok(()) => tr!("Rename undone", "Переименование отменено").into(),
+            Err(e) => tr!(format!("Cannot rename {from} back: {e}"), format!("Не удалось вернуть имя {from}: {e}")),
+        };
+        self.notice(text);
+    }
+
+    /// Rename `path` to `new`, unless another file has that name.
+    fn move_file(&mut self, ctx: &egui::Context, path: &Path, new: &Path) -> Result<(), String> {
+        // A change of case only is a rename too.
+        if !folder::same_path(new, path) && new.exists() {
+            return Err(tr!("A file with this name already exists", "Файл с таким именем уже существует").into());
+        }
+        std::fs::rename(path, new).map_err(|e| tr!(format!("Cannot rename: {e}"), format!("Не удалось переименовать: {e}")))?;
+        self.renamed(ctx, path, new.to_path_buf());
+        Ok(())
+    }
+
+    /// `old` is now `new`: what was decoded for it is kept, and the folder
+    /// is listed again, since its place in the order may have changed.
+    fn renamed(&mut self, ctx: &egui::Context, old: &Path, new: PathBuf) {
+        if let Some(i) = folder::position(&self.files, old) {
+            self.files[i] = new.clone();
+        }
+        for path in [self.current.as_mut(), self.shown.as_mut().map(|(p, _)| p)].into_iter().flatten() {
+            if path.as_path() == old {
+                *path = new.clone();
+            }
+        }
+        if let Some(slot) = self.cache.remove(old) {
+            self.cache.insert(new.clone(), slot);
+        }
+        if let Some(pixels) = self.partial.remove(old) {
+            self.partial.insert(new.clone(), pixels);
+        }
+        if let Some(gallery) = &mut self.gallery
+            && let Some(thumb) = gallery.cache.remove(old)
+        {
+            gallery.cache.insert(new.clone(), thumb);
+        }
+        if let Some(dir) = self.dir.clone() {
+            self.place = self.index;
             self.scan = Some(folder::scan(dir, self.depth(), self.current.clone(), self.sort, ctx.clone()));
         }
     }
@@ -859,6 +949,13 @@ impl App {
                     self.confirm_delete = self.current.clone().filter(|p| p.is_file());
                 }
             }
+            Cmd::Undo => self.undo_rename(ctx),
+            Cmd::Rename => {
+                if let Some(path) = self.current.clone().filter(|p| p.is_file()) {
+                    let name = file_name(&path);
+                    self.rename = Some(Rename { path, name, error: None, focus: true, select: true });
+                }
+            }
             Cmd::Copy => {
                 if let Some(path) = self.current.clone() {
                     let text = match win::copy_file(&path) {
@@ -1039,7 +1136,7 @@ impl App {
         // Windows sends the wheel to the window under the pointer, so it
         // browses from anywhere in the window, but not under a menu or a
         // dialog.
-        let modal_open = self.confirm_delete.is_some() || self.dialog.is_some();
+        let modal_open = self.modal_open();
         if !modal_open && !egui::Popup::is_any_open(&ctx) {
             let (browse, zoom) = self.wheel.read(&ctx);
             // Wheel up: the previous image.
@@ -1184,7 +1281,7 @@ impl eframe::App for App {
         self.handle_drop(&ctx);
         self.sync_shown();
 
-        let modal_open = self.confirm_delete.is_some() || self.dialog.is_some();
+        let modal_open = self.modal_open();
         if !modal_open && !egui::Popup::is_any_open(&ctx) {
             // Keys are the viewer's: no widget keeps the focus to take
             // Space or Enter as a click.

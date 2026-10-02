@@ -1,4 +1,5 @@
-//! Modal dialogs: the delete confirmation, the list of shortcuts and About.
+//! Modal dialogs: the delete confirmation, renaming, the list of shortcuts
+//! and About.
 
 use egui::{Align, Key, Layout, RichText, Ui};
 
@@ -44,6 +45,8 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         (tr!("Gallery: double click", "Галерея: двойной щелчок"), tr!("Show the image", "Показать изображение")),
         ("T  B", tr!("Show or hide the toolbar / status bar", "Панель инструментов / строка состояния")),
         ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
+        ("F2", tr!("Rename the file", "Переименовать файл")),
+        ("Ctrl+Z", tr!("Undo the last rename", "Отменить последнее переименование")),
         ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
         ("Ctrl+O", tr!("Open a file", "Открыть файл")),
         (
@@ -67,6 +70,7 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
 impl App {
     pub(crate) fn dialogs(&mut self, ctx: &egui::Context) {
         self.confirm_delete_dialog(ctx);
+        self.rename_dialog(ctx);
         // The key that opened a dialog this frame must not close it.
         let fresh = std::mem::take(&mut self.dialog_fresh);
         let closed = match self.dialog {
@@ -381,6 +385,79 @@ impl App {
             Some(false) => self.confirm_delete = None,
             None => {}
         }
+    }
+}
+
+impl App {
+    /// The new name of a file, the old one selected but its extension, as
+    /// in Explorer; Enter renames, Esc cancels.
+    fn rename_dialog(&mut self, ctx: &egui::Context) {
+        let Some(rename) = self.rename.as_mut() else { return };
+        let id = egui::Id::new("rename_name");
+        let mut decision = None;
+        let modal = egui::Modal::new(egui::Id::new("rename")).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.heading(tr!("Rename", "Переименование"));
+            ui.add_space(8.0);
+            let edit = ui.add(egui::TextEdit::singleline(&mut rename.name).id(id).desired_width(f32::INFINITY));
+            if std::mem::take(&mut rename.focus) {
+                edit.request_focus();
+            }
+            if std::mem::take(&mut rename.select) {
+                select_stem(ctx, id, &rename.name);
+            }
+            if edit.changed() {
+                rename.error = None;
+            }
+            if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                decision = Some(true);
+            }
+            if let Some(error) = &rename.error {
+                ui.add_space(4.0);
+                ui.colored_label(egui::Color32::from_rgb(0xff, 0x8a, 0x80), error);
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let text = |s: &str| RichText::new(s).size(16.0);
+                if ui.add(egui::Button::new(text(tr!("Rename", "Переименовать"))).min_size(egui::vec2(160.0, 34.0))).clicked() {
+                    decision = Some(true);
+                }
+                if ui.add(egui::Button::new(text(tr!("Cancel", "Отмена"))).min_size(egui::vec2(100.0, 34.0))).clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        if decision.is_none() && modal.should_close() {
+            decision = Some(false);
+        }
+        match decision {
+            Some(true) => {
+                let (path, name) = (rename.path.clone(), rename.name.clone());
+                match self.rename_to(ctx, &path, &name) {
+                    Ok(()) => self.rename = None,
+                    Err(e) => {
+                        if let Some(rename) = &mut self.rename {
+                            rename.error = Some(e);
+                            rename.focus = true;
+                        }
+                    }
+                }
+            }
+            Some(false) => self.rename = None,
+            None => {}
+        }
+    }
+}
+
+/// Select `name` in the text field `id` up to its extension.
+fn select_stem(ctx: &egui::Context, id: egui::Id, name: &str) {
+    use egui::text::{CCursor, CCursorRange};
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        let stem = name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len());
+        let end = name[..stem].chars().count();
+        state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(end))));
+        state.store(ctx, id);
     }
 }
 

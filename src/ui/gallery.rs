@@ -159,7 +159,7 @@ impl App {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, GRID_BG);
         // Ctrl+Wheel sizes the cells; the wheel alone scrolls.
-        let modal_open = self.confirm_delete.is_some() || self.dialog.is_some();
+        let modal_open = self.modal_open();
         if !modal_open && !egui::Popup::is_any_open(&ctx) {
             let (_, zoom) = self.wheel.read(&ctx);
             if zoom != 0 {
@@ -382,6 +382,7 @@ impl App {
         self.item(ui, tr!("Open", "Открыть").into(), "Enter", Cmd::Gallery, true);
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, true);
+        self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, true);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
         ui.separator();
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
