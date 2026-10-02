@@ -13,7 +13,10 @@
 //! Windows does not let a program make itself the default: the choice
 //! (`UserChoice`) is protected and belongs to the user. So `register` only
 //! offers qview, and `open_default_apps` opens the page where the user
-//! picks it.
+//! picks it. An extension no program handles at all (no default ProgID,
+//! no user choice, no other program in `OpenWithProgids`; TGA, QOI, PNM on
+//! a fresh Windows) gets qview's ProgID as its default, the documented way
+//! of claiming an unclaimed extension.
 
 use std::path::Path;
 
@@ -24,6 +27,9 @@ struct Roots {
     classes: String,
     software: String,
     registered_apps: String,
+    /// Whether other programs' registrations are read from the real
+    /// HKEY_CLASSES_ROOT and the user's choices (tests: only `classes`).
+    system: bool,
 }
 
 impl Roots {
@@ -32,6 +38,7 @@ impl Roots {
             classes: r"Software\Classes".into(),
             software: r"Software\qview".into(),
             registered_apps: r"Software\RegisteredApplications".into(),
+            system: true,
         }
     }
 }
@@ -77,16 +84,61 @@ pub fn status(exe: &Path) -> Status {
     status_in(&Roots::real(), exe)
 }
 
-/// For each of `FILE_TYPES`: whether the user has chosen qview as the
-/// default program for its main extension.
-pub fn defaults() -> Vec<bool> {
+/// Which program opens a type by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opener {
+    /// Another program, or none chosen.
+    Other,
+    /// qview, through its ProgID for the type.
+    Qview,
+    /// This qview, through a ProgID of another name: one Explorer made when
+    /// qview was picked in "Open with" before it was registered for the
+    /// type (`HEIC_auto_file`). The files lack the type's icon and name.
+    QviewElsewhere,
+}
+
+/// The user's choice for `.ext`, else its default ProgID.
+fn effective_prog_id(ext: &str) -> Option<String> {
+    let choice = format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}\UserChoice");
+    reg::get(&choice, Some("ProgId"))
+        .or_else(|| reg::get_in(reg::Root::Classes, &format!(".{ext}"), None))
+        .filter(|p| !p.is_empty())
+}
+
+/// For each of `FILE_TYPES`: which program opens its main extension, `exe`
+/// being this qview.
+pub fn defaults(exe: Option<&Path>) -> Vec<Opener> {
+    let exe = exe.map(|e| e.display().to_string().to_lowercase());
     FILE_TYPES
         .iter()
-        .map(|t| {
-            let key = format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{}\UserChoice", t.extensions[0]);
-            reg::get(&key, Some("ProgId")).is_some_and(|p| p.eq_ignore_ascii_case(&prog_id(t.id)))
+        .map(|t| match effective_prog_id(t.extensions[0]) {
+            Some(p) if p.eq_ignore_ascii_case(&prog_id(t.id)) => Opener::Qview,
+            Some(p) => {
+                let command = reg::get_in(reg::Root::Classes, &format!(r"{p}\shell\open\command"), None);
+                match (command, &exe) {
+                    (Some(c), Some(exe)) if c.to_lowercase().contains(exe.as_str()) => Opener::QviewElsewhere,
+                    _ => Opener::Other,
+                }
+            }
+            None => Opener::Other,
         })
         .collect()
+}
+
+/// Whether no program handles `.ext` but qview (`id`): no default ProgID
+/// (or qview's), and with `r.system` no user choice and no other program
+/// offered for it.
+fn unclaimed(r: &Roots, ext: &str, id: &str) -> bool {
+    let ours = |p: &String| p.is_empty() || p.eq_ignore_ascii_case(id);
+    if !r.system {
+        return reg::get(&format!(r"{}\.{ext}", r.classes), None).is_none_or(|p| ours(&p));
+    }
+    let explorer = format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}");
+    let others = |names: Vec<String>| names.iter().all(|n| n.is_empty() || n.eq_ignore_ascii_case(id));
+    reg::get_in(reg::Root::Classes, &format!(".{ext}"), None).is_none_or(|p| ours(&p))
+        && reg::get(&format!(r"{explorer}\UserChoice"), Some("ProgId")).is_none()
+        && others(reg::value_names(reg::Root::Classes, &format!(r".{ext}\OpenWithProgids")))
+        && others(reg::value_names(reg::Root::User, &format!(r"{explorer}\OpenWithProgids")))
 }
 
 /// Open Settings → Default apps (on Windows 11 at qview's own page).
@@ -106,6 +158,9 @@ fn register_in(r: &Roots, exe: &Path) -> Result<(), String> {
         reg::set(&format!(r"{key}\DefaultIcon"), None, &format!("\"{exe_text}\",-{}", icon_id(i)))?;
         reg::set(&format!(r"{key}\shell\open\command"), None, &command)?;
         for ext in t.extensions {
+            if unclaimed(r, ext, &id) {
+                reg::set(&format!(r"{}\.{ext}", r.classes), None, &id)?;
+            }
             reg::set(&format!(r"{}\.{ext}\OpenWithProgids", r.classes), Some(&id), "")?;
             reg::set(&format!(r"{}\{APP_KEY}\SupportedTypes", r.classes), Some(&format!(".{ext}")), "")?;
             reg::set(&format!(r"{capabilities}\FileAssociations"), Some(&format!(".{ext}")), &id)?;
@@ -131,6 +186,11 @@ fn unregister_in(r: &Roots) -> Result<(), String> {
         reg::delete_tree(&format!(r"{}\{id}", r.classes))?;
         for ext in t.extensions {
             reg::delete_value(&format!(r"{}\.{ext}\OpenWithProgids", r.classes), &id)?;
+            // The default it was given as an unclaimed extension.
+            let key = format!(r"{}\.{ext}", r.classes);
+            if reg::get(&key, None).is_some_and(|p| p.eq_ignore_ascii_case(&id)) {
+                reg::delete_value(&key, "")?;
+            }
         }
     }
     reg::delete_tree(&format!(r"{}\{APP_KEY}", r.classes))?;
@@ -155,12 +215,29 @@ fn notify_shell() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, std::ptr::null(), std::ptr::null()) };
 }
 
-/// String values under HKEY_CURRENT_USER.
+/// String values under HKEY_CURRENT_USER (written), and read from
+/// HKEY_CLASSES_ROOT too.
 mod reg {
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
-        HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW,
+        HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, KEY_READ, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegDeleteKeyValueW,
+        RegDeleteTreeW, RegEnumValueW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
     };
+
+    /// Where a value is read from.
+    #[derive(Clone, Copy)]
+    pub enum Root {
+        User,
+        /// HKEY_CLASSES_ROOT: the user's classes over the machine's.
+        Classes,
+    }
+
+    fn hkey(root: Root) -> HKEY {
+        match root {
+            Root::User => HKEY_CURRENT_USER,
+            Root::Classes => HKEY_CLASSES_ROOT,
+        }
+    }
 
     use crate::win::wide;
 
@@ -188,13 +265,50 @@ mod reg {
 
     /// Value `name` of `key`, if it is there.
     pub fn get(key: &str, name: Option<&str>) -> Option<String> {
+        get_in(Root::User, key, name)
+    }
+
+    /// The names of the values of `key` (the default one as "").
+    pub fn value_names(root: Root, key: &str) -> Vec<String> {
+        let k = wide(key);
+        let mut handle: HKEY = std::ptr::null_mut();
+        if unsafe { RegOpenKeyExW(hkey(root), k.as_ptr(), 0, KEY_READ, &mut handle) } != ERROR_SUCCESS {
+            return Vec::new();
+        }
+        let mut names = Vec::new();
+        let mut buf = vec![0u16; 16384];
+        for index in 0.. {
+            let mut len = buf.len() as u32;
+            let code = unsafe {
+                RegEnumValueW(
+                    handle,
+                    index,
+                    buf.as_mut_ptr(),
+                    &mut len,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if code != ERROR_SUCCESS {
+                break;
+            }
+            names.push(String::from_utf16_lossy(&buf[..len as usize]));
+        }
+        unsafe { RegCloseKey(handle) };
+        names
+    }
+
+    /// Value `name` of `key` under `root`, if it is there.
+    pub fn get_in(root: Root, key: &str, name: Option<&str>) -> Option<String> {
         let (k, n) = (wide(key), name.map(wide));
         let mut buf = vec![0u16; 1024];
         loop {
             let mut bytes = (buf.len() * 2) as u32;
             let code = unsafe {
                 RegGetValueW(
-                    HKEY_CURRENT_USER,
+                    hkey(root),
                     k.as_ptr(),
                     name_ptr(&n),
                     RRF_RT_REG_SZ,
@@ -242,6 +356,7 @@ mod tests {
             classes: format!(r"{root}\Classes"),
             software: format!(r"{root}\Software\qview"),
             registered_apps: format!(r"{root}\RegisteredApplications"),
+            system: false,
         };
         let exe = Path::new(r"C:\Program Files\qview\qview.exe");
         assert_eq!(status_in(&r, exe), Status::NotRegistered);
@@ -264,6 +379,14 @@ mod tests {
         );
         assert_eq!(reg::get(&r.registered_apps, Some("qview")).unwrap(), format!(r"{}\Capabilities", r.software));
 
+        // An unclaimed extension gets qview as its default; one another
+        // program is the default of keeps it, before and after.
+        assert_eq!(get(".qoi", None).unwrap(), "qview.qoi");
+        reg::delete_tree(&format!(r"{}\.jpg", r.classes)).unwrap();
+        reg::set(&format!(r"{}\.jpg", r.classes), None, "Other.jpg").unwrap();
+        register_in(&r, exe).unwrap();
+        assert_eq!(get(".jpg", None).unwrap(), "Other.jpg");
+
         // Another program's entry in OpenWithProgids survives.
         reg::set(&format!(r"{}\.png\OpenWithProgids", r.classes), Some("Other.png"), "").unwrap();
         unregister_in(&r).unwrap();
@@ -272,6 +395,8 @@ mod tests {
         assert_eq!(get(r".png\OpenWithProgids", Some("qview.png")), None);
         assert_eq!(get(r".png\OpenWithProgids", Some("Other.png")).unwrap(), "");
         assert_eq!(reg::get(&r.registered_apps, Some("qview")), None);
+        assert_eq!(get(".qoi", None), None);
+        assert_eq!(get(".jpg", None).unwrap(), "Other.jpg");
         // Unregistering twice is fine.
         unregister_in(&r).unwrap();
         reg::delete_tree(&root).unwrap();
@@ -279,6 +404,20 @@ mod tests {
 
     /// The `image` crate's formats are all registered; the others go to
     /// Windows' codecs.
+    /// Which program opens each type, and which extensions registering
+    /// would claim, on this machine (read only), with `--nocapture`.
+    #[test]
+    #[ignore]
+    fn print_defaults() {
+        let exe = std::env::var("QVIEW_EXE").ok().map(std::path::PathBuf::from);
+        let r = Roots::real();
+        for (t, opener) in FILE_TYPES.iter().zip(defaults(exe.as_deref())) {
+            let claimed: Vec<&str> =
+                t.extensions.iter().copied().filter(|e| unclaimed(&r, e, &prog_id(t.id))).collect();
+            println!("{:5} {opener:?}, unclaimed: {}", t.id, claimed.join(" "));
+        }
+    }
+
     #[test]
     fn every_listed_extension_is_registered() {
         let own = FILE_TYPES.iter().filter(|t| !t.wic);

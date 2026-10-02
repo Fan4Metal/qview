@@ -190,7 +190,7 @@ impl App {
         // Read on every frame: cheap, and it follows choices made in
         // Settings while the dialog is open.
         let status = exe.as_deref().map_or(Status::NotRegistered, assoc::status);
-        let defaults = assoc::defaults();
+        let defaults = assoc::defaults(exe.as_deref());
         let px = (ICON * ctx.pixels_per_point()).round() as u32;
         if self.type_icons.as_ref().is_none_or(|(n, _)| *n != px) {
             let icons = FILE_TYPES
@@ -260,7 +260,16 @@ impl App {
                     } else {
                         text
                     });
-                    ui.label(if defaults.get(i) == Some(&true) { "✔" } else { "—" });
+                    match defaults.get(i) {
+                        Some(assoc::Opener::Qview) => ui.label("✔"),
+                        Some(assoc::Opener::QviewElsewhere) => ui.label("✔").on_hover_text(tr!(
+                            "qview opens these files, as picked in \"Open with\". Choosing qview for this type \
+                             in Settings gives the files its icon and name.",
+                            "Эти файлы открывает qview, выбранный через «Открыть с помощью». Если выбрать qview \
+                             для этого типа в параметрах Windows, файлы получат его значок и название."
+                        )),
+                        _ => ui.label("—"),
+                    };
                     ui.end_row();
                 }
             });
