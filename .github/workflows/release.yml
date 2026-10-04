@@ -36,6 +36,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # libheif and libde265 (tools/build_heif.py, run by make_release.py):
+      # built again only when the script, with their versions, changes.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            target/heif/src
+            target/heif/install
+          key: heif-${{ hashFiles('tools/build_heif.py') }}
+
       - name: Install Inno Setup
         shell: pwsh
         run: |

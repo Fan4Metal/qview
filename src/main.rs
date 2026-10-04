@@ -10,6 +10,7 @@ mod folder;
 mod format;
 mod gallery;
 mod header;
+mod heif;
 mod icon;
 mod input;
 mod instance;

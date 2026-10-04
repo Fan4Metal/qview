@@ -61,6 +61,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; libheif with libde265 for HEIC/HEIF (tools\build_heif.py), LGPL: separate
+; DLLs, with their licences and where their sources are.
+Source: "..\target\release\heif.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\libde265.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.ru.md"; DestDir: "{app}"; Flags: ignoreversion

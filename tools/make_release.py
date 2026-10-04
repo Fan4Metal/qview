@@ -1,7 +1,8 @@
 """
-Release build: cargo build --release, the Inno Setup installer
-(dist\\qview_<version>_Setup.exe) and the portable archive
-(dist\\qview_<version>_portable.zip).
+Release build: libheif (build_heif.py, built the first time), cargo build
+--release, the Inno Setup installer (dist\\qview_<version>_Setup.exe) and the
+portable archive (dist\\qview_<version>_portable.zip), both with heif.dll,
+libde265.dll and their licences next to the exe.
 
 Runs from any folder: python tools/make_release.py [--no-tests] [--install]
 --install then installs the build silently over the installed copy, to try it.
@@ -19,6 +20,8 @@ import time
 import winreg
 import zipfile
 from pathlib import Path
+
+import build_heif
 
 ROOT = Path(__file__).resolve().parent.parent
 CARGO_TOML = ROOT / "Cargo.toml"
@@ -190,11 +193,16 @@ def check_prerequisites() -> tuple[str, Path]:
 
 
 def make_portable_zip(version: str) -> Path:
-    """Archive with the exe and the license in the PORTABLE_DIR folder (the documentation is on GitHub)."""
+    """Archive with the exe, libheif and the licenses in the PORTABLE_DIR folder (the documentation is on GitHub)."""
     archive = DIST_DIR / f"qview_{version}_portable.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         z.write(EXE, f"{PORTABLE_DIR}/{EXE.name}")
         z.write(ROOT / "LICENSE", f"{PORTABLE_DIR}/LICENSE")
+        for name in build_heif.FILES:
+            path = EXE.parent / name
+            for file in sorted(path.rglob("*")) if path.is_dir() else [path]:
+                if file.is_file():
+                    z.write(file, f"{PORTABLE_DIR}/{file.relative_to(EXE.parent).as_posix()}")
     return archive
 
 
@@ -209,12 +217,16 @@ def main() -> int:
     # Line buffering: with output redirected to a file, step headers still come before the tools' output.
     sys.stdout.reconfigure(line_buffering=True)
     total_started = time.monotonic()
-    steps = Steps((4 if args.no_tests else 5) + args.install)
+    steps = Steps((5 if args.no_tests else 6) + args.install)
     try:
         steps.next("Checks")
         version = extract_version(CARGO_TOML)
         print(f"  version:               {version} (from {CARGO_TOML.name})")
         cargo, iscc = check_prerequisites()
+
+        steps.next("libheif")
+        # Before the tests, which decode HEIC through it.
+        build_heif.ensure()
 
         if not args.no_tests:
             steps.next("Tests")
@@ -226,6 +238,7 @@ def main() -> int:
         run_command([cargo, "build", "--release"], "cargo build")
         if not EXE.is_file():
             raise ReleaseError(f"cargo finished, but {EXE} was not found")
+        build_heif.copy_to(EXE.parent)
 
         steps.next("Installer icon")
         ICON.unlink(missing_ok=True)

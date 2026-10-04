@@ -28,13 +28,18 @@ impl Size {
     }
 }
 
-/// The size of the image in `path`, from its header; through Windows'
-/// codecs (`wic`) for the formats they take.
+/// The size of the image in `path`, from its header; through libheif for
+/// HEIF when its DLL is there (`heif`), and through Windows' codecs (`wic`)
+/// for the formats they take.
 pub fn read(path: &Path) -> Option<Size> {
     if !crate::wic::takes(path)
         && let Some(size) = from_header(path)
     {
         return Some(size);
+    }
+    // Upright already: libheif applies the rotation.
+    if let Some((width, height)) = crate::heif::size(path) {
+        return Some(Size { width, height, turned: false });
     }
     let (width, height, orientation) = crate::wic::size(path)?;
     // Orientations 5 to 8 turn it a quarter.

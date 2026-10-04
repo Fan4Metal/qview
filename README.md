@@ -31,7 +31,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour.
 - The interface is in Russian when Windows is in Russian, and in English otherwise; another language is chosen in Help → About qview.
 
-Supported formats: JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM). In addition, every format for which Windows has a codec (Windows Imaging Component) is opened through it: HEIC/HEIF (with the HEIF Image Extensions and the HEVC Video Extensions from the Microsoft Store), AVIF (with the AV1 Video Extension), camera RAW files such as CR2, CR3, NEF, ARW and DNG (with the Raw Image Extension, included in Windows 11), JPEG XR, DDS and the formats of other installed codecs. HEIC, HEIF and AVIF files are always listed; when the extension they need is missing, the image area names it. Windows' codecs also take over the files of the formats above that qview's own decoders cannot read. Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated.
+Supported formats: JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM), and HEIC/HEIF, read by the [libheif](https://github.com/strukturag/libheif) and [libde265](https://github.com/strukturag/libde265) libraries supplied with the program, so that no extensions from the Microsoft Store are needed for them. In addition, every format for which Windows has a codec (Windows Imaging Component) is opened through it: AVIF (with the AV1 Video Extension from the Microsoft Store), camera RAW files such as CR2, CR3, NEF, ARW and DNG (with the Raw Image Extension, included in Windows 11), JPEG XR, DDS and the formats of other installed codecs; HEIF files that libheif cannot read are passed to them as well. AVIF files are always listed; when the extension they need is missing, the image area names it. Windows' codecs also take over the files of the formats above that qview's own decoders cannot read. Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated.
 
 ## Installation
 
@@ -102,7 +102,7 @@ Only one window of qview is open at a time: when qview is already running, a fil
 
 ## File associations
 
-File → File Associations… registers qview with Windows for the current user (no administrator rights are needed): each supported format gets its own file type with an icon (HEIC/HEIF, AVIF, camera RAW and JPEG XR included, opened through Windows' codecs), qview appears in "Open with" and in Settings → Default apps. Each icon is a page with a band in the format's colour showing the extension.
+File → File Associations… registers qview with Windows for the current user (no administrator rights are needed): each supported format gets its own file type with an icon (HEIC/HEIF, AVIF, camera RAW and JPEG XR included), qview appears in "Open with" and in Settings → Default apps. Each icon is a page with a band in the format's colour showing the extension.
 
 <p align="center">
   <img src="images/file_types.png" width="520" alt="The file type icons: JPG, PNG, GIF, BMP, TIF, WEBP, ICO, TGA, QOI, PNM, HEIC, AVIF, RAW and JXR">
@@ -130,7 +130,7 @@ cargo test
 
 `build.py` first closes a `qview.exe` running from the project's `target` folder, which would otherwise lock the file, and then runs `cargo build --release`; extra arguments are passed to cargo. Its only dependency, `psutil`, is installed by uv. When qview is not running, plain `cargo build --release` works as well.
 
-The window is drawn by egui/eframe through OpenGL (glow), images are decoded by the `image` crate. Setting the environment variable `QVIEW_TRACE=1` writes start-up and decoding times to stderr.
+The window is drawn by egui/eframe through OpenGL (glow), images are decoded by the `image` crate. HEIC/HEIF is decoded by libheif with libde265, loaded at run time from `heif.dll` and `libde265.dll` next to `qview.exe`; without them these files go to Windows' codecs. Both libraries are built by `tools/build_heif.py` (git and CMake from the Visual Studio Build Tools are required) into `target\heif\bin`, at the versions given in the script and with the C runtime linked in, so they need no Visual C++ Redistributable; `build.py` runs it the first time and copies the libraries next to the executable. Setting the environment variable `QVIEW_TRACE=1` writes start-up and decoding times to stderr.
 
 ## Installer and release
 
@@ -142,7 +142,7 @@ python tools/make_release.py --no-tests   # the same without cargo test
 python tools/make_release.py --install    # then a silent installation over the installed copy
 ```
 
-The files are written to `dist`; the version is taken from `Cargo.toml`. Like `build.py`, the script first closes a `qview.exe` running from `target\release`. The installer script is `tools/setup.iss`; the installer icon is written by `qview.exe --export-icon <file.ico>`.
+The files are written to `dist`; the version is taken from `Cargo.toml`. Like `build.py`, the script first closes a `qview.exe` running from `target\release`. The installer and the archive include `heif.dll`, `libde265.dll` and the `licenses` folder with their licence texts and the addresses of their sources. The installer script is `tools/setup.iss`; the installer icon is written by `qview.exe --export-icon <file.ico>`.
 
 Releases on GitHub are built by the **Release** workflow (`.github/workflows/release.yml`). After the version in `Cargo.toml` is updated and committed, pushing a matching tag publishes a release with the installer and the portable archive:
 
@@ -156,3 +156,5 @@ Running the workflow manually (Actions → Release → Run workflow) only builds
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+The libheif and libde265 libraries supplied with the program are distributed under the terms of the GNU Lesser General Public License, version 3; they remain the separate files `heif.dll` and `libde265.dll`, which can be replaced with other builds. Their licence texts and the addresses of their sources are in the `licenses` folder next to the program.

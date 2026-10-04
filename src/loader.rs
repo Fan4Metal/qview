@@ -217,15 +217,21 @@ pub fn read(path: &Path) -> Result<(DynamicImage, Meta), String> {
 }
 
 /// `path` decoded by Windows' codecs, upright: premultiplied BGRA with
-/// `bgra` (in an RGBA image only by name), otherwise RGBA. The error says
-/// which extension from the Microsoft Store the format needs.
+/// `bgra` (in an RGBA image only by name), otherwise RGBA. HEIF goes to
+/// libheif first when its DLL is there (`heif`), then to Windows if that
+/// fails. Otherwise the error says which extension from the Microsoft
+/// Store the format needs.
 fn read_wic(path: &Path, bgra: bool) -> Result<(DynamicImage, Meta), String> {
     use std::os::windows::fs::MetadataExt;
     let file = std::fs::metadata(path).map_err(|e| e.to_string())?;
-    let image = crate::wic::decode(path, bgra).map_err(|e| match crate::wic::needs(path) {
-        Some(needs) => format!("{e}\n\n{needs}"),
-        None => e,
-    })?;
+    let image = match crate::heif::decode(path, bgra) {
+        Some(Ok(image)) => image,
+        Some(Err(e)) => crate::wic::decode(path, bgra).map_err(|_| e)?,
+        None => crate::wic::decode(path, bgra).map_err(|e| match crate::wic::needs(path) {
+            Some(needs) => format!("{e}\n\n{needs}"),
+            None => e,
+        })?,
+    };
     let buffer = image::RgbaImage::from_raw(image.width, image.height, image.pixels).ok_or("bad image size")?;
     let mut img = DynamicImage::ImageRgba8(buffer);
     img.apply_orientation(Orientation::from_exif(image.orientation as u8).unwrap_or(Orientation::NoTransforms));
@@ -444,11 +450,13 @@ mod tests {
         std::fs::write(&turned, crate::wic::tests::with_orientation(&jpeg, 6)).unwrap();
         let (img, _) = read_wic(&turned, false).unwrap();
         assert_eq!((img.width(), img.height()), (20, 40));
-        // A HEIC that is none: the error says what Windows needs.
+        // A HEIC that is none: libheif's error when heif.dll is there,
+        // otherwise what Windows needs.
         let heic = dir.join("broken.heic");
         std::fs::write(&heic, b"not an image").unwrap();
         let e = decode(&heic, 16384).err().unwrap();
-        assert!(e.contains("HEVC"), "{e}");
+        let expected = if crate::heif::takes(&heic) { "libheif" } else { "HEVC" };
+        assert!(e.contains(expected), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

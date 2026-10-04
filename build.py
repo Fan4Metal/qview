@@ -10,6 +10,9 @@ makes the link fail, so it is closed first: politely (the window gets
 WM_CLOSE and saves its settings), then by force if it has not exited within
 3 seconds. Copies of qview elsewhere are left alone.
 
+libheif (tools/build_heif.py) is built the first time and copied next to the
+exe, as the release has it.
+
 Run from any folder: uv run build.py [extra cargo arguments]
 """
 
@@ -21,6 +24,9 @@ import psutil
 
 ROOT = Path(__file__).resolve().parent
 TARGET = ROOT / "target"
+
+sys.path.insert(0, str(ROOT / "tools"))
+import build_heif  # noqa: E402
 
 
 def is_ours(proc: psutil.Process) -> bool:
@@ -50,6 +56,8 @@ def close_running() -> None:
 
 def main() -> int:
     close_running()
+    build_heif.ensure()
+    build_heif.copy_to(TARGET / "release")
     return subprocess.run(["cargo", "build", "--release", *sys.argv[1:]], cwd=ROOT).returncode
 
 
