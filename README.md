@@ -85,6 +85,7 @@ The gallery is opened with `G`, `Enter`, `Esc`, a double click on the image or t
 | Full screen for the gallery (with the menu and the bars) | `Ctrl+Shift+F` |
 | Thumbnail size | the slider above the grid, `+` / `-`, `Ctrl+wheel` |
 | Show the images of the sub-folders too | the "Sub-folders" check box above the grid |
+| Open a sub-folder (with "By folder") | double click on its header |
 | Read the folder, the thumbnails and the folder tree again | `F5` |
 | Close the program | `Esc` |
 

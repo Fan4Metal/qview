@@ -265,6 +265,8 @@ impl App {
         let files = &self.files;
         let index = self.index;
         let (dir, deep) = (self.dir.as_deref(), self.deep);
+        // A folder whose header was double-clicked.
+        let mut folder = None;
         let out = area.show_viewport(ui, |ui, viewport| {
             ui.set_height(layout.height);
             let origin = ui.max_rect().min;
@@ -277,6 +279,17 @@ impl App {
                     }
                     let rect = Rect::from_min_size(origin + vec2(0.0, s.y), vec2(ui.max_rect().width(), layout.header));
                     folder_header(&painter, rect, &folder_name(dir, &files[s.first]), layout.len(k));
+                    // A sub-folder's header opens it; the folder shown has
+                    // nothing to open.
+                    let parent = files[s.first].parent();
+                    if let Some(parent) = parent.filter(|p| dir.is_none_or(|d| !crate::folder::same_path(p, d))) {
+                        let response = ui
+                            .interact(rect, ui.id().with(("header", k)), Sense::CLICK)
+                            .on_hover_text(tr!("Double click: open the folder", "Двойной щелчок: открыть папку"));
+                        if crate::input::double_clicked(&response) {
+                            folder = Some(parent.to_path_buf());
+                        }
+                    }
                 }
             }
             let visible = layout.visible(viewport.min.y, viewport.max.y);
@@ -367,6 +380,13 @@ impl App {
         background.context_menu(|ui| {
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         });
+        // As if chosen in the tree, with its sub-folders still.
+        if let Some(dir) = folder {
+            if let Some(gallery) = &mut self.gallery {
+                gallery.tree.reveal(&dir);
+            }
+            self.open_folder(&ctx, dir, self.deep);
+        }
         opened
     }
 
