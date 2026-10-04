@@ -209,16 +209,52 @@ pub fn cloak(hwnd: isize, on: bool) {
     }
 }
 
-/// Show window `hwnd` maximized.
-pub fn show_maximized(hwnd: isize) {
+/// The rectangle of window `hwnd` when it is neither maximized nor
+/// minimized (left, top, right, bottom in workspace coordinates), also
+/// while it is maximized or minimized.
+pub fn normal_rect(hwnd: isize) -> Option<[i32; 4]> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, WINDOWPLACEMENT};
+    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    placement.length = size_of::<WINDOWPLACEMENT>() as u32;
+    if unsafe { GetWindowPlacement(hwnd as _, &mut placement) } == 0 {
+        return None;
+    }
+    let r = placement.rcNormalPosition;
+    (r.right > r.left && r.bottom > r.top).then_some([r.left, r.top, r.right, r.bottom])
+}
+
+/// Show window `hwnd` maximized, restored later to `normal` (as given by
+/// [`normal_rect`]); without it, to `default` (in points) centred where the
+/// window is. `ShowWindow(SW_MAXIMIZE)` alone would restore it to the size
+/// it was created with, the maximized one eframe saved.
+pub fn show_maximized(hwnd: isize, normal: Option<[i32; 4]>, default: [f32; 2]) {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, GetWindowRect, SW_SHOWMAXIMIZED, SetWindowPlacement, WINDOWPLACEMENT,
+    };
     #[link(name = "user32")]
     unsafe extern "system" {
-        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+        fn GetDpiForWindow(hwnd: isize) -> u32;
     }
-    const SW_MAXIMIZE: i32 = 3;
-    unsafe {
-        ShowWindow(hwnd, SW_MAXIMIZE);
-    }
+    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    placement.length = size_of::<WINDOWPLACEMENT>() as u32;
+    unsafe { GetWindowPlacement(hwnd as _, &mut placement) };
+    let [left, top, right, bottom] = normal.unwrap_or_else(|| {
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        unsafe { GetWindowRect(hwnd as _, &mut r) };
+        let scale = match unsafe { GetDpiForWindow(hwnd) } {
+            0 => 1.0,
+            dpi => dpi as f32 / 96.0,
+        };
+        let (w, h) = ((default[0] * scale) as i32, (default[1] * scale) as i32);
+        let (x, y) = ((r.left + r.right - w) / 2, (r.top + r.bottom - h) / 2);
+        [x, y, x + w, y + h]
+    });
+    placement.rcNormalPosition = RECT { left, top, right, bottom };
+    placement.showCmd = SW_SHOWMAXIMIZED as u32;
+    placement.flags = 0;
+    // Windows moves a rectangle that would be off every screen onto one.
+    unsafe { SetWindowPlacement(hwnd as _, &placement) };
 }
 
 /// Set a BOOL window attribute of DWM; false if DWM refused it. dwmapi is

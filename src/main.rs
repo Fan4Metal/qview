@@ -58,6 +58,9 @@ pub fn embedded_icon(size: u32) -> Vec<u8> {
 /// `App::new` maximizes it while it is cloaked.
 pub static MAXIMIZE_WHEN_SHOWN: AtomicBool = AtomicBool::new(false);
 
+/// The window's size on the first run, in points.
+pub const DEFAULT_SIZE: [f32; 2] = [1024.0, 720.0];
+
 fn main() -> eframe::Result {
     START.get_or_init(Instant::now);
     // QVIEW_TRACE=1 logs start-up and decoding times (to stderr).
@@ -116,7 +119,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("qview")
-            .with_inner_size([1024.0, 720.0])
+            .with_inner_size(DEFAULT_SIZE)
             .with_min_inner_size([320.0, 240.0])
             .with_drag_and_drop(true)
             .with_icon(egui::IconData { rgba: embedded_icon(64), width: 64, height: 64 }),

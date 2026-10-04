@@ -89,6 +89,10 @@ const LANGUAGE_KEY: &str = "language";
 const SORT_KEY: &str = "sort";
 const SORT_DESCENDING_KEY: &str = "sort_descending";
 const BY_FOLDER_KEY: &str = "by_folder";
+/// The window's normal rectangle (`win::normal_rect`), as "left,top,right,bottom":
+/// eframe saves a maximized window with its maximized size, which it would
+/// then be restored to.
+const WINDOW_NORMAL_KEY: &str = "window_normal";
 
 #[derive(Clone)]
 pub struct Picture {
@@ -221,6 +225,9 @@ pub struct App {
     first_image_logged: bool,
     /// The window handle, when it is a Win32 window.
     hwnd: Option<isize>,
+    /// In full screen in the last frame: the window's normal rectangle is
+    /// then the screen's, and is not saved.
+    fullscreen: bool,
     /// While the window is cloaked: when to show it (see `App::uncloak`).
     cloak: Option<Cloak>,
     /// The animation of the image on screen, while it plays.
@@ -298,7 +305,11 @@ impl App {
             && crate::MAXIMIZE_WHEN_SHOWN.swap(false, std::sync::atomic::Ordering::Relaxed)
         {
             win::cloak(hwnd, true);
-            win::show_maximized(hwnd);
+            let normal = cc.storage.and_then(|s| s.get_string(WINDOW_NORMAL_KEY)).and_then(|v| {
+                let n: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                <[i32; 4]>::try_from(n).ok()
+            });
+            win::show_maximized(hwnd, normal, crate::DEFAULT_SIZE);
             cloak = Some(Cloak { until: Instant::now() + UNCLOAK_TIMEOUT, maximized: true, image: false, frame: 0 });
         }
         let flag = |key: &str| cc.storage.and_then(|s| s.get_string(key)).as_deref() != Some("false");
@@ -364,6 +375,7 @@ impl App {
             clicked: Vec::new(),
             first_image_logged: false,
             hwnd,
+            fullscreen: false,
             cloak,
             player: None,
         };
@@ -1310,7 +1322,8 @@ impl eframe::App for App {
 
         // The gallery keeps its bars in the frames before full screen is
         // left (`enter_gallery`).
-        let fullscreen = Self::is_fullscreen(&ctx) && !self.gallery_open;
+        self.fullscreen = Self::is_fullscreen(&ctx);
+        let fullscreen = self.fullscreen && !self.gallery_open;
         if !fullscreen {
             self.menu_bar(root_ui);
             if self.show_toolbar {
@@ -1370,6 +1383,9 @@ impl eframe::App for App {
         storage.set_string(SORT_KEY, self.sort.key.name().to_string());
         storage.set_string(SORT_DESCENDING_KEY, self.sort.descending.to_string());
         storage.set_string(BY_FOLDER_KEY, self.by_folder.to_string());
+        if let Some(r) = self.hwnd.filter(|_| !self.fullscreen).and_then(win::normal_rect) {
+            storage.set_string(WINDOW_NORMAL_KEY, format!("{},{},{},{}", r[0], r[1], r[2], r[3]));
+        }
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
