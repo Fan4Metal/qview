@@ -145,6 +145,8 @@ pub fn gallery_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::F if m.ctrl && m.shift && !m.alt => Some(Cmd::WindowFullScreen),
         // As in Explorer.
         Key::ArrowLeft if m.alt && !m.ctrl && !repeat => Some(Cmd::Back),
+        // Held, it does not repeat, nor select the previous image.
+        Key::Backspace if !m.alt && !m.ctrl => (!repeat).then_some(Cmd::Back),
         Key::ArrowRight if m.alt && !m.ctrl && !repeat => Some(Cmd::Forward),
         Key::ArrowUp if m.alt && !m.ctrl && !repeat => Some(Cmd::Up),
         _ => command(key, m, repeat),
@@ -271,6 +273,8 @@ mod tests {
         assert_eq!(gallery_command(Key::ArrowRight, ALT, false), Some(Cmd::Forward));
         assert_eq!(gallery_command(Key::ArrowUp, ALT, false), Some(Cmd::Up));
         assert_eq!(gallery_command(Key::ArrowLeft, ALT, true), None);
+        assert_eq!(gallery_command(Key::Backspace, NONE, false), Some(Cmd::Back));
+        assert_eq!(gallery_command(Key::Backspace, NONE, true), None);
         assert_eq!(gallery_command(Key::ArrowLeft, CTRL | ALT, false), Some(Cmd::RotateLeft));
         assert_eq!(command(Key::ArrowLeft, ALT, false), None);
     }

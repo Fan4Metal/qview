@@ -44,7 +44,7 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ),
         (tr!("Gallery: double click", "Галерея: двойной щелчок"), tr!("Show the image", "Показать изображение")),
         (
-            tr!("Gallery: Alt+←  Alt+→  Mouse side buttons", "Галерея: Alt+←  Alt+→  Боковые кнопки мыши"),
+            tr!("Gallery: Alt+←  Backspace  Alt+→  Mouse side buttons", "Галерея: Alt+←  Backspace  Alt+→  Боковые кнопки мыши"),
             tr!("Previous / next folder", "Предыдущая / следующая папка"),
         ),
         (tr!("Gallery: Alt+↑", "Галерея: Alt+↑"), tr!("Folder above", "Папка уровнем выше")),
