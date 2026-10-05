@@ -4,7 +4,7 @@
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 /// Extensions of the files listed for browsing (lowercase), the formats
 /// the `image` crate is built with.
@@ -67,10 +67,13 @@ pub enum SortKey {
     /// The last write time, Explorer's "Date modified".
     Modified,
     Size,
+    /// When it was marked as a favourite: its place in the favourites
+    /// (only they are sorted so; a folder's files are all equal by it).
+    Added,
 }
 
 impl SortKey {
-    pub const ALL: [SortKey; 3] = [SortKey::Name, SortKey::Modified, SortKey::Size];
+    pub const ALL: [SortKey; 4] = [SortKey::Name, SortKey::Modified, SortKey::Size, SortKey::Added];
 
     /// Name in the settings.
     pub fn name(self) -> &'static str {
@@ -78,6 +81,7 @@ impl SortKey {
             SortKey::Name => "name",
             SortKey::Modified => "modified",
             SortKey::Size => "size",
+            SortKey::Added => "added",
         }
     }
 
@@ -102,13 +106,15 @@ struct Entry {
     /// FILETIME, 0 if unknown.
     modified: u64,
     size: u64,
+    /// Its place among the favourites, 0 in a folder.
+    added: usize,
 }
 
 impl Entry {
     fn new(path: PathBuf, meta: Option<&std::fs::Metadata>) -> Self {
         use std::os::windows::fs::MetadataExt;
         let name = crate::win::wide(path.file_name().unwrap_or_default());
-        Self { name, modified: meta.map_or(0, |m| m.last_write_time()), size: meta.map_or(0, |m| m.len()), path }
+        Self { name, modified: meta.map_or(0, |m| m.last_write_time()), size: meta.map_or(0, |m| m.len()), added: 0, path }
     }
 }
 
@@ -123,6 +129,7 @@ fn compare(a: &Entry, b: &Entry, order: Order) -> Ordering {
         SortKey::Name => by_name(a, b),
         SortKey::Modified => a.modified.cmp(&b.modified),
         SortKey::Size => a.size.cmp(&b.size),
+        SortKey::Added => a.added.cmp(&b.added),
     };
     let key = if order.descending { key.reverse() } else { key };
     key.then_with(|| by_name(a, b))
@@ -241,8 +248,48 @@ pub fn list_deep(
     Ok(files.into_iter().map(|e| e.path).collect())
 }
 
+/// The files of `paths` that are there (the favourites, in the order they
+/// were marked, which [`SortKey::Added`] keeps), in `order`;
+/// `by_folder`: folder by folder, the folders in Explorer's name order of
+/// their paths, `order` within each. The paths whose folder is there but
+/// not the file go to `gone`; those of a folder that cannot be reached (a
+/// drive unplugged) to neither. `found` counts the files looked at; stops
+/// when `cancel` is set.
+pub fn list_files(
+    paths: Vec<PathBuf>,
+    order: Order,
+    by_folder: bool,
+    gone: &mut Vec<PathBuf>,
+    found: &AtomicUsize,
+    cancel: &AtomicBool,
+) -> std::io::Result<Vec<PathBuf>> {
+    let mut files = Vec::with_capacity(paths.len());
+    for (i, path) in paths.into_iter().enumerate() {
+        if cancel.load(Relaxed) {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => files.push(Entry { added: i, ..Entry::new(path, Some(&meta)) }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && path.parent().is_some_and(Path::is_dir) => {
+                gone.push(path)
+            }
+            _ => {}
+        }
+        found.store(i + 1, Relaxed);
+    }
+    if by_folder {
+        let folder = |e: &Entry| crate::win::wide(e.path.parent().unwrap_or(&e.path));
+        let mut keyed: Vec<(Vec<u16>, Entry)> = files.into_iter().map(|e| (folder(&e), e)).collect();
+        keyed.sort_by(|(fa, a), (fb, b)| crate::win::logical_cmp(fa, fb).then_with(|| compare(a, b, order)));
+        files = keyed.into_iter().map(|(_, e)| e).collect();
+    } else {
+        files.sort_by(|a, b| compare(a, b, order));
+    }
+    Ok(files.into_iter().map(|e| e.path).collect())
+}
+
 /// Where the images of each folder start in `files` (of one folder, or
-/// listed folder by folder by [`list_deep`]).
+/// listed folder by folder by [`list_deep`] or [`list_files`]).
 pub fn starts(files: &[PathBuf]) -> Vec<usize> {
     (0..files.len()).filter(|&i| i == 0 || files[i].parent() != files[i - 1].parent()).collect()
 }
@@ -254,12 +301,21 @@ pub struct Scan {
     /// Images found so far in a listing with sub-folders.
     found: Arc<AtomicUsize>,
     cancel: Arc<AtomicBool>,
+    /// Of a listing of files ([`scan_files`]): those found gone, set
+    /// before the listing is sent.
+    gone: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl Scan {
     /// The listing, once it is ready.
     pub fn poll(&self) -> Option<Result<Vec<PathBuf>, String>> {
         self.rx.try_recv().ok()
+    }
+
+    /// The files of a listing of files that are gone from their folder
+    /// (see [`list_files`]), once the listing is ready.
+    pub fn take_gone(&self) -> Vec<PathBuf> {
+        std::mem::take(&mut *self.gone.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Images found so far when the sub-folders are listed too.
@@ -278,6 +334,31 @@ impl Drop for Scan {
 /// as deep as `depth`, and repaint `ctx` when done. Dropping the [`Scan`]
 /// discards the result.
 pub fn scan(dir: PathBuf, depth: Depth, keep: Option<PathBuf>, order: Order, ctx: egui::Context) -> Scan {
+    spawn(ctx, move |found, cancel| match depth {
+        Depth::Folder => list(&dir, keep.as_deref(), order),
+        Depth::ByFolder => list_deep(&dir, order, true, found, cancel),
+        Depth::Flat => list_deep(&dir, order, false, found, cancel),
+    })
+}
+
+/// [`list_files`] on a thread, as [`scan`] lists a folder.
+pub fn scan_files(paths: Vec<PathBuf>, order: Order, by_folder: bool, ctx: egui::Context) -> Scan {
+    let gone = Arc::new(Mutex::new(Vec::new()));
+    let out = gone.clone();
+    let mut scan = spawn(ctx, move |found, cancel| {
+        let mut missing = Vec::new();
+        let files = list_files(paths, order, by_folder, &mut missing, found, cancel);
+        *out.lock().unwrap_or_else(|e| e.into_inner()) = missing;
+        files
+    });
+    scan.gone = gone;
+    scan
+}
+
+fn spawn(
+    ctx: egui::Context,
+    job: impl FnOnce(&AtomicUsize, &AtomicBool) -> std::io::Result<Vec<PathBuf>> + Send + 'static,
+) -> Scan {
     let (tx, rx) = mpsc::channel();
     let found = Arc::new(AtomicUsize::new(0));
     let cancel = Arc::new(AtomicBool::new(false));
@@ -285,18 +366,13 @@ pub fn scan(dir: PathBuf, depth: Depth, keep: Option<PathBuf>, order: Order, ctx
     std::thread::Builder::new()
         .name("folder".into())
         .spawn(move || {
-            let result = match depth {
-                Depth::Folder => list(&dir, keep.as_deref(), order),
-                Depth::ByFolder => list_deep(&dir, order, true, &count, &stop),
-                Depth::Flat => list_deep(&dir, order, false, &count, &stop),
-            };
-            let result = result.map_err(|e| e.to_string());
+            let result = job(&count, &stop).map_err(|e| e.to_string());
             if tx.send(result).is_ok() {
                 ctx.request_repaint();
             }
         })
         .expect("spawn folder thread");
-    Scan { rx, found, cancel }
+    Scan { rx, found, cancel, gone: Arc::default() }
 }
 
 #[cfg(test)]
@@ -406,6 +482,39 @@ mod tests {
         unsafe {
             windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(hidden.as_ptr(), 0x80);
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lists_files_of_several_folders() {
+        let dir = std::env::temp_dir().join(format!("qview_folder_files_{}", std::process::id()));
+        for d in ["b10", "b2"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        for (name, size) in [(r"b10\a.jpg", 1), (r"b2\c.png", 3), (r"b2\d.png", 2), ("z.jpg", 4)] {
+            std::fs::write(dir.join(name), vec![0u8; size]).unwrap();
+        }
+        let relative = |order, by_folder| -> Vec<String> {
+            let paths = [r"b2\c.png", r"b10\a.jpg", "gone.jpg", r"nowhere\x.jpg", "b2", "z.jpg", r"b2\d.png"]
+                .map(|p| dir.join(p))
+                .to_vec();
+            let mut gone = Vec::new();
+            let files = list_files(paths, order, by_folder, &mut gone, &AtomicUsize::new(0), &AtomicBool::new(false)).unwrap();
+            // Gone from a folder that is there; not when the folder is not.
+            assert_eq!(gone, [dir.join("gone.jpg")]);
+            files.iter().map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect()
+        };
+        let by_size = Order { key: SortKey::Size, descending: false };
+        // What is not there, and a folder, are left out; the folders in
+        // their order, the files by size within each.
+        assert_eq!(relative(by_size, true), ["z.jpg", r"b2\d.png", r"b2\c.png", r"b10\a.jpg"]);
+        assert_eq!(relative(by_size, false), [r"b10\a.jpg", r"b2\d.png", r"b2\c.png", "z.jpg"]);
+        assert_eq!(relative(Order::default(), false), [r"b10\a.jpg", r"b2\c.png", r"b2\d.png", "z.jpg"]);
+        // In the order they were marked, or the other way.
+        let added = Order { key: SortKey::Added, descending: false };
+        assert_eq!(relative(added, false), [r"b2\c.png", r"b10\a.jpg", "z.jpg", r"b2\d.png"]);
+        assert_eq!(relative(Order { descending: true, ..added }, false), [r"b2\d.png", "z.jpg", r"b10\a.jpg", r"b2\c.png"]);
+        assert_eq!(relative(added, true), ["z.jpg", r"b2\c.png", r"b2\d.png", r"b10\a.jpg"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

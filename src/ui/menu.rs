@@ -50,6 +50,7 @@ impl App {
                 egui::MenuBar::new().ui(ui, |ui| {
                     ui.menu_button(tr!("File", "Файл"), |ui| self.file_menu(ui));
                     ui.menu_button(tr!("View", "Вид"), |ui| self.view_menu(ui));
+                    ui.menu_button(tr!("Favorites", "Избранное"), |ui| self.favorites_menu(ui));
                     ui.menu_button(tr!("Help", "Справка"), |ui| self.help_menu(ui));
                 });
             });
@@ -109,19 +110,24 @@ impl App {
         self.item(ui, tr!("Rotate Right", "Повернуть вправо").into(), "]", Cmd::RotateRight, e.image);
     }
 
-    /// The order of the folder: the key, and the direction.
+    /// The order of the folder, or of the favourites, which have one of
+    /// their own: the key, and the direction.
     pub(super) fn sort_menu(&mut self, ui: &mut Ui) {
         use crate::folder::SortKey;
+        let order = self.order();
+        let favorites = self.in_favorites();
         for key in SortKey::ALL {
             let name = match key {
                 SortKey::Name => tr!("By Name", "По имени"),
                 SortKey::Modified => tr!("By Date Modified", "По дате изменения"),
                 SortKey::Size => tr!("By Size", "По размеру"),
+                SortKey::Added if favorites => tr!("By Date Added", "По дате добавления"),
+                SortKey::Added => continue,
             };
-            self.check_item(ui, name.into(), "", Cmd::SortBy(key), self.sort.key == key);
+            self.check_item(ui, name.into(), "", Cmd::SortBy(key), order.key == key);
         }
         ui.separator();
-        self.check_item(ui, tr!("Descending", "По убыванию").into(), "", Cmd::SortDescending, self.sort.descending);
+        self.check_item(ui, tr!("Descending", "По убыванию").into(), "", Cmd::SortDescending, order.descending);
     }
 
     /// Presets, and a picker for any other colour; the picker is drawn in
@@ -137,6 +143,46 @@ impl App {
         ui.separator();
         ui.label(tr!("Other colour:", "Другой цвет:"));
         egui::color_picker::color_picker_color32(ui, &mut self.background, egui::color_picker::Alpha::Opaque);
+    }
+
+    fn favorites_menu(&mut self, ui: &mut Ui) {
+        let e = self.enabled();
+        self.favorite_item(ui, e.file);
+        self.item(ui, tr!("Show Favorites", "Показать избранное").into(), "", Cmd::Favorites, true);
+        self.go_to_folder_item(ui);
+        ui.separator();
+        self.favorites_items(ui);
+        ui.separator();
+        self.clear_favorites_item(ui);
+    }
+
+    /// Clear the favourites, after a confirmation.
+    pub(super) fn clear_favorites_item(&mut self, ui: &mut Ui) {
+        let any = self.favorites.len() > 0;
+        self.item(ui, tr!("Clear Favorites…", "Очистить избранное…").into(), "", Cmd::ClearFavorites, any);
+    }
+
+    /// Add the current image to the favourites, or remove it.
+    pub(super) fn favorite_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let text = if self.current.as_deref().is_some_and(|c| self.favorites.contains(c)) {
+            tr!("Remove from Favorites", "Убрать из избранного")
+        } else {
+            tr!("Add to Favorites", "Добавить в избранное")
+        };
+        self.item(ui, text.into(), "S", Cmd::Favorite, enabled);
+    }
+
+    /// The current image's folder, from the favourites or the sub-folders.
+    pub(super) fn go_to_folder_item(&mut self, ui: &mut Ui) {
+        let enabled = self.can_go_to_folder();
+        self.item(ui, tr!("Go to Folder", "Перейти к папке").into(), "", Cmd::GoToFolder, enabled);
+    }
+
+    /// What can be done with all the favourites.
+    pub(super) fn favorites_items(&mut self, ui: &mut Ui) {
+        let any = self.favorites.len() > 0;
+        self.item(ui, tr!("Copy All", "Копировать все").into(), "", Cmd::CopyFavorites, any);
+        self.item(ui, tr!("Copy All to Folder…", "Копировать все в папку…").into(), "", Cmd::CopyFavoritesTo, any);
     }
 
     fn help_menu(&mut self, ui: &mut Ui) {
@@ -157,6 +203,11 @@ impl App {
         self.rotate_items(ui, &e);
         ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
+        ui.separator();
+        self.favorite_item(ui, e.file);
+        if self.can_go_to_folder() {
+            self.go_to_folder_item(ui);
+        }
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, e.file);
         self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, e.file);

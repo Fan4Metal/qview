@@ -24,6 +24,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - Instant browsing: the neighbours of the current image are decoded in advance.
 - Images are listed in the same order as in Explorer (numbers are compared as numbers); View → Sort orders them by date modified or size instead, ascending or descending.
 - The gallery shows the folder tree and the images of a folder as thumbnails (see [Gallery](#gallery)).
+- Images from any folders can be marked as favorites with `S` and then viewed and copied together (see [Favorites](#favorites)).
 - Downscaled images are smoothed with mipmaps; 100% shows one image pixel per screen pixel at any Windows display scaling.
 - The EXIF orientation of photos is applied.
 - The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
@@ -64,6 +65,7 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Rename the file | `F2` (`Enter` renames, `Esc` cancels) |
 | Undo the last rename (up to 20 in a session) | `Ctrl+Z` |
 | Copy the file to the clipboard | `Ctrl+C` |
+| Add to / remove from the favorites | `S` |
 | Open a file | `Ctrl+O`, or dropping a file onto the window |
 | Reload the image and the folder | `F5` |
 | Show or hide the toolbar / status bar | `T` / `B` |
@@ -94,6 +96,14 @@ The folders shown, whether chosen in the tree, opened from a header, reached wit
 | Close the program | `Esc` |
 
 The selected thumbnail is the current image: deletion, renaming, copying and Show in Explorer apply to it, also from the context menu of a thumbnail. That menu, and the one of the empty space of the grid, also offers the sort order. Thumbnails are taken from the Windows thumbnail cache, which Explorer fills too, so a folder seen before appears at once; for formats Windows has no thumbnails of, qview makes them itself. The image under the pointer and the selected one are decoded in advance, so a double click shows the image without delay. The list above the grid sets the proportions of the cells: 1:1, 4:3, 3:2, 16:9, the portrait 3:4, 2:3, 9:16, or Auto, which takes the proportions most images of the folder have (read from the headers of the files when the folder is opened; for a large folder, of 200 of them); the slider sets their long side. The "Fill cells" check box makes the thumbnails fill their cells, with the edges of the images cropped; otherwise each image is shown whole. The thumbnail size, these choices and the width of the tree are kept between runs.
+
+## Favorites
+
+`S`, the star button of the toolbar, the Favorites menu and the context menus of the image and of a thumbnail add the current image to the favorites or remove it from them. A favorite is marked with a star in the corner of its thumbnail, on the toolbar button and in the status bar. The Favorites entry at the top of the folder tree (also Favorites → Show Favorites) lists the favorites from all folders in the gallery as one folder, with the number of them beside it: in the order they were marked, or in another one chosen in View → Sort, which the favorites keep apart from that of the folders (By Date Added is offered there for them), or, with the "By folder" check box, grouped by folder under headers with the full path of each folder; a double click on a header opens that folder. Go to Folder (in the Favorites menu and the context menus) lists the folder of the selected image alone, with the image still selected; Back returns to the favorites. It works the same way for an image listed with the sub-folders. Browsing in the viewer goes through them in the same order. An image removed from the favorites while they are shown leaves the list at once, and the next one is selected.
+
+The Favorites menu, and in the favorites the context menus of the grid, copy all favorites at once: Copy All puts the files on the clipboard, to be pasted in Explorer; Copy All to Folder… copies them into a chosen folder, with the progress window of Windows and its question about files of the same name. Clear Favorites… removes all of them after a confirmation. The files themselves are never changed.
+
+The favorites are kept in `favorites.txt` next to the settings (`%APPDATA%\qview\data`), saved after every change: a UTF-8 text file with one full path per line, in the order the images were marked, which other programs and scripts can read as well. Renaming or deleting a file in qview updates the list. A favorite whose folder no longer contains it (deleted, renamed or moved in another program) is removed from the list when the favorites are shown, with a notice in the status bar; the favorites of a folder that cannot be reached, such as one on a disconnected drive, are kept.
 
 ## Usage
 

@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureHandle, Vec2};
 
+use crate::favorites::{self, Favorites};
 use crate::folder::{self, Order, Scan, SortKey};
 use crate::gallery::{self, Gallery, Scroll};
 use crate::history::{History, Place};
@@ -89,6 +90,8 @@ const AUTO: &str = "auto";
 const LANGUAGE_KEY: &str = "language";
 const SORT_KEY: &str = "sort";
 const SORT_DESCENDING_KEY: &str = "sort_descending";
+const FAVORITES_SORT_KEY: &str = "favorites_sort";
+const FAVORITES_SORT_DESCENDING_KEY: &str = "favorites_sort_descending";
 const BY_FOLDER_KEY: &str = "by_folder";
 /// The window's normal rectangle (`win::normal_rect`), as "left,top,right,bottom":
 /// eframe saves a maximized window with its maximized size, which it would
@@ -153,6 +156,9 @@ pub struct App {
     pub scan: Option<Scan>,
     /// The order of `files` (View → Sort).
     pub sort: Order,
+    /// The order of the favourites, their own: by when they were marked
+    /// unless chosen otherwise.
+    pub favorites_sort: Order,
     /// Where `current` was in `files` before the folder was listed again:
     /// its successor takes that place if it has gone and its place in the
     /// new listing is not known (see `poll_scan`).
@@ -188,6 +194,12 @@ pub struct App {
     pub renames: Vec<(PathBuf, PathBuf)>,
     /// The folders shown before and after this one, for Back and Forward.
     pub history: History,
+    /// The favourite images (S), listed in the gallery as `favorites::DIR`.
+    pub favorites: Favorites,
+    /// Clearing the favourites waits for the user's yes.
+    pub confirm_clear_favorites: bool,
+    /// The favourites being copied to a folder.
+    copying: Option<Copying>,
     /// Made when the gallery is first opened.
     pub gallery: Option<Gallery>,
     /// The gallery is shown instead of the image.
@@ -235,6 +247,13 @@ pub struct App {
     cloak: Option<Cloak>,
     /// The animation of the image on screen, while it plays.
     player: Option<crate::anim::Player>,
+}
+
+/// Files being copied by the shell on a thread (see `win::copy_to`).
+struct Copying {
+    done: mpsc::Receiver<Result<(), String>>,
+    to: PathBuf,
+    count: usize,
 }
 
 /// The window is cloaked at start-up until its first maximized frame is on
@@ -331,6 +350,14 @@ impl App {
                 key: cc.storage.and_then(|s| s.get_string(SORT_KEY)).and_then(|v| SortKey::from_name(&v)).unwrap_or_default(),
                 descending: cc.storage.and_then(|s| s.get_string(SORT_DESCENDING_KEY)).as_deref() == Some("true"),
             },
+            favorites_sort: Order {
+                key: cc
+                    .storage
+                    .and_then(|s| s.get_string(FAVORITES_SORT_KEY))
+                    .and_then(|v| SortKey::from_name(&v))
+                    .unwrap_or(SortKey::Added),
+                descending: cc.storage.and_then(|s| s.get_string(FAVORITES_SORT_DESCENDING_KEY)).as_deref() == Some("true"),
+            },
             place: None,
             centre_after_scan: false,
             current: None,
@@ -353,6 +380,9 @@ impl App {
             rename: None,
             renames: Vec::new(),
             history: History::default(),
+            favorites: Favorites::load(eframe::storage_dir(crate::APP_ID).map(|d| d.join(favorites::FILE))),
+            confirm_clear_favorites: false,
+            copying: None,
             gallery: None,
             gallery_open: false,
             image_clicked: false,
@@ -463,7 +493,26 @@ impl App {
 
     /// The folder above the one on screen, if there is one.
     pub fn parent_dir(&self) -> Option<PathBuf> {
-        self.dir.as_deref().and_then(Path::parent).map(Path::to_path_buf)
+        self.dir.as_deref().filter(|d| !favorites::is_dir(d)).and_then(Path::parent).map(Path::to_path_buf)
+    }
+
+    /// The current image's own folder can be gone to: the favourites or
+    /// the sub-folders are listed.
+    pub fn can_go_to_folder(&self) -> bool {
+        self.mixed() && self.current.is_some()
+    }
+
+    /// List the current image's folder alone, as opening it would, the
+    /// image staying current; Back returns.
+    fn go_to_folder(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.current.clone().filter(|_| self.mixed()) else { return };
+        let Some(dir) = path.parent().map(Path::to_path_buf) else { return };
+        self.leave_for(&dir);
+        self.start_scan(ctx, dir.clone(), false, Some(path));
+        if let Some(gallery) = &mut self.gallery {
+            gallery.tree.reveal(&dir);
+            gallery.scroll = Some(Scroll::Centre);
+        }
     }
 
     /// Show the folder above (Alt+↑). With the sub-folders, the current
@@ -501,12 +550,26 @@ impl App {
     /// (the scroll position, the Auto proportions): `dir`, and with its
     /// sub-folders `dir\*`, which no folder can be called.
     pub fn listing(&self) -> Option<PathBuf> {
-        self.dir.as_ref().map(|d| if self.deep { d.join("*") } else { d.clone() })
+        self.dir.as_ref().map(|d| if self.deep && !favorites::is_dir(d) { d.join("*") } else { d.clone() })
+    }
+
+    /// The favourites are listed in place of a folder.
+    pub fn in_favorites(&self) -> bool {
+        self.dir.as_deref().is_some_and(favorites::is_dir)
+    }
+
+    /// `files` come from several folders: the sub-folders of `dir`, or the
+    /// favourites.
+    pub fn mixed(&self) -> bool {
+        self.deep || self.in_favorites()
     }
 
     /// The name of `path` for display: with the sub-folders listed, its
-    /// path from `dir`.
+    /// path from `dir`; among the favourites, its whole path.
     pub fn display_name(&self, path: &Path) -> String {
+        if self.in_favorites() {
+            return path.display().to_string();
+        }
         match self.dir.as_deref().filter(|_| self.deep).and_then(|d| path.strip_prefix(d).ok()) {
             Some(relative) => relative.to_string_lossy().into_owned(),
             None => file_name(path),
@@ -545,7 +608,16 @@ impl App {
         self.index = None;
         self.dir = Some(dir.clone());
         self.deep = deep;
-        self.scan = Some(folder::scan(dir, self.depth(), keep, self.sort, ctx.clone()));
+        self.scan = Some(self.scan_dir(dir, keep, ctx));
+    }
+
+    /// List `dir`, or the favourites, as they are to be ordered, on a thread.
+    fn scan_dir(&self, dir: PathBuf, keep: Option<PathBuf>, ctx: &egui::Context) -> Scan {
+        if favorites::is_dir(&dir) {
+            folder::scan_files(self.favorites.paths(), self.favorites_sort, self.by_folder, ctx.clone())
+        } else {
+            folder::scan(dir, self.depth(), keep, self.sort, ctx.clone())
+        }
     }
 
     /// What the listing of `dir` holds: with the sub-folders, by folder
@@ -558,13 +630,22 @@ impl App {
         }
     }
 
+    /// The order of what is listed: the folders' or the favourites'.
+    pub fn order(&self) -> Order {
+        if self.in_favorites() { self.favorites_sort } else { self.sort }
+    }
+
     /// List the folder again in `order`. The old listing stays until then,
     /// so the image and the gallery stay on screen.
     fn sort_by(&mut self, ctx: &egui::Context, order: Order) {
-        if order == self.sort {
+        if order == self.order() {
             return;
         }
-        self.sort = order;
+        if self.in_favorites() {
+            self.favorites_sort = order;
+        } else {
+            self.sort = order;
+        }
         self.relist(ctx);
     }
 
@@ -574,13 +655,13 @@ impl App {
         if let Some(dir) = self.dir.clone() {
             self.place = self.index;
             self.centre_after_scan = true;
-            self.scan = Some(folder::scan(dir, self.depth(), self.current.clone(), self.sort, ctx.clone()));
+            self.scan = Some(self.scan_dir(dir, self.current.clone(), ctx));
         }
     }
 
     /// A modal dialog is open: keys and the wheel are its own.
     pub fn modal_open(&self) -> bool {
-        self.confirm_delete.is_some() || self.rename.is_some() || self.dialog.is_some()
+        self.confirm_delete.is_some() || self.rename.is_some() || self.dialog.is_some() || self.confirm_clear_favorites
     }
 
     /// Rename `path` to `name` in its folder, so that Ctrl+Z can undo it;
@@ -643,9 +724,12 @@ impl App {
         {
             gallery.cache.insert(new.clone(), thumb);
         }
+        if let Err(e) = self.favorites.renamed(old, &new) {
+            self.notice(e);
+        }
         if let Some(dir) = self.dir.clone() {
             self.place = self.index;
-            self.scan = Some(folder::scan(dir, self.depth(), self.current.clone(), self.sort, ctx.clone()));
+            self.scan = Some(self.scan_dir(dir, self.current.clone(), ctx));
         }
     }
 
@@ -687,13 +771,30 @@ impl App {
 
     fn poll_scan(&mut self) {
         let Some(result) = self.scan.as_ref().and_then(Scan::poll) else { return };
-        self.scan = None;
+        // Favourites whose folder no longer has them are no longer
+        // favourites; those of a drive that is not there stay.
+        let gone = self.scan.take().map(|s| s.take_gone()).unwrap_or_default();
+        if !gone.is_empty() {
+            let n = gone.len();
+            match self.favorites.remove_if(|p| gone.iter().any(|g| folder::same_path(g, p))) {
+                Ok(_) => self.notice(tr!(
+                    format!("Not found, removed from the favorites: {n}"),
+                    format!("Не найдено и убрано из избранного: {n}")
+                )),
+                Err(e) => self.notice(e),
+            }
+        }
         match result {
             Ok(files) => self.files = files,
             Err(e) => {
                 self.notice(tr!(format!("Cannot list the folder: {e}"), format!("Не удалось прочитать папку: {e}")));
                 self.files = self.current.iter().cloned().collect();
             }
+        }
+        // Nothing listed (the last favourites cleared or gone): nothing is
+        // current, and the status bar is empty.
+        if self.files.is_empty() && self.current.is_some() {
+            self.set_current(None);
         }
         self.starts = folder::starts(&self.files);
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
@@ -713,7 +814,7 @@ impl App {
             Some(missing) => {
                 // Not known among the sub-folders: the names are in
                 // order only within a folder.
-                let at = if self.deep { None } else { folder::insertion_point(&self.files, &missing, self.sort) };
+                let at = if self.mixed() { None } else { folder::insertion_point(&self.files, &missing, self.sort) };
                 let at = at.or(self.place);
                 let i = at.unwrap_or(0).min(self.files.len() - 1);
                 let name = file_name(&missing);
@@ -929,8 +1030,18 @@ impl App {
             return;
         }
         self.cache.remove(&path);
-        let was_current = self.current.as_deref().is_some_and(|c| folder::same_path(c, &path));
-        match folder::position(&self.files, &path) {
+        if let Err(e) = self.favorites.remove_if(|p| folder::same_path(p, &path)) {
+            self.notice(e);
+        }
+        self.unlist(&path);
+    }
+
+    /// Take `path` out of `files` (deleted, or no longer a favourite among
+    /// the favourites); if it was current, the next image takes its place,
+    /// after the last one the one before.
+    fn unlist(&mut self, path: &Path) {
+        let was_current = self.current.as_deref().is_some_and(|c| folder::same_path(c, path));
+        match folder::position(&self.files, path) {
             Some(pos) => {
                 self.files.remove(pos);
                 self.starts = folder::starts(&self.files);
@@ -939,8 +1050,6 @@ impl App {
                     if self.files.is_empty() {
                         self.set_current(None);
                     } else {
-                        // The next image takes its place; after the last,
-                        // the one before.
                         self.go(pos.min(self.files.len() - 1));
                     }
                 } else if let Some(i) = self.index
@@ -1055,7 +1164,7 @@ impl App {
                     self.cache.remove(path);
                 }
                 let dir = match &self.current {
-                    Some(path) if !self.deep => path.parent().map(Path::to_path_buf),
+                    Some(path) if !self.mixed() => path.parent().map(Path::to_path_buf),
                     _ => self.dir.clone(),
                 };
                 if let Some(dir) = dir {
@@ -1064,8 +1173,8 @@ impl App {
             }
             Cmd::ToggleToolbar => self.show_toolbar = !self.show_toolbar,
             Cmd::ToggleStatusBar => self.show_status_bar = !self.show_status_bar,
-            Cmd::SortBy(key) => self.sort_by(ctx, Order { key, ..self.sort }),
-            Cmd::SortDescending => self.sort_by(ctx, Order { descending: !self.sort.descending, ..self.sort }),
+            Cmd::SortBy(key) => self.sort_by(ctx, Order { key, ..self.order() }),
+            Cmd::SortDescending => self.sort_by(ctx, Order { descending: !self.order().descending, ..self.order() }),
             Cmd::KeepZoom => {
                 self.view.keep = !self.view.keep;
                 self.notice(if self.view.keep {
@@ -1076,6 +1185,26 @@ impl App {
             }
             // The gallery's folders.
             Cmd::Back | Cmd::Forward | Cmd::Up => {}
+            Cmd::Favorite => self.toggle_favorite(ctx),
+            Cmd::Favorites => {
+                self.open_folder(ctx, PathBuf::from(favorites::DIR), self.deep);
+                if !self.gallery_open {
+                    self.enter_gallery(ctx);
+                }
+            }
+            Cmd::CopyFavorites => {
+                let files = self.favorite_files();
+                let n = files.len();
+                let text = match win::copy_files(&files) {
+                    _ if n == 0 => tr!("No favorites".into(), "Избранное пусто".into()),
+                    Ok(()) => tr!(format!("Files copied to the clipboard: {n}"), format!("Скопировано в буфер обмена файлов: {n}")),
+                    Err(e) => tr!(format!("Cannot copy: {e}"), format!("Не удалось скопировать: {e}")),
+                };
+                self.notice(text);
+            }
+            Cmd::CopyFavoritesTo => self.copy_favorites_to(ctx, frame),
+            Cmd::ClearFavorites => self.confirm_clear_favorites = self.favorites.len() > 0,
+            Cmd::GoToFolder => self.go_to_folder(ctx),
             Cmd::Shortcuts | Cmd::About | Cmd::Associations => {
                 self.dialog = Some(match cmd {
                     Cmd::About => Dialog::About,
@@ -1151,6 +1280,83 @@ impl App {
         true
     }
 
+    /// Mark the current image as a favourite, or unmark it; among the
+    /// favourites it then leaves the list, the next one taking its place.
+    fn toggle_favorite(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.current.clone() else { return };
+        let text = match self.favorites.toggle(&path) {
+            Ok(true) => tr!("Added to the favorites".into(), "Добавлено в избранное".into()),
+            Ok(false) => {
+                if self.in_favorites() {
+                    if self.scan.is_some() {
+                        // The listing under way has it still.
+                        self.relist(ctx);
+                    }
+                    self.unlist(&path);
+                }
+                tr!("Removed from the favorites".into(), "Убрано из избранного".into())
+            }
+            Err(e) => e,
+        };
+        self.notice(text);
+    }
+
+    /// The favourites that are there: as listed while they are, otherwise
+    /// in the order they were marked.
+    fn favorite_files(&self) -> Vec<PathBuf> {
+        if self.in_favorites() && self.scan.is_none() {
+            return self.files.clone();
+        }
+        self.favorites.paths().into_iter().filter(|p| p.is_file()).collect()
+    }
+
+    /// Copy the favourites to a folder the user picks; the shell shows the
+    /// progress and asks about files of the same name.
+    fn copy_favorites_to(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        if self.copying.is_some() {
+            return;
+        }
+        let files = self.favorite_files();
+        if files.is_empty() {
+            self.notice(tr!("No favorites".into(), "Избранное пусто".into()));
+            return;
+        }
+        let picked = rfd::FileDialog::new()
+            .set_title(tr!("Copy the favorites to", "Копировать избранное в папку"))
+            .set_parent(frame)
+            .pick_folder();
+        let Some(to) = picked else { return };
+        let (tx, done) = mpsc::channel();
+        let (ctx, owner, dest, count) = (ctx.clone(), self.hwnd, to.clone(), files.len());
+        std::thread::spawn(move || {
+            let _ = tx.send(win::copy_to(&files, &dest, owner));
+            ctx.request_repaint();
+        });
+        self.copying = Some(Copying { done, to, count });
+    }
+
+    fn poll_copy(&mut self) {
+        let Some(copying) = &self.copying else { return };
+        let Ok(result) = copying.done.try_recv() else { return };
+        let (to, n) = (copying.to.display().to_string(), copying.count);
+        self.copying = None;
+        self.notice(match result {
+            Ok(()) => tr!(format!("Favorites copied to {to}: {n}"), format!("Избранное скопировано в {to}: {n}")),
+            Err(e) if e == "cancelled" => tr!("Copying cancelled".into(), "Копирование отменено".into()),
+            Err(e) => tr!(format!("Cannot copy the favorites: {e}"), format!("Не удалось скопировать избранное: {e}")),
+        });
+    }
+
+    /// Unmark every favourite (after the user's yes).
+    pub fn clear_favorites(&mut self, ctx: &egui::Context) {
+        if let Err(e) = self.favorites.remove_if(|_| true) {
+            self.notice(e);
+        }
+        if self.in_favorites() {
+            self.relist(ctx);
+        }
+    }
+
     fn pick_file(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let image_extensions: Vec<&str> =
             folder::EXTENSIONS.iter().copied().chain(crate::wic::extensions().iter().map(String::as_str)).collect();
@@ -1159,7 +1365,11 @@ impl App {
             .add_filter(tr!("Images", "Изображения"), &image_extensions)
             .add_filter(tr!("All files", "Все файлы"), &["*"])
             .set_parent(frame);
-        if let Some(dir) = &self.dir {
+        let dir = match &self.dir {
+            Some(d) if favorites::is_dir(d) => self.current.as_deref().and_then(Path::parent),
+            d => d.as_deref(),
+        };
+        if let Some(dir) = dir {
             dialog = dialog.set_directory(dir);
         }
         if let Some(path) = dialog.pick_file() {
@@ -1326,6 +1536,7 @@ impl App {
 
     fn update_title(&mut self, ctx: &egui::Context) {
         let title = match (&self.current, &self.dir) {
+            (_, Some(_)) if self.gallery_open && self.in_favorites() => format!("{} - qview", tr!("Favorites", "Избранное")),
             (_, Some(dir)) if self.gallery_open => format!("{} - qview", file_name(dir)),
             (Some(p), _) => format!("{} - qview", file_name(p)),
             _ => "qview".into(),
@@ -1379,6 +1590,7 @@ impl eframe::App for App {
             gallery.poll(&self.gl, frame, &ctx);
         }
         self.poll_delete();
+        self.poll_copy();
         self.handle_drop(&ctx);
         self.sync_shown();
 
@@ -1459,6 +1671,8 @@ impl eframe::App for App {
         storage.set_string(LANGUAGE_KEY, self.lang.name().to_string());
         storage.set_string(SORT_KEY, self.sort.key.name().to_string());
         storage.set_string(SORT_DESCENDING_KEY, self.sort.descending.to_string());
+        storage.set_string(FAVORITES_SORT_KEY, self.favorites_sort.key.name().to_string());
+        storage.set_string(FAVORITES_SORT_DESCENDING_KEY, self.favorites_sort.descending.to_string());
         storage.set_string(BY_FOLDER_KEY, self.by_folder.to_string());
         if let Some(r) = self.hwnd.filter(|_| !self.fullscreen).and_then(win::normal_rect) {
             storage.set_string(WINDOW_NORMAL_KEY, format!("{},{},{},{}", r[0], r[1], r[2], r[3]));

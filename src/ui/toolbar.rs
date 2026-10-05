@@ -24,6 +24,8 @@ enum Icon {
     Next,
     /// The folder above, in the gallery.
     Up,
+    /// Mark as a favourite; filled when it is one.
+    Star(bool),
     RotateLeft,
     RotateRight,
     ZoomIn,
@@ -40,6 +42,13 @@ impl App {
         let file = self.current.is_some();
         let open = (Icon::Gallery, Cmd::Gallery, tr!("Gallery (G)", "Галерея (G)").into(), true);
         let delete = (Icon::Delete, Cmd::Delete, tr!("Delete (Del)", "Удалить (Del)").into(), file);
+        let favorite = self.current.as_deref().is_some_and(|c| self.favorites.contains(c));
+        let star = if favorite {
+            tr!("Remove from Favorites (S)", "Убрать из избранного (S)")
+        } else {
+            tr!("Add to Favorites (S)", "Добавить в избранное (S)")
+        };
+        let star = (Icon::Star(favorite), Cmd::Favorite, star.into(), file);
         egui::Panel::top("toolbar")
             .frame(panel_frame(TOOLBAR_BG, egui::Margin::symmetric(2, 2)))
             .show_separator_line(false)
@@ -54,7 +63,7 @@ impl App {
                                 (Icon::Next, Cmd::Forward, tr!("Forward (Alt+→)", "Вперёд (Alt+→)").into(), self.history.can_go_forward()),
                                 (Icon::Up, Cmd::Up, tr!("Up (Alt+↑)", "Вверх (Alt+↑)").into(), self.parent_dir().is_some()),
                             ],
-                            vec![delete],
+                            vec![star, delete],
                         ]
                     } else {
                         vec![
@@ -71,7 +80,7 @@ impl App {
                                 (Icon::ZoomIn, Cmd::ZoomIn, tr!("Zoom In (+)", "Увеличить (+)").into(), has_image),
                                 (Icon::ZoomOut, Cmd::ZoomOut, tr!("Zoom Out (-)", "Уменьшить (-)").into(), has_image),
                             ],
-                            vec![delete],
+                            vec![star, delete],
                         ]
                     };
                     for (g, group) in buttons.iter().enumerate() {
@@ -151,6 +160,7 @@ fn paint_icon(painter: &Painter, icon: Icon, c: Pos2, color: Color32) {
             painter.add(Shape::line(shaft, stroke));
             painter.add(Shape::line(head, stroke));
         }
+        Icon::Star(on) => crate::ui::paint_star(painter, c, 8.5, on.then_some(crate::ui::STAR), if on { crate::ui::STAR } else { color }),
         Icon::Up => {
             painter.line_segment([pos2(c.x, c.y + 7.0), pos2(c.x, c.y - 7.5)], stroke);
             painter.add(Shape::line(vec![pos2(c.x - 5.5, c.y - 1.5), pos2(c.x, c.y - 7.5), pos2(c.x + 5.5, c.y - 1.5)], stroke));

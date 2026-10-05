@@ -137,9 +137,45 @@ fn shell_execute(target: &OsStr, dir: Option<&Path>) -> bool {
 /// Put `path` on the clipboard as a file (`CF_HDROP`), the way Explorer's
 /// Copy does, so that it can be pasted into a folder or a message.
 pub fn copy_file(path: &Path) -> Result<(), String> {
-    let text = path.to_str().ok_or("the path is not valid Unicode")?;
+    copy_files(&[path.to_path_buf()])
+}
+
+/// `paths` to the clipboard as files, to paste in Explorer.
+pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
+    let texts = paths.iter().map(|p| p.to_str().ok_or("the path is not valid Unicode")).collect::<Result<Vec<_>, _>>()?;
     let _clipboard = clipboard_win::Clipboard::new_attempts(10).map_err(|e| e.to_string())?;
-    clipboard_win::raw::set_file_list_with(&[text], clipboard_win::options::DoClear).map_err(|e| e.to_string())
+    clipboard_win::raw::set_file_list_with(&texts, clipboard_win::options::DoClear).map_err(|e| e.to_string())
+}
+
+/// Copy `files` into the folder `to` as Explorer does: the shell shows the
+/// progress and asks about files of the same name; the questions belong to
+/// `owner`. Blocks until done: call it on a thread.
+pub fn copy_to(files: &[PathBuf], to: &Path, owner: Option<isize>) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::{FO_COPY, FOF_ALLOWUNDO, FOF_NOCONFIRMMKDIR, SHFILEOPSTRUCTW, SHFileOperationW};
+    // Lists of paths, each NUL-terminated, ending with an empty one.
+    let mut from = Vec::new();
+    for f in files {
+        from.extend(wide(f));
+    }
+    from.push(0);
+    let mut dest = wide(to);
+    dest.push(0);
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: owner.unwrap_or(0) as windows_sys::Win32::Foundation::HWND,
+        wFunc: FO_COPY,
+        pFrom: from.as_ptr(),
+        pTo: dest.as_ptr(),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR) as u16,
+        ..Default::default()
+    };
+    let code = unsafe { SHFileOperationW(&mut op) };
+    if op.fAnyOperationsAborted != 0 {
+        Err("cancelled".into())
+    } else if code != 0 {
+        Err(format!("error {code:#x}"))
+    } else {
+        Ok(())
+    }
 }
 
 /// A FILETIME (100 ns ticks since 1601, UTC) as a local date and time in

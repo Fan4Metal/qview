@@ -5,6 +5,7 @@ mod i18n;
 mod anim;
 mod app;
 mod assoc;
+mod favorites;
 mod filetypes;
 mod folder;
 mod format;

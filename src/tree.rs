@@ -1,7 +1,8 @@
-//! The folder tree of the gallery: the user's Pictures and Desktop and the
-//! drives at the top, each folder listed on a thread the first time it is
-//! expanded (a network or a sleeping drive can take seconds). Only the
-//! visible rows are laid out, as in disk_flashlight's tree.
+//! The folder tree of the gallery: the favourites, the user's Pictures and
+//! Desktop and the drives at the top, each folder listed on a thread the
+//! first time it is expanded (a network or a sleeping drive can take
+//! seconds). Only the visible rows are laid out, as in disk_flashlight's
+//! tree.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -31,6 +32,8 @@ const DRIVE: Color32 = Color32::from_rgb(0xa8, 0xa8, 0xa8);
 enum Kind {
     Folder,
     Drive,
+    /// The favourite images, listed in place of a folder (`favorites::DIR`).
+    Favorites,
 }
 
 struct Node {
@@ -103,7 +106,14 @@ impl Tree {
         if ids.is_empty() {
             return;
         }
-        let roots: Vec<(usize, PathBuf)> = ids.into_iter().map(|r| (r, self.nodes[r].path.clone())).collect();
+        let roots: Vec<(usize, PathBuf)> = ids
+            .into_iter()
+            .filter(|&r| self.nodes[r].kind != Kind::Favorites)
+            .map(|r| (r, self.nodes[r].path.clone()))
+            .collect();
+        if roots.is_empty() {
+            return;
+        }
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         std::thread::Builder::new()
             .name("drive names".into())
@@ -152,8 +162,13 @@ impl Tree {
                         Kind::Folder => {
                             path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into())
                         }
+                        // Named when drawn, in the language of the moment.
+                        Kind::Favorites => String::new(),
                     };
                     let id = self.add(path, name, 0, kind);
+                    if kind == Kind::Favorites {
+                        self.nodes[id].has_children = Some(false);
+                    }
                     ids.push(id);
                     added.push(id);
                 }
@@ -389,9 +404,9 @@ impl Tree {
         self.dirty = false;
     }
 
-    /// Draw the tree with `selected` highlighted; returns the folder
-    /// clicked.
-    pub fn show(&mut self, ui: &mut Ui, selected: Option<&Path>) -> Option<PathBuf> {
+    /// Draw the tree with `selected` highlighted, and how many favourites
+    /// there are; returns the folder clicked (`favorites::DIR` for them).
+    pub fn show(&mut self, ui: &mut Ui, selected: Option<&Path>, favorites: usize) -> Option<PathBuf> {
         self.poll();
         if self.dirty {
             self.rebuild();
@@ -433,14 +448,18 @@ impl Tree {
                 match node.kind {
                     Kind::Folder => paint_folder(&painter, icon),
                     Kind::Drive => paint_drive(&painter, icon),
+                    Kind::Favorites => crate::ui::paint_star(&painter, icon, 7.5, Some(crate::ui::STAR), crate::ui::STAR),
                 }
-                painter.text(
-                    pos2(x + ARROW_WIDTH + ICON_WIDTH + 2.0, rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    &node.name,
-                    FontId::proportional(13.0),
-                    TEXT,
-                );
+                let name = match node.kind {
+                    Kind::Favorites => tr!("Favorites", "Избранное"),
+                    _ => &node.name,
+                };
+                let text = pos2(x + ARROW_WIDTH + ICON_WIDTH + 2.0, rect.center().y);
+                let label = painter.text(text, egui::Align2::LEFT_CENTER, name, FontId::proportional(13.0), TEXT);
+                if node.kind == Kind::Favorites && favorites > 0 {
+                    let at = pos2(label.right() + 6.0, rect.center().y);
+                    painter.text(at, egui::Align2::LEFT_CENTER, favorites.to_string(), FontId::proportional(12.0), TEXT_WEAK);
+                }
                 // The second click of a double click is a click too; the
                 // first one has chosen the folder already.
                 if crate::input::double_clicked(&response) && has_children && !on_arrow {
@@ -462,11 +481,13 @@ impl Tree {
     }
 }
 
-/// The top-level nodes: the user's Pictures and Desktop, then the drives.
+/// The top-level nodes: the favourites, the user's Pictures and Desktop,
+/// then the drives.
 fn system_roots() -> Vec<(PathBuf, Kind)> {
+    let favorites = std::iter::once((PathBuf::from(crate::favorites::DIR), Kind::Favorites));
     let folders = crate::win::known_folders().into_iter().map(|p| (p, Kind::Folder));
     let drives = crate::win::drives().into_iter().map(|p| (p, Kind::Drive));
-    folders.chain(drives).collect()
+    favorites.chain(folders).chain(drives).collect()
 }
 
 /// The sub-folders of `dir` that Explorer shows, in its order.

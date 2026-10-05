@@ -70,6 +70,19 @@ pub enum Cmd {
     Back,
     Forward,
     Up,
+    /// Mark the current image as a favourite, or unmark it (S).
+    Favorite,
+    /// List the favourites in the gallery.
+    Favorites,
+    /// The favourites to the clipboard, as files.
+    CopyFavorites,
+    /// The favourites to a folder the user picks.
+    CopyFavoritesTo,
+    /// Forget them all, once the user says so.
+    ClearFavorites,
+    /// List the folder of the current image alone, from the favourites or
+    /// the sub-folders, the image staying current.
+    GoToFolder,
 }
 
 /// The command of a key press with `m` held, if any. `repeat` is set for
@@ -106,6 +119,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
         Key::L if letter => KeepZoom,
+        Key::S if letter => Favorite,
         Key::G if letter => Gallery,
         Key::Enter if plain && !m.shift => Gallery,
         Key::W if m.ctrl && !m.alt => Close,
@@ -239,6 +253,9 @@ mod tests {
         assert_eq!(command(Key::Enter, NONE, true), None);
         assert_eq!(command(Key::L, NONE, false), Some(Cmd::KeepZoom));
         assert_eq!(command(Key::L, NONE, true), None);
+        assert_eq!(command(Key::S, NONE, false), Some(Cmd::Favorite));
+        assert_eq!(command(Key::S, NONE, true), None);
+        assert_eq!(command(Key::S, CTRL, false), None);
     }
 
     #[test]

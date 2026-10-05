@@ -34,6 +34,7 @@ impl App {
     /// The gallery in place of the image area.
     pub(crate) fn gallery_ui(&mut self, root_ui: &mut Ui) {
         let ctx = root_ui.ctx().clone();
+        let favorites = self.favorites.len();
         let Some(gallery) = self.gallery.as_mut() else { return };
         let selected = self.dir.clone();
         let tree = egui::Panel::left("gallery_tree")
@@ -41,7 +42,7 @@ impl App {
             .default_size(self.tree_width)
             .size_range(140.0..=640.0)
             .frame(panel_frame(TREE_BG, Margin::symmetric(0, 4)))
-            .show(root_ui, |ui| gallery.tree.show(ui, selected.as_deref()));
+            .show(root_ui, |ui| gallery.tree.show(ui, selected.as_deref(), favorites));
         self.tree_width = tree.response.rect.width().round();
         // In the mode chosen above the grid.
         if let Some(dir) = tree.inner {
@@ -61,6 +62,7 @@ impl App {
     fn gallery_bar(&mut self, root_ui: &mut Ui) {
         let before = (self.thumb_size, self.thumb_aspect, self.by_folder);
         let mut deep = self.deep;
+        let (in_favorites, mixed) = (self.in_favorites(), self.mixed());
         let shown = self.gallery.as_ref().map_or(1.0, |g| g.shown_aspect);
         egui::Panel::top("gallery_bar")
             .frame(panel_frame(BAR_BG, Margin::symmetric(8, 3)))
@@ -114,9 +116,9 @@ impl App {
                     bar_separator(ui);
                     ui.add_space(10.0);
                     // Always there, so that nothing moves; only for the
-                    // sub-folders.
+                    // sub-folders and the favourites.
                     let by_folder = egui::Checkbox::new(&mut self.by_folder, tr!("By folder", "По папкам"));
-                    ui.add_enabled(self.deep, by_folder)
+                    ui.add_enabled(mixed, by_folder)
                         .on_hover_text(tr!(
                             "Each folder's images sorted and shown on their own, under a header",
                             "Изображения каждой папки сортируются и показываются отдельно, под её заголовком"
@@ -126,13 +128,20 @@ impl App {
                             "Для вложенных папок: изображения каждой папки отдельно"
                         ));
                     ui.add_space(8.0);
-                    ui.checkbox(&mut deep, tr!("Sub-folders", "Вложенные папки")).on_hover_text(tr!(
+                    // The favourites have no sub-folders; the choice stays
+                    // for the folders chosen next.
+                    let sub_folders = egui::Checkbox::new(&mut deep, tr!("Sub-folders", "Вложенные папки"));
+                    ui.add_enabled(!in_favorites, sub_folders).on_hover_text(tr!(
                         "The images of all sub-folders too",
                         "Также изображения всех вложенных папок"
                     ));
                     ui.add_space(8.0);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        if let Some(dir) = &self.dir {
+                        if in_favorites {
+                            let n = self.favorites.len();
+                            ui.label(RichText::new(tr!("Favorites", "Избранное")).size(12.5).color(TEXT));
+                            ui.label(RichText::new(n.to_string()).size(12.5).color(TEXT_WEAK));
+                        } else if let Some(dir) = &self.dir {
                             let text = RichText::new(dir.display().to_string()).size(12.5).color(TEXT_WEAK);
                             ui.add(egui::Label::new(text).truncate());
                         }
@@ -144,7 +153,7 @@ impl App {
         }
         if deep != self.deep {
             self.set_deep(root_ui.ctx(), deep);
-        } else if self.deep && self.by_folder != before.2 {
+        } else if mixed && self.by_folder != before.2 {
             // In the order of each folder, or in one through all.
             self.relist(root_ui.ctx());
         }
@@ -171,6 +180,7 @@ impl App {
         }
         let n = self.files.len();
         let listing = self.listing();
+        let (in_favorites, mixed) = (self.in_favorites(), self.mixed());
         let gallery = self.gallery.as_mut()?;
         if n == 0 {
             gallery.want(Vec::new());
@@ -186,6 +196,12 @@ impl App {
                 })
             } else if self.dir.is_none() {
                 Some(tr!("Choose a folder on the left", "Выберите папку слева").to_string())
+            } else if in_favorites {
+                Some(tr!(
+                    "No favorites yet: S marks the selected image",
+                    "Избранного пока нет: клавиша S отмечает выбранное изображение"
+                )
+                .into())
             } else if self.deep {
                 Some(tr!("No images in this folder and its sub-folders", "В этой папке и вложенных папках нет изображений").into())
             } else {
@@ -217,7 +233,7 @@ impl App {
         let frame = gallery::frame_size(self.thumb_size, aspect);
         // By folder: a section for each, under a header; not while the
         // listing in one order is still on screen.
-        let sections = self.deep && self.by_folder && self.scan.is_none();
+        let sections = mixed && self.by_folder && self.scan.is_none();
         let (starts, header) = if sections { (&self.starts[..], HEADER) } else { (&[][..], 0.0) };
         let layout = gallery::Layout::new(rect.width(), frame, n, starts, header);
         let cell = layout.cell;
@@ -265,6 +281,7 @@ impl App {
         let files = &self.files;
         let index = self.index;
         let (dir, deep) = (self.dir.as_deref(), self.deep);
+        let favorites = &self.favorites;
         // A folder whose header was double-clicked.
         let mut folder = None;
         let out = area.show_viewport(ui, |ui, viewport| {
@@ -278,7 +295,12 @@ impl App {
                         break;
                     }
                     let rect = Rect::from_min_size(origin + vec2(0.0, s.y), vec2(ui.max_rect().width(), layout.header));
-                    folder_header(&painter, rect, &folder_name(dir, &files[s.first]), layout.len(k));
+                    let name = match files[s.first].parent() {
+                        // From anywhere: the whole path.
+                        Some(parent) if in_favorites => parent.display().to_string(),
+                        _ => folder_name(dir, &files[s.first]),
+                    };
+                    folder_header(&painter, rect, &name, layout.len(k));
                     // A sub-folder's header opens it; the folder shown has
                     // nothing to open.
                     let parent = files[s.first].parent();
@@ -297,8 +319,9 @@ impl App {
                 let cell = Rect::from_min_size(origin + layout.cell_pos(i), cell);
                 let response = ui.interact(cell, ui.id().with(("cell", i)), Sense::CLICK);
                 let path = &files[i];
-                // Which sub-folder it is in.
+                // Which sub-folder it is in; for a favourite, where it is.
                 let response = match dir.filter(|_| deep).and_then(|d| path.strip_prefix(d).ok()) {
+                    _ if in_favorites => response.on_hover_text(path.display().to_string()),
                     Some(relative) => response.on_hover_text(relative.to_string_lossy()),
                     None => response,
                 };
@@ -316,12 +339,15 @@ impl App {
                 if gallery.needs(path, side) {
                     requests.push(Request { path: path.clone(), side });
                 }
+                // Where the star of a favourite goes: the image's corner.
+                let mut corner = square.right_top();
                 match gallery.thumb(path) {
                     Some(t) => match &t.texture {
                         Some(texture) => {
                             let px = vec2(t.px[0] as f32, t.px[1] as f32);
                             let (rect, uv) = gallery::place_thumb(square, px, ppp, fill, t.shrunk());
                             painter.image(texture.id(), rect, uv, Color32::WHITE);
+                            corner = rect.right_top();
                         }
                         None => {
                             let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
@@ -331,6 +357,9 @@ impl App {
                     None => {
                         painter.rect_filled(square.shrink(frame.min_elem() * 0.08), 2.0, CELL_EMPTY);
                     }
+                }
+                if favorites.contains(path) {
+                    star(&painter, corner);
                 }
                 label(&painter, &file_name(path), cell, square.bottom() + 2.0);
                 cells.push((i, response));
@@ -379,6 +408,12 @@ impl App {
         }
         background.context_menu(|ui| {
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
+            if self.in_favorites() {
+                ui.separator();
+                self.favorites_items(ui);
+                ui.separator();
+                self.clear_favorites_item(ui);
+            }
         });
         // As if chosen in the tree, with its sub-folders still.
         if let Some(dir) = folder {
@@ -400,6 +435,14 @@ impl App {
     /// Right click on a cell, which is then the current image.
     fn cell_menu(&mut self, ui: &mut Ui) {
         self.item(ui, tr!("Open", "Открыть").into(), "Enter", Cmd::Gallery, true);
+        ui.separator();
+        self.favorite_item(ui, true);
+        if self.can_go_to_folder() {
+            self.go_to_folder_item(ui);
+        }
+        if self.in_favorites() {
+            self.favorites_items(ui);
+        }
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, true);
         self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, true);
@@ -438,6 +481,14 @@ fn folder_header(painter: &Painter, rect: Rect, name: &str, count: usize) {
     if x < right {
         painter.hline(x..=right, y, egui::Stroke::new(1.0, HEADER_LINE));
     }
+}
+
+/// The star of a favourite in the top right corner of its thumbnail, on a
+/// dark disc so that it shows on any image.
+fn star(painter: &Painter, corner: egui::Pos2) {
+    let c = corner + vec2(-10.0, 10.0);
+    painter.circle_filled(c, 9.0, Color32::from_black_alpha(150));
+    super::paint_star(painter, c, 6.5, Some(super::STAR), super::STAR);
 }
 
 /// The file name under a thumbnail, cut short with an ellipsis.

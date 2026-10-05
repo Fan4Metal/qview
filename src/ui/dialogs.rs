@@ -49,6 +49,7 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ),
         (tr!("Gallery: Alt+↑", "Галерея: Alt+↑"), tr!("Folder above", "Папка уровнем выше")),
         ("T  B", tr!("Show or hide the toolbar / status bar", "Панель инструментов / строка состояния")),
+        ("S", tr!("Add to / remove from the favorites", "Добавить в избранное / убрать из него")),
         ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
         ("F2", tr!("Rename the file", "Переименовать файл")),
         ("Ctrl+Z", tr!("Undo the last rename", "Отменить последнее переименование")),
@@ -75,6 +76,7 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
 impl App {
     pub(crate) fn dialogs(&mut self, ctx: &egui::Context) {
         self.confirm_delete_dialog(ctx);
+        self.confirm_clear_favorites_dialog(ctx);
         self.rename_dialog(ctx);
         // The key that opened a dialog this frame must not close it.
         let fresh = std::mem::take(&mut self.dialog_fresh);
@@ -394,6 +396,51 @@ impl App {
 }
 
 impl App {
+    /// Clear the favourites? Enter clears, Esc cancels.
+    fn confirm_clear_favorites_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_clear_favorites {
+            return;
+        }
+        let mut decision = None;
+        let modal = egui::Modal::new(egui::Id::new("confirm_clear_favorites")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading(tr!("Clear Favorites", "Очистка избранного"));
+            ui.add_space(6.0);
+            let n = self.favorites.len();
+            ui.label(tr!(
+                format!("Remove all {n} images from the favorites? The files stay where they are."),
+                format!("Убрать из избранного все изображения ({n})? Сами файлы останутся на месте.")
+            ));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let text = |s: &str| RichText::new(s).size(16.0);
+                let clear = egui::Button::new(text(tr!("Clear", "Очистить")).color(egui::Color32::WHITE))
+                    .fill(super::DANGER)
+                    .min_size(egui::vec2(160.0, 34.0));
+                if ui.add(clear).clicked() {
+                    decision = Some(true);
+                }
+                if ui.add(egui::Button::new(text(tr!("Cancel", "Отмена"))).min_size(egui::vec2(100.0, 34.0))).clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        if decision.is_none() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter)) {
+                decision = Some(true);
+            } else if modal.should_close() {
+                decision = Some(false);
+            }
+        }
+        if let Some(clear) = decision {
+            self.confirm_clear_favorites = false;
+            if clear {
+                self.clear_favorites(ctx);
+            }
+        }
+    }
+
     /// The new name of a file, the old one selected but its extension, as
     /// in Explorer; Enter renames, Esc cancels.
     fn rename_dialog(&mut self, ctx: &egui::Context) {

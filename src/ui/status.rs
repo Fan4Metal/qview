@@ -20,6 +20,9 @@ impl App {
         });
         let Some(current) = &self.current else { return fields };
         fields.push(self.display_name(current));
+        if self.favorites.contains(current) {
+            fields.push(tr!("★ Favorite", "★ Избранное").into());
+        }
         let modified = |fields: &mut Vec<String>, modified: u64| {
             if let Some(date) = crate::win::local_date_time(modified).filter(|_| modified != 0) {
                 fields.push(tr!(format!("Modified Date: {date}"), format!("Дата изменения: {date}")));
