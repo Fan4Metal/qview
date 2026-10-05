@@ -17,6 +17,8 @@ use windows_sys::core::{GUID, HRESULT, PWSTR};
 use crate::wic::{Com, Unknown};
 use crate::win::wide;
 
+use windows_sys::Win32::Foundation::{E_FAIL, E_INVALIDARG};
+
 const IID_IDATAOBJECT: GUID = GUID::from_u128(0x0000010e_0000_0000_c000_000000000046);
 
 /// `IEnumAssocHandlers::Next`.
@@ -116,17 +118,28 @@ pub fn open(editor: Option<&Editor>, files: &[PathBuf]) -> Result<(), String> {
     let Some(editor) = editor else { return edit_verb(files) };
     let ext = files.first().and_then(|f| f.extension()).map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     if let Some((_, handler)) = handlers(&ext).into_iter().find(|(e, _)| e.id.eq_ignore_ascii_case(&editor.id)) {
-        let invoke = |files: &[PathBuf]| -> Result<(), String> {
-            let data = data_object(files)?;
+        let name = &editor.name;
+        // The error, with the HRESULT when the handler refused.
+        let invoke = |files: &[PathBuf]| -> Result<(), (HRESULT, String)> {
+            let data = data_object(files).map_err(|e| (0, e))?;
             let hr = unsafe { handler.method::<Invoke>(HANDLER_INVOKE)(handler.0, data.0) };
-            if hr >= 0 { Ok(()) } else { Err(format!("error {hr:#x}")) }
+            if hr >= 0 {
+                Ok(())
+            } else {
+                Err((hr, tr!(format!("{name} did not open the file (error {hr:#x})"), format!("{name} не открыл файл (ошибка {hr:#x})"))))
+            }
         };
         // Many handlers take one file at a time (E_FAIL for several, as
-        // Paint's): then each is opened on its own.
-        return match invoke(files) {
-            Err(_) if files.len() > 1 => files.iter().try_for_each(|f| invoke(std::slice::from_ref(f))),
+        // Paint's): then each is opened on its own, the others even if one
+        // fails.
+        let result = match invoke(files) {
+            Err((E_FAIL | E_INVALIDARG, _)) if files.len() > 1 => {
+                let results: Vec<_> = files.iter().map(|f| invoke(std::slice::from_ref(f))).collect();
+                results.into_iter().find(Result::is_err).unwrap_or(Ok(()))
+            }
             result => result,
         };
+        return result.map_err(|(_, e)| e);
     }
     if Path::new(&editor.id).is_file() {
         return std::process::Command::new(&editor.id).args(files).spawn().map(|_| ()).map_err(|e| e.to_string());
@@ -146,7 +159,7 @@ fn data_object(files: &[PathBuf]) -> Result<Com, String> {
         let mut array = null_mut();
         let hr = unsafe { SHCreateShellItemArrayFromIDLists(ids.len() as u32, ids.as_ptr().cast(), &mut array) };
         if hr < 0 || array.is_null() {
-            return Err(format!("error {hr:#x}"));
+            return Err(tr!(format!("error {hr:#x}"), format!("ошибка {hr:#x}")));
         }
         let array = Com(array);
         let mut data = null_mut();
@@ -154,7 +167,7 @@ fn data_object(files: &[PathBuf]) -> Result<Com, String> {
             array.method::<BindToHandler>(ARRAY_BIND_TO_HANDLER)(array.0, null_mut(), &BHID_DataObject, &IID_IDATAOBJECT, &mut data)
         };
         if hr < 0 || data.is_null() {
-            return Err(format!("error {hr:#x}"));
+            return Err(tr!(format!("error {hr:#x}"), format!("ошибка {hr:#x}")));
         }
         Ok(Com(data))
     })();

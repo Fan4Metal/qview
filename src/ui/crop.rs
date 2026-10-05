@@ -49,7 +49,7 @@ impl App {
                             clicked = Some(Cmd::SaveAs);
                         }
                         let save = egui::Button::new(tr!("Save", "Сохранить"));
-                        if ui.add_enabled(!saving, save).on_hover_text(tr!("Enter, Ctrl+S", "Enter, Ctrl+S")).clicked() {
+                        if ui.add_enabled(!saving, save).on_hover_text("Enter, Ctrl+S").clicked() {
                             clicked = Some(Cmd::Save);
                         }
                         if saving {

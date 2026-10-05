@@ -55,7 +55,7 @@ pub fn recycle(paths: &[PathBuf], owner: Option<isize>) -> Result<(), String> {
     if op.fAnyOperationsAborted != 0 {
         Err("cancelled".into())
     } else if code != 0 {
-        Err(format!("error {code:#x}"))
+        Err(tr!(format!("error {code:#x}"), format!("ошибка {code:#x}")))
     } else {
         Ok(())
     }
@@ -63,7 +63,7 @@ pub fn recycle(paths: &[PathBuf], owner: Option<isize>) -> Result<(), String> {
 
 /// Put `replacement` in the place of `target`, which keeps its creation
 /// date, attributes and permissions; `replacement` is gone afterwards.
-pub fn replace_file(target: &Path, replacement: &Path) -> Result<(), String> {
+pub fn replace_file(target: &Path, replacement: &Path) -> std::io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW};
     let (target, replacement) = (wide(target), wide(replacement));
     let ok = unsafe {
@@ -76,7 +76,7 @@ pub fn replace_file(target: &Path, replacement: &Path) -> Result<(), String> {
             std::ptr::null(),
         )
     };
-    if ok != 0 { Ok(()) } else { Err(std::io::Error::last_os_error().to_string()) }
+    if ok != 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
 /// Open Explorer on the folder of `path` with the file selected, in front
@@ -194,7 +194,7 @@ pub fn https_get(
             }
             body.extend_from_slice(&buf[..read as usize]);
             if body.len() > limit {
-                return Err(format!("the answer is larger than {limit} bytes"));
+                return Err(tr!(format!("the answer is larger than {limit} bytes"), format!("ответ больше {limit} байт")));
             }
         }
         Ok((status, body))
@@ -205,11 +205,11 @@ pub fn https_get(
 fn winhttp_error() -> String {
     let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
     match code {
-        12002 => "the server did not answer in time".into(),
-        12007 => "the server name could not be resolved".into(),
-        12029 | 12030 => "the connection to the server failed".into(),
-        12175 => "the secure connection failed".into(),
-        _ => format!("WinHTTP error {code}"),
+        12002 => tr!("the server did not answer in time", "сервер не ответил вовремя").into(),
+        12007 => tr!("the server name could not be resolved", "не удалось найти адрес сервера").into(),
+        12029 | 12030 => tr!("the connection to the server failed", "не удалось соединиться с сервером").into(),
+        12175 => tr!("the secure connection failed", "не удалось установить защищённое соединение").into(),
+        _ => tr!(format!("WinHTTP error {code}"), format!("ошибка WinHTTP {code}")),
     }
 }
 
@@ -277,7 +277,7 @@ pub fn copy_to(files: &[PathBuf], to: &Path, owner: Option<isize>) -> Result<(),
     if op.fAnyOperationsAborted != 0 {
         Err("cancelled".into())
     } else if code != 0 {
-        Err(format!("error {code:#x}"))
+        Err(tr!(format!("error {code:#x}"), format!("ошибка {code:#x}")))
     } else {
         Ok(())
     }
@@ -371,7 +371,7 @@ pub fn normal_rect(hwnd: isize) -> Option<[i32; 4]> {
 pub fn show_maximized(hwnd: isize, normal: Option<[i32; 4]>, default: [f32; 2]) {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowPlacement, GetWindowRect, SW_SHOWMAXIMIZED, SetWindowPlacement, WINDOWPLACEMENT,
+        GetWindowPlacement, SW_SHOWMAXIMIZED, SetWindowPlacement, WINDOWPLACEMENT,
     };
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -381,8 +381,10 @@ pub fn show_maximized(hwnd: isize, normal: Option<[i32; 4]>, default: [f32; 2]) 
     placement.length = size_of::<WINDOWPLACEMENT>() as u32;
     unsafe { GetWindowPlacement(hwnd as _, &mut placement) };
     let [left, top, right, bottom] = normal.unwrap_or_else(|| {
-        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        unsafe { GetWindowRect(hwnd as _, &mut r) };
+        // Centred where the window is now, in the work area's coordinates
+        // as `rcNormalPosition` (GetWindowRect's are the screen's: a
+        // taskbar at the top or left would shift it).
+        let r = placement.rcNormalPosition;
         let scale = match unsafe { GetDpiForWindow(hwnd) } {
             0 => 1.0,
             dpi => dpi as f32 / 96.0,

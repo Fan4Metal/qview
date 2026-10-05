@@ -793,9 +793,7 @@ impl App {
         }
         crate::rename::check(&pairs)?;
         crate::rename::rename_all(&pairs)?;
-        for (old, new) in &pairs {
-            self.moved(old, new.clone());
-        }
+        self.moved(&pairs);
         self.list_again(ctx);
         let n = pairs.len();
         self.notice(tr!(format!("Files renamed: {n}"), format!("Переименовано файлов: {n}")));
@@ -830,9 +828,7 @@ impl App {
                 let back: Vec<(PathBuf, PathBuf)> = pairs.iter().map(|(old, new)| (new.clone(), old.clone())).collect();
                 let text = match crate::rename::check(&back).and_then(|()| crate::rename::rename_all(&back)) {
                     Ok(()) => {
-                        for (from, to) in &back {
-                            self.moved(from, to.clone());
-                        }
+                        self.moved(&back);
                         self.list_again(ctx);
                         tr!("Rename undone", "Переименование отменено").into()
                     }
@@ -888,6 +884,7 @@ impl App {
             self.partial.remove(path);
         }
         self.pending.retain(|d| !paths.contains(&d.path));
+        self.loader.forget(paths);
         if let Some(gallery) = &mut self.gallery {
             gallery.forget(paths);
         }
@@ -926,41 +923,39 @@ impl App {
             return Err(tr!("A file with this name already exists", "Файл с таким именем уже существует").into());
         }
         std::fs::rename(path, new).map_err(|e| tr!(format!("Cannot rename: {e}"), format!("Не удалось переименовать: {e}")))?;
-        self.renamed(ctx, path, new.to_path_buf());
+        self.moved(&[(path.to_path_buf(), new.to_path_buf())]);
+        // Its place in the order may have changed.
+        self.list_again(ctx);
         Ok(())
     }
 
-    /// `old` is now `new`: what was decoded for it is kept, and the folder
-    /// is listed again, since its place in the order may have changed.
-    fn renamed(&mut self, ctx: &egui::Context, old: &Path, new: PathBuf) {
-        self.moved(old, new);
-        self.list_again(ctx);
-    }
-
-    /// `old` is now `new`: what was decoded for it, its thumbnail, its
-    /// place among the favourites and the chosen images go with it.
-    fn moved(&mut self, old: &Path, new: PathBuf) {
-        self.selection.renamed(old, &new);
-        if let Some(i) = folder::position(&self.files, old) {
+    /// Each `old` is now its `new`: what was decoded for it, its thumbnail,
+    /// its place among the favourites and the chosen images go with it.
+    /// Every old name is taken out before any new one goes in, since in a
+    /// batch (01 to 02, 02 to 03) a new name may be another pair's old one.
+    fn moved(&mut self, pairs: &[(PathBuf, PathBuf)]) {
+        self.selection.renamed(pairs);
+        let places: Vec<(usize, &PathBuf)> =
+            pairs.iter().filter_map(|(old, new)| folder::position(&self.files, old).map(|i| (i, new))).collect();
+        for (i, new) in places {
             self.files[i] = new.clone();
         }
-        for path in [self.current.as_mut(), self.shown.as_mut().map(|(p, _)| p)].into_iter().flatten() {
-            if path.as_path() == old {
+        for path in [self.current.as_mut(), self.shown.as_mut().map(|(p, _)| p), self.reloading.as_mut()].into_iter().flatten() {
+            if let Some((_, new)) = pairs.iter().find(|(old, _)| old == path) {
                 *path = new.clone();
             }
         }
-        if let Some(slot) = self.cache.remove(old) {
-            self.cache.insert(new.clone(), slot);
+        fn rekey<T>(map: &mut HashMap<PathBuf, T>, pairs: &[(PathBuf, PathBuf)]) {
+            let taken: Vec<(PathBuf, T)> =
+                pairs.iter().filter_map(|(old, new)| map.remove(old).map(|v| (new.clone(), v))).collect();
+            map.extend(taken);
         }
-        if let Some(pixels) = self.partial.remove(old) {
-            self.partial.insert(new.clone(), pixels);
+        rekey(&mut self.cache, pairs);
+        rekey(&mut self.partial, pairs);
+        if let Some(gallery) = &mut self.gallery {
+            rekey(&mut gallery.cache, pairs);
         }
-        if let Some(gallery) = &mut self.gallery
-            && let Some(thumb) = gallery.cache.remove(old)
-        {
-            gallery.cache.insert(new.clone(), thumb);
-        }
-        if let Err(e) = self.favorites.renamed(old, &new) {
+        if let Err(e) = self.favorites.renamed(pairs) {
             self.notice(e);
         }
     }
@@ -1025,7 +1020,14 @@ impl App {
         }
         // Nothing listed (the last favourites cleared or gone): nothing is
         // current, and the status bar is empty.
-        if self.files.is_empty() && self.current.is_some() {
+        if self.files.is_empty()
+            && let Some(current) = self.current.take()
+        {
+            // A file opened that is not there, in a folder with no images.
+            if !self.in_favorites() && !current.is_file() {
+                let name = file_name(&current);
+                self.notice(tr!(format!("File not found: {name}"), format!("Файл не найден: {name}")));
+            }
             self.set_current(None);
         }
         self.starts = folder::starts(&self.files);
@@ -1224,6 +1226,10 @@ impl App {
 
     /// Put the current image on screen once it is decoded.
     fn sync_shown(&mut self) {
+        // Waited for only while it is current (it blocks saving).
+        if self.reloading.is_some() && self.reloading != self.current {
+            self.reloading = None;
+        }
         let Some(current) = &self.current else {
             self.shown = None;
             return;
@@ -1251,12 +1257,15 @@ impl App {
                     }
                 }
             }
-            Some(Slot::Failed(_)) => self.shown = None,
+            Some(Slot::Failed(_)) => {
+                self.shown = None;
+                self.reloading = None;
+            }
             None => {}
         }
     }
 
-    fn poll_delete(&mut self) {
+    fn poll_delete(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.deleting else { return };
         let Ok((paths, result)) = rx.try_recv() else { return };
         self.deleting = None;
@@ -1272,7 +1281,6 @@ impl App {
         }
         for path in &gone {
             self.cache.remove(path);
-            self.selection.remove(path);
         }
         if let Err(e) = self.favorites.remove_if(|p| gone.iter().any(|g| folder::same_path(p, g))) {
             self.notice(e);
@@ -1280,12 +1288,17 @@ impl App {
         for path in &gone {
             self.unlist(path);
         }
+        // A listing begun before would bring them back.
+        if self.scan.is_some() {
+            self.list_again(ctx);
+        }
     }
 
     /// Take `path` out of `files` (deleted, or no longer a favourite among
     /// the favourites); if it was current, the next image takes its place,
     /// after the last one the one before.
     fn unlist(&mut self, path: &Path) {
+        self.selection.remove(path);
         let was_current = self.current.as_deref().is_some_and(|c| folder::same_path(c, path));
         match folder::position(&self.files, path) {
             Some(pos) => {
@@ -1411,7 +1424,8 @@ impl App {
                 let paths: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
                 if paths.len() > 1 {
                     // The folder's name, as a start.
-                    let base = paths[0].parent().map(file_name).unwrap_or_default();
+                    // (A drive's root has none.)
+                    let base = paths[0].parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     self.batch_rename = Some(BatchRename { paths, base, start: 1, error: None, focus: true });
                 } else if let Some(path) = paths.into_iter().next() {
                     let name = file_name(&path);
@@ -1774,9 +1788,16 @@ impl App {
     /// Cropping ends when its image is no longer on screen (another file
     /// opened from Explorer, the gallery).
     fn check_crop(&mut self) {
-        let gone = self.crop.as_ref().is_some_and(|c| self.editable().is_none_or(|(p, _)| p != c.path));
-        if gone {
-            self.end_crop();
+        let Some(crop) = &self.crop else { return };
+        if self.editable().is_some_and(|(p, _)| p == crop.path) {
+            return;
+        }
+        let same = self.current.as_ref() == Some(&crop.path);
+        self.end_crop();
+        if !same {
+            // Another image: the cropped one's zoom and panning restored
+            // are reset as for any next image.
+            self.view.next_image();
         }
     }
 
@@ -1824,8 +1845,7 @@ impl App {
     /// over) into a file the user picks. On a thread; `poll_save` takes the
     /// outcome.
     fn save(&mut self, ctx: &egui::Context, frame: &eframe::Frame, as_new: bool) {
-        if self.saving.is_some() {
-            self.notice(tr!("Saving…".into(), "Сохранение…".into()));
+        if self.still_saving() {
             return;
         }
         if self.shown.as_ref().is_some_and(|(_, p)| p.meta.animated) {
@@ -1863,6 +1883,17 @@ impl App {
         self.start_save(ctx, vec![job], false);
     }
 
+    /// A save is under way, or the image saved is not yet on screen again
+    /// (until it is, the view's turns are those already saved, and a second
+    /// Ctrl+S would turn the file twice): said in a notice.
+    fn still_saving(&mut self) -> bool {
+        let busy = self.saving.is_some() || self.reloading.is_some();
+        if busy {
+            self.notice(tr!("Saving…".into(), "Сохранение…".into()));
+        }
+        busy
+    }
+
     /// The current image, or those chosen in the gallery, can be converted
     /// (File → Convert To), decoded or not.
     pub fn can_convert(&self) -> bool {
@@ -1874,13 +1905,12 @@ impl App {
     /// shown in the viewer; the file itself stays as it is, and current.
     /// Several chosen in the gallery are converted one after another.
     fn convert(&mut self, ctx: &egui::Context, format: edit::Format) {
+        if self.still_saving() {
+            return;
+        }
         let targets = self.targets();
         if targets.len() > 1 {
             self.convert_all(ctx, format, targets);
-            return;
-        }
-        if self.saving.is_some() {
-            self.notice(tr!("Saving…".into(), "Сохранение…".into()));
             return;
         }
         if self.editable().is_none() && self.shown.as_ref().is_some_and(|(p, pic)| self.current.as_ref() == Some(p) && pic.meta.animated) {
@@ -2326,7 +2356,7 @@ impl eframe::App for App {
         if let Some(gallery) = &mut self.gallery {
             gallery.poll(&self.gl, frame, &ctx);
         }
-        self.poll_delete();
+        self.poll_delete(&ctx);
         self.poll_copy();
         self.poll_save(&ctx);
         self.poll_opening();

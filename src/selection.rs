@@ -72,12 +72,12 @@ impl Selection {
     }
 
     /// A file renamed: still chosen under its new name.
-    pub fn renamed(&mut self, old: &Path, new: &Path) {
-        if self.paths.remove(old) {
-            self.paths.insert(new.to_path_buf());
-        }
-        if self.anchor.as_deref() == Some(old) {
-            self.anchor = Some(new.to_path_buf());
+    pub fn renamed(&mut self, pairs: &[(PathBuf, PathBuf)]) {
+        // All taken out first: a new name may be another pair's old one.
+        let chosen: Vec<&PathBuf> = pairs.iter().filter(|(old, _)| self.paths.remove(old)).map(|(_, new)| new).collect();
+        self.paths.extend(chosen.into_iter().cloned());
+        if let Some((_, new)) = pairs.iter().find(|(old, _)| self.anchor.as_ref() == Some(old)) {
+            self.anchor = Some(new.clone());
         }
     }
 
@@ -177,7 +177,7 @@ mod tests {
         let mut s = Selection::default();
         s.set(&HashSet::new(), [files[3].clone(), files[1].clone()]);
         assert_eq!(s.in_order(&files), [files[1].clone(), files[3].clone()]);
-        s.renamed(&files[1], Path::new("z"));
+        s.renamed(&[(files[1].clone(), PathBuf::from("z"))]);
         assert!(s.contains(Path::new("z")));
         s.retain_listed(&files);
         assert_eq!(s.in_order(&files), [files[3].clone()]);

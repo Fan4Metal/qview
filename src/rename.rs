@@ -126,7 +126,11 @@ mod tests {
         let missing = vec![(a.clone(), dir.join("x.jpg")), (dir.join("gone.jpg"), dir.join("y.jpg"))];
         assert!(rename_all(&missing).is_err());
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "b");
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
+        // No temporary name left (another program, an antivirus, may put
+        // a file of its own beside one for a moment: not counted).
+        let listed: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(!listed.iter().any(|n| n.starts_with(".qview-rename-")), "{listed:?}");
+        assert_eq!(listed.iter().filter(|n| n.ends_with(".jpg")).count(), 3, "{listed:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

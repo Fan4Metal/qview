@@ -18,6 +18,8 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 
 ![qview showing a photo with its context menu open, under the menu bar and the toolbar, above the status bar](images/screenshot.png)
 
+*Screenshot of version 0.2.0; the toolbar of the current version has more buttons.*
+
 ## Features
 
 - Start-up of about 0.2 s to the first image: decoding begins before the window is created and runs on background threads.
@@ -97,6 +99,8 @@ A file is never overwritten in place: the new image is written to a temporary fi
 
 ![The gallery: the folder tree on the left, the thumbnails of the folder on the right](images/gallery.png)
 
+*Screenshot of version 0.2.0.*
+
 The gallery is opened with `G`, `Enter`, `Esc`, a double click on the image or the toolbar button, and shows the folder of the current image, always with the menu and the bars (opening it in full screen leaves full screen): the folder tree on the left and the images as a grid of thumbnails on the right, under a bar with the path of the folder and the thumbnail size slider. The tree lists the Pictures and Desktop folders and the drives; a folder is shown by clicking it and expanded by clicking its arrow or double-clicking it. With the "Sub-folders" check box above the grid selected, the images of the folder and of all its sub-folders, hidden ones excepted, are shown as one list in the chosen sort order. The folders chosen in the tree are then shown the same way, until the check box is cleared; opening a file shows its folder alone. In this mode the status bar shows the path of the image from the folder, and so does the tooltip of a thumbnail, and the "By folder" check box next to "Sub-folders", inactive otherwise, takes effect: the images are then shown folder by folder in the order of the tree (the images of a folder before those of its sub-folders), sorted within each folder, and each folder starts a new row of the grid under a header with its path, the number of its images and a horizontal line. The "By folder" choice is kept between runs.
 
 The folders shown, whether chosen in the tree, opened from a header, reached with the Up button or those of files opened, form a history, as in Explorer: the Back and Forward buttons of the toolbar, `Alt+←` (also `Backspace`) / `Alt+→` and the side buttons of the mouse return to the previous and the next folder with the image that was selected there, listed as it was (with or without the sub-folders) and scrolled as it was. The Up button and `Alt+↑` show the folder above; with the sub-folders listed, the selected image remains selected. The history lasts until the program is closed. In the gallery the toolbar holds these three buttons between the gallery button and the delete button, in place of the viewer's buttons for browsing, rotating and zooming.
@@ -158,7 +162,7 @@ qview.exe --unregister
 
 The registration refers to the location of `qview.exe`; after the program is moved, it is registered again.
 
-The zoom mode chosen with `1`–`4` applies to the following images as well, also after zooming in or out by steps. With `L` (View → Keep Zoom and Position) the following images keep the zoom set by steps and the scrolled position instead, so that a series of photos is compared at the same place and scale; the status bar marks the zoom as kept. This choice is not kept between runs. The window position and size, the visibility of the toolbar and the status bar, the background colour, the zoom mode and the sort order are kept in `%APPDATA%\qview\data\app.ron`.
+The zoom mode chosen with `1`–`4` applies to the following images as well, also after zooming in or out by steps. With `L` (View → Keep Zoom and Position) the following images keep the zoom set by steps and the scrolled position instead, so that a series of photos is compared at the same place and scale; the status bar marks the zoom as kept. This choice is not kept between runs. The window position and size, the visibility of the toolbar and the status bar, the background colour, the zoom mode, the sort orders, the language, the gallery's thumbnail size, cell proportions, "Fill cells" and "By folder" choices and tree width, the editor chosen last and the update check setting are kept in `%APPDATA%\qview\data\app.ron`; the favorites are kept apart, in `%APPDATA%\qview\data\favorites.txt`.
 
 ## Building
 

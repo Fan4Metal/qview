@@ -167,7 +167,8 @@ pub fn save(job: &Job) -> Result<Saved, String> {
     } else {
         None
     };
-    write_file(&job.dst, &out)?;
+    // Saved over: not made again if renamed or deleted while it was encoded.
+    write_file(&job.dst, &out, !crate::folder::same_path(&job.src, &job.dst))?;
     Ok(Saved { before, lossless })
 }
 
@@ -177,7 +178,7 @@ fn modified(path: &Path) -> Option<SystemTime> {
 
 /// Put `before` back into `path`, with its date.
 pub fn restore(path: &Path, before: &Before) -> Result<(), String> {
-    write_file(path, &before.bytes)?;
+    write_file(path, &before.bytes, true)?;
     if let Some(time) = before.modified {
         // The contents are back; an old date is only a nicety.
         let _ = File::options().write(true).open(path).and_then(|f| f.set_modified(time));
@@ -186,23 +187,39 @@ pub fn restore(path: &Path, before: &Before) -> Result<(), String> {
 }
 
 /// Write `data` into `path` through a temporary file beside it, which then
-/// takes its place: a failure leaves the old file whole.
-pub fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
-    let name = path.file_name().ok_or("no file name")?.to_string_lossy();
+/// takes its place: a failure leaves the old file whole. Unless `create`,
+/// a `path` that is gone (renamed or deleted meanwhile) is not made anew.
+pub fn write_file(path: &Path, data: &[u8], create: bool) -> Result<(), String> {
+    let name = path.file_name().ok_or_else(|| tr!("no file name", "нет имени файла").to_string())?.to_string_lossy();
+    if !create && !path.exists() {
+        return Err(tr!("the file is no longer there", "файла больше нет").into());
+    }
     let tmp = path.with_file_name(format!("{name}.{}.qview-tmp", std::process::id()));
     let written = File::create(&tmp).and_then(|mut f| {
         f.write_all(data)?;
         f.sync_all()
     });
     let result = match written {
-        Err(e) => Err(e.to_string()),
-        Ok(()) if path.exists() => crate::win::replace_file(path, &tmp),
-        Ok(()) => std::fs::rename(&tmp, path).map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+        Ok(()) if path.exists() || !create => crate::win::replace_file(path, &tmp),
+        Ok(()) => std::fs::rename(&tmp, path),
     };
-    if result.is_err() {
+    let Err(e) = result else { return Ok(()) };
+    // ReplaceFileW can fail after taking the old file away
+    // (ERROR_UNABLE_TO_MOVE_REPLACEMENT, an antivirus holding the new
+    // file): the new contents are then the only copy left, so they go in
+    // its place, or stay where they are. Otherwise the old file is whole.
+    const ERROR_UNABLE_TO_MOVE_REPLACEMENT: i32 = 1176;
+    if e.raw_os_error() != Some(ERROR_UNABLE_TO_MOVE_REPLACEMENT) || path.exists() {
         let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
     }
-    result
+    std::fs::rename(&tmp, path).map_err(|_| {
+        tr!(
+            format!("{e}; the new contents are in {}", tmp.display()),
+            format!("{e}; новое содержимое сохранено в {}", tmp.display())
+        )
+    })
 }
 
 /// The EXIF orientation that shows an image turned `turns` more clockwise
@@ -218,9 +235,10 @@ pub fn turned_orientation(orientation: u8, turns: u8) -> u8 {
     AS_TURNS.iter().position(|&o| o == (r, flip)).expect("all eight are listed") as u8 + 1
 }
 
-/// The JPEG segments before the image data: (marker, offset of its 0xFF,
-/// offset past its end).
-fn jpeg_segments(b: &[u8]) -> Option<Vec<(u8, usize, usize)>> {
+/// The JPEG segments before the image data: (marker, offset of its first
+/// 0xFF, offset of its payload, offset past its end). Fill bytes (more
+/// 0xFF) may come before a marker.
+fn jpeg_segments(b: &[u8]) -> Option<Vec<(u8, usize, usize, usize)>> {
     let mut segments = Vec::new();
     let mut i = 2;
     loop {
@@ -244,7 +262,7 @@ fn jpeg_segments(b: &[u8]) -> Option<Vec<(u8, usize, usize)>> {
         if len < 2 || end > b.len() {
             return None;
         }
-        segments.push((code, start, end));
+        segments.push((code, start, i + 2, end));
         i = end;
     }
 }
@@ -257,12 +275,11 @@ const XMP_HEADER: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 /// read, or the EXIF would outgrow its segment.
 pub fn turn_jpeg(jpeg: &[u8], turns: u8) -> Option<Vec<u8>> {
     let segments = jpeg_segments(jpeg)?;
-    // The payload of an APP1 segment starts 4 bytes in.
-    let exif = segments.iter().find(|&&(code, s, e)| code == 0xe1 && jpeg[s + 4..e].starts_with(EXIF_HEADER));
+    let exif = segments.iter().find(|&&(code, _, p, e)| code == 0xe1 && jpeg[p..e].starts_with(EXIF_HEADER));
     let mut out = Vec::with_capacity(jpeg.len() + 64);
     let value = match exif {
-        Some(&(_, s, e)) => {
-            let tiff = &jpeg[s + 4 + EXIF_HEADER.len()..e];
+        Some(&(_, s, p, e)) => {
+            let tiff = &jpeg[p + EXIF_HEADER.len()..e];
             let value = turned_orientation(crate::exif::orientation(tiff).unwrap_or(1), turns);
             let tiff = crate::exif::with_orientation(tiff, value)?;
             out.extend(&jpeg[..s]);
@@ -273,7 +290,7 @@ pub fn turn_jpeg(jpeg: &[u8], turns: u8) -> Option<Vec<u8>> {
         None => {
             let value = turned_orientation(1, turns);
             // After APP0 (JFIF), which must come first.
-            let at = segments.iter().take_while(|s| s.0 == 0xe0).last().map_or(2, |s| s.2);
+            let at = segments.iter().take_while(|s| s.0 == 0xe0).last().map_or(2, |s| s.3);
             out.extend(&jpeg[..at]);
             push_app1(&mut out, &crate::exif::minimal(value))?;
             out.extend(&jpeg[at..]);
@@ -299,11 +316,11 @@ fn push_app1(out: &mut Vec<u8>, tiff: &[u8]) -> Option<()> {
 /// would otherwise turn the image back.
 fn set_xmp_orientation(jpeg: &mut [u8], value: u8) {
     let Some(segments) = jpeg_segments(jpeg) else { return };
-    for (code, s, e) in segments {
-        if code != 0xe1 || !jpeg[s + 4..e].starts_with(XMP_HEADER) {
+    for (code, _, p, e) in segments {
+        if code != 0xe1 || !jpeg[p..e].starts_with(XMP_HEADER) {
             continue;
         }
-        let xmp = &mut jpeg[s + 4..e];
+        let xmp = &mut jpeg[p..e];
         for pattern in [&b"tiff:Orientation=\""[..], b"<tiff:Orientation>"] {
             let mut from = 0;
             while let Some(at) = xmp[from..].windows(pattern.len()).position(|w| w == pattern) {
@@ -335,7 +352,7 @@ fn encode_anew(job: &Job, bytes: &[u8], format: Format) -> Result<Vec<u8>, Strin
     };
     let img = match job.crop {
         Some([x, y, w, h]) if x + w <= img.width() && y + h <= img.height() && w > 0 && h > 0 => img.crop_imm(x, y, w, h),
-        Some(_) => return Err("the crop is outside the image".into()),
+        Some(_) => return Err(tr!("the crop is outside the image", "рамка выходит за изображение").into()),
         None => img,
     };
     let exif = exif.and_then(|e| crate::exif::for_new_pixels(&e, img.width(), img.height()));
@@ -494,6 +511,14 @@ mod tests {
         assert_eq!(decoded(&back).to_rgb8(), decoded(&plain).to_rgb8());
         let segments = jpeg_segments(&back).unwrap();
         assert_eq!(segments.iter().filter(|s| s.0 == 0xe1).count(), 1);
+        // Fill bytes before the EXIF's marker: still found, not doubled.
+        let at = turned.windows(2).position(|w| w == [0xff, 0xe1]).unwrap();
+        let mut filled = turned[..at].to_vec();
+        filled.extend([0xff, 0xff]);
+        filled.extend(&turned[at + 1..]);
+        let back = turn_jpeg(&filled, 3).unwrap();
+        assert_eq!(jpeg_segments(&back).unwrap().iter().filter(|s| s.0 == 0xe1).count(), 1);
+        assert_eq!(decoded(&back).to_rgb8(), decoded(&plain).to_rgb8());
     }
 
     #[test]
@@ -607,8 +632,8 @@ mod tests {
         let bytes = std::fs::read(&src).unwrap();
         let img = decoded(&bytes);
         assert_eq!((img.width(), img.height()), (10, 20));
-        let (_, s, e) = jpeg_segments(&bytes).unwrap().into_iter().find(|s| s.0 == 0xe1).expect("EXIF kept");
-        assert_eq!(crate::exif::orientation(&bytes[s + 10..e]), Some(1));
+        let (_, _, p, e) = jpeg_segments(&bytes).unwrap().into_iter().find(|s| s.0 == 0xe1).expect("EXIF kept");
+        assert_eq!(crate::exif::orientation(&bytes[p + EXIF_HEADER.len()..e]), Some(1));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

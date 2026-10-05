@@ -133,12 +133,18 @@ fn latest_tag() -> Result<String, String> {
     )?;
     match status {
         200 => {}
-        404 => return Err("no release is published".into()),
-        403 | 429 => return Err("GitHub refused the request (rate limit), try later".into()),
-        s => return Err(format!("GitHub answered with HTTP {s}")),
+        404 => return Err(tr!("no release is published", "релизов пока нет").into()),
+        403 | 429 => {
+            return Err(tr!(
+                "GitHub refused the request (rate limit), try later",
+                "GitHub отклонил запрос (ограничение частоты), попробуйте позже"
+            )
+            .into());
+        }
+        s => return Err(tr!(format!("GitHub answered with HTTP {s}"), format!("GitHub ответил HTTP {s}"))),
     }
     let text = String::from_utf8_lossy(&body);
-    tag_name(&text).map(String::from).ok_or_else(|| "no tag_name in the answer".into())
+    tag_name(&text).map(String::from).ok_or_else(|| tr!("no tag_name in the answer", "в ответе нет tag_name").into())
 }
 
 /// The `tag_name` string of a release's JSON. The key occurs once, at the

@@ -264,7 +264,7 @@ impl App {
             Some(n) => tr!(format!("Delete {n} Files…"), format!("Удалить файлы ({n})…")),
             None => tr!("Delete…", "Удалить…").into(),
         };
-        self.item(ui, text, "Del", Cmd::Delete, enabled);
+        self.item(ui, text, "Delete", Cmd::Delete, enabled);
     }
 
     /// The current image's folder, from the favourites or the sub-folders.

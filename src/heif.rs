@@ -212,6 +212,12 @@ fn decode_with(lib: &'static Lib, path: &Path, bgra: bool) -> Result<Image, Stri
     })?;
     let alpha = unsafe { (lib.has_alpha)(primary.handle) } != 0;
     let luma = unsafe { (lib.luma_bits)(primary.handle) }.max(8) as u16;
+    // libheif's own limit is a gigapixel; its RGBA plane and the copy here
+    // would take 8 GB. The `image` crate's limit holds for it too.
+    let (w, h) = unsafe { ((lib.handle_width)(primary.handle), (lib.handle_height)(primary.handle)) };
+    if w.max(0) as u64 * h.max(0) as u64 * 4 > crate::loader::MAX_ALLOC {
+        return Err(format!("libheif: the image is too large ({w}x{h})"));
+    }
     let mut decoded = null_mut();
     let e = unsafe {
         (lib.decode_image)(primary.handle, &mut decoded, COLORSPACE_RGB, CHROMA_INTERLEAVED_RGBA, std::ptr::null())

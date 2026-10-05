@@ -139,8 +139,10 @@ pub fn largest(centre: Pos2, aspect: f32, size: Vec2) -> Rect {
     } else {
         h = w / aspect;
     }
+    // Rounding can leave a side a little beyond the image.
+    let (w, h) = (w.min(size.x), h.min(size.y));
     let half = vec2(w, h) / 2.0;
-    let c = pos2(centre.x.clamp(half.x, size.x - half.x), centre.y.clamp(half.y, size.y - half.y));
+    let c = pos2(clamp(centre.x, half.x, size.x - half.x), clamp(centre.y, half.y, size.y - half.y));
     Rect::from_center_size(c, vec2(w, h))
 }
 
@@ -149,8 +151,8 @@ pub fn largest(centre: Pos2, aspect: f32, size: Vec2) -> Rect {
 pub fn pixels(rect: Rect, size: Vec2) -> [u32; 4] {
     let axis = |min: f32, max: f32, side: f32| {
         let side = side.round().max(1.0);
-        let a = min.round().clamp(0.0, side - 1.0);
-        let b = max.round().clamp(a + 1.0, side);
+        let a = clamp(min.round(), 0.0, side - 1.0);
+        let b = clamp(max.round(), a + 1.0, side);
         (a as u32, (b - a) as u32)
     };
     let (x, w) = axis(rect.min.x, rect.max.x, size.x);
@@ -191,7 +193,7 @@ pub fn dragged(grip: Grip, start: Rect, from: Pos2, to: Pos2, size: Vec2, aspect
     match grip {
         Grip::Move => {
             let d = to - from;
-            let d = vec2(d.x.clamp(-start.min.x, size.x - start.max.x), d.y.clamp(-start.min.y, size.y - start.max.y));
+            let d = vec2(clamp(d.x, -start.min.x, size.x - start.max.x), clamp(d.y, -start.min.y, size.y - start.max.y));
             start.translate(d)
         }
         Grip::New => corner(whole(size).clamp(from), to, size, aspect),
@@ -211,16 +213,16 @@ pub fn dragged(grip: Grip, start: Rect, from: Pos2, to: Pos2, size: Vec2, aspect
                 None => {
                     let mut r = start;
                     if left {
-                        r.min.x = (start.min.x + d.x).clamp(0.0, start.max.x - MIN_SIDE);
+                        r.min.x = clamp(start.min.x + d.x, 0.0, start.max.x - MIN_SIDE);
                     }
                     if right {
-                        r.max.x = (start.max.x + d.x).clamp(start.min.x + MIN_SIDE, size.x);
+                        r.max.x = clamp(start.max.x + d.x, start.min.x + MIN_SIDE, size.x);
                     }
                     if top {
-                        r.min.y = (start.min.y + d.y).clamp(0.0, start.max.y - MIN_SIDE);
+                        r.min.y = clamp(start.min.y + d.y, 0.0, start.max.y - MIN_SIDE);
                     }
                     if bottom {
-                        r.max.y = (start.max.y + d.y).clamp(start.min.y + MIN_SIDE, size.y);
+                        r.max.y = clamp(start.max.y + d.y, start.min.y + MIN_SIDE, size.y);
                     }
                     r
                 }
@@ -241,8 +243,8 @@ fn corner(anchor: Pos2, to: Pos2, size: Vec2, aspect: Option<f32>) -> Rect {
     };
     let (sx, room_x) = way(to.x, anchor.x, size.x);
     let (sy, room_y) = way(to.y, anchor.y, size.y);
-    let mut w = (to.x - anchor.x).abs().clamp(MIN_SIDE, room_x);
-    let mut h = (to.y - anchor.y).abs().clamp(MIN_SIDE, room_y);
+    let mut w = clamp((to.x - anchor.x).abs(), MIN_SIDE, room_x);
+    let mut h = clamp((to.y - anchor.y).abs(), MIN_SIDE, room_y);
     if let Some(a) = aspect {
         if w < h * a {
             w = h * a;
@@ -269,7 +271,7 @@ fn side_edge(start: Rect, left: bool, dx: f32, size: Vec2, aspect: f32) -> Rect 
     let cy = start.center().y;
     let room_y = 2.0 * cy.min(size.y - cy);
     let edge = if left { start.min.x } else { start.max.x } + dx;
-    let mut w = (if left { anchor - edge } else { edge - anchor }).clamp(MIN_SIDE, room_x.max(MIN_SIDE));
+    let mut w = clamp(if left { anchor - edge } else { edge - anchor }, MIN_SIDE, room_x.max(MIN_SIDE));
     let mut h = w / aspect;
     if h > room_y {
         h = room_y;
@@ -277,6 +279,13 @@ fn side_edge(start: Rect, left: bool, dx: f32, size: Vec2, aspect: f32) -> Rect 
     }
     let x = if left { anchor - w } else { anchor };
     Rect::from_min_size(pos2(x, cy - h / 2.0), vec2(w, h))
+}
+
+/// `v` within `lo`..`hi`, `lo` when the bounds cross (a frame rounded a
+/// little beyond the image, an image smaller than `MIN_SIDE`), where
+/// `f32::clamp` panics.
+fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
+    v.min(hi).max(lo)
 }
 
 fn transpose(r: Rect) -> Rect {
@@ -315,6 +324,23 @@ mod tests {
         // A frame narrower than the reach: the nearer edge.
         let thin = rect(100.0, 100.0, 104.0, 200.0);
         assert_eq!(grip(thin, pos2(103.5, 150.0), 8.0), edges(false, true, false, false));
+    }
+
+    #[test]
+    fn original_proportions_fit_every_size() {
+        // h = w / (w / h) in f32 came out a little above h for about 2%
+        // of sizes (1025x1001 among them), and `f32::clamp` panicked.
+        for (w, h) in [(1025.0, 1001.0), (3.0, 59.0), (1014.0, 1022.0), (1002.0, 4091.0), (1.0, 1.0)] {
+            let size = vec2(w, h);
+            let a = Aspect::Original.value(size).unwrap();
+            let r = largest(pos2(w / 3.0, h / 3.0), a, size);
+            assert!(r.min.x >= 0.0 && r.min.y >= 0.0 && r.max.x <= w && r.max.y <= h, "{r:?} in {size:?}");
+        }
+        // An image smaller than the least frame side: no panic.
+        let tiny = vec2(1.0, 1.0);
+        dragged(Grip::Move, whole(tiny), pos2(0.5, 0.5), pos2(3.0, 3.0), tiny, None);
+        let edges = Grip::Edges { left: true, right: false, top: true, bottom: false };
+        dragged(edges, whole(tiny), pos2(0.0, 0.0), pos2(0.5, 0.5), tiny, None);
     }
 
     #[test]

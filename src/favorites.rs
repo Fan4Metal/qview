@@ -45,7 +45,21 @@ impl Favorites {
     /// Read from `file`; none yet is no favourites.
     pub fn load(file: Option<PathBuf>) -> Self {
         let mut favorites = Self { file, ..Self::default() };
-        if let Some(text) = favorites.file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()) {
+        let text = match favorites.file.as_ref().map(std::fs::read_to_string) {
+            None => None,
+            Some(Ok(text)) => Some(text),
+            Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Some(Err(e)) => {
+                // Not UTF-8 (saved by hand in another encoding) or not
+                // readable: kept as it is, not overwritten by an empty list.
+                eprintln!("favorites: {e}");
+                favorites.file = None;
+                None
+            }
+        };
+        if let Some(text) = text {
+            // Notepad may start the file with a byte order mark.
+            let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
             for line in text.lines() {
                 let (path, rest) = line.find('\t').map_or((line, ""), |i| line.split_at(i));
                 let path = path.trim();
@@ -120,11 +134,20 @@ impl Favorites {
     }
 
     /// `old` is now called `new`.
-    pub fn renamed(&mut self, old: &Path, new: &Path) -> Result<(), String> {
-        let Some(e) = self.entries.iter_mut().find(|e| key(&e.path) == key(old)) else { return Ok(()) };
-        e.path = new.to_path_buf();
-        self.keys.remove(&key(old));
-        self.keys.insert(key(new));
+    pub fn renamed(&mut self, pairs: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+        // One lookup per entry: a new name may be another pair's old one.
+        let news: std::collections::HashMap<String, &PathBuf> = pairs.iter().map(|(old, new)| (key(old), new)).collect();
+        let mut changed = false;
+        for e in &mut self.entries {
+            if let Some(new) = news.get(&key(&e.path)) {
+                e.path = (*new).clone();
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+        self.keys = self.entries.iter().map(|e| key(&e.path)).collect();
         self.save()
     }
 
@@ -158,7 +181,7 @@ mod tests {
         assert!(f.contains(Path::new(r"c:\B\фото.PNG")));
         assert_eq!(f.toggle(Path::new(r"D:\c.gif")), Ok(true));
         assert_eq!(f.toggle(Path::new(r"c:\a\1.JPG")), Ok(false));
-        f.renamed(Path::new(r"C:\b\Фото.png"), Path::new(r"C:\b\Море.png")).unwrap();
+        f.renamed(&[(PathBuf::from(r"C:\b\Фото.png"), PathBuf::from(r"C:\b\Море.png"))]).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "C:\\b\\Море.png\t added=1\nD:\\c.gif\n");
         assert!(!f.contains(Path::new(r"C:\b\Фото.png")));
         let f = Favorites::load(Some(file.clone()));
@@ -168,6 +191,14 @@ mod tests {
         assert_eq!(f.remove_if(|p| p.extension().is_some_and(|e| e == "gif")), Ok(1));
         assert_eq!(f.remove_if(|_| false), Ok(0));
         assert_eq!(f.paths(), [PathBuf::from(r"C:\b\Море.png")]);
+        // A chain of renames (1 to 2, 2 to 3) keeps both.
+        let p = |s: &str| PathBuf::from(format!(r"C:\c\{s}.jpg"));
+        f.add_all(&[p("1"), p("2")]).unwrap();
+        f.renamed(&[(p("1"), p("2")), (p("2"), p("3"))]).unwrap();
+        assert!(f.contains(&p("2")) && f.contains(&p("3")) && !f.contains(&p("1")));
+        // A byte order mark is skipped.
+        std::fs::write(&file, "\u{feff}C:\\d.png\n").unwrap();
+        assert!(Favorites::load(Some(file.clone())).contains(Path::new(r"C:\d.png")));
         std::fs::remove_dir_all(&dir).unwrap();
         // No file yet: none.
         assert_eq!(Favorites::load(Some(file)).len(), 0);

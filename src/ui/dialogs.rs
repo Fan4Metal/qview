@@ -41,12 +41,17 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
             tr!("F  Ctrl+Shift+F  Middle click", "F  Ctrl+Shift+F  Средняя кнопка"),
             tr!("Full screen", "Полный экран"),
         ),
+        (tr!("Gallery: F", "Галерея: F"), tr!("Show the selected image in full screen", "Показать выбранное на полном экране")),
+        (
+            tr!("Gallery: Ctrl+Shift+F", "Галерея: Ctrl+Shift+F"),
+            tr!("Full screen for the gallery (with the bars)", "Галерея на полном экране (с панелями)"),
+        ),
         (
             tr!("G  Enter  Double click", "G  Enter  Двойной щелчок"),
             tr!("Gallery: open, or show the selected image", "Галерея: открыть или показать выбранное"),
         ),
         (
-            tr!("Gallery: click  arrows  Page Up/Down", "Галерея: щелчок  стрелки  Page Up/Down"),
+            tr!("Gallery: click  arrows  Page Up/Down  Home  End", "Галерея: щелчок  стрелки  Page Up/Down  Home  End"),
             tr!("Select an image", "Выбрать изображение"),
         ),
         (
@@ -69,7 +74,10 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
             tr!("Choose several images", "Выбрать несколько изображений"),
         ),
         (
-            tr!("Gallery: Shift+arrows  Ctrl+A  Esc", "Галерея: Shift+стрелки  Ctrl+A  Esc"),
+            tr!(
+                "Gallery: Shift+arrows/Page Up/Page Down/Home/End  Ctrl+A  Esc",
+                "Галерея: Shift+стрелки/Page Up/Page Down/Home/End  Ctrl+A  Esc"
+            ),
             tr!("Choose on the way / all / none", "Выбрать по пути / все / снять выбор"),
         ),
         ("Ctrl+C", tr!("Copy the file", "Копировать файл")),

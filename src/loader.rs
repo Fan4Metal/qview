@@ -63,6 +63,9 @@ struct Queue {
     /// Files decoded and sent, but not taken by [`Loader::poll`] yet: not
     /// to be decoded again if they are wanted meanwhile.
     done: Vec<PathBuf>,
+    /// Files changed on disk while busy or done: their result is from the
+    /// old contents and is dropped by [`Loader::poll`].
+    stale: Vec<PathBuf>,
 }
 
 struct Shared {
@@ -122,11 +125,27 @@ impl Loader {
         }
     }
 
+    /// `paths` changed on disk: what is being decoded of them now is from
+    /// the old contents, and dropped when it comes; wanted again, they are
+    /// decoded anew.
+    pub fn forget(&self, paths: &[PathBuf]) {
+        let mut q = self.shared.queue.lock().unwrap();
+        let Queue { busy, done, stale, .. } = &mut *q;
+        stale.extend(paths.iter().filter(|p| busy.contains(p) || done.contains(p)).cloned());
+    }
+
     /// A decoded image, if one is ready.
     pub fn poll(&self) -> Option<Decoded> {
-        let decoded = self.rx.try_recv().ok()?;
-        self.shared.queue.lock().unwrap().done.retain(|p| *p != decoded.path);
-        Some(decoded)
+        loop {
+            let decoded = self.rx.try_recv().ok()?;
+            let mut q = self.shared.queue.lock().unwrap();
+            q.done.retain(|p| *p != decoded.path);
+            if let Some(i) = q.stale.iter().position(|p| *p == decoded.path) {
+                q.stale.swap_remove(i);
+                continue;
+            }
+            return Some(decoded);
+        }
     }
 }
 
@@ -269,6 +288,10 @@ fn read_image(path: &Path) -> Result<(DynamicImage, Meta), String> {
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     let bits = decoder.original_color_type().bits_per_pixel();
     let mut img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    // A GIF whose screen is 0 pixels wide decodes without an error.
+    if img.width() == 0 || img.height() == 0 {
+        return Err(format!("the image is {}x{} pixels", img.width(), img.height()));
+    }
     img.apply_orientation(orientation);
     let animated = crate::anim::is_animated(&bytes, format);
     let meta = Meta {
@@ -316,7 +339,8 @@ fn to_bgra(img: DynamicImage) -> Vec<u8> {
 pub fn mip_levels(base: Vec<u8>, w: usize, h: usize) -> Vec<Vec<u8>> {
     let mut levels = vec![base];
     let (mut w, mut h) = (w, h);
-    while w > 1 || h > 1 {
+    // No pixels, no levels (and `half` would index an empty slice).
+    while (w > 1 || h > 1) && w > 0 && h > 0 {
         let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
         let next = half(levels.last().expect("base level"), w, h, nw, nh);
         levels.push(next);
@@ -473,6 +497,8 @@ mod tests {
         assert_eq!(levels.iter().map(Vec::len).collect::<Vec<_>>(), vec![16, 8, 4]);
         assert_eq!(&levels[1][..4], &[50, 50, 50, 255]);
         assert_eq!(&levels[2][..4], &[137, 137, 137, 255]);
+        // No pixels (a GIF with a screen 0 wide): no levels, no panic.
+        assert_eq!(mip_levels(Vec::new(), 0, 5).len(), 1);
     }
 
     #[test]
@@ -504,6 +530,31 @@ mod tests {
         }
         got.sort();
         assert_eq!(got, paths);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn forgotten_results_are_dropped_and_decoded_again() {
+        let dir = temp_dir("forget");
+        let path = dir.join("a.png");
+        image::RgbImage::new(4, 4).save(&path).unwrap();
+        let loader = Loader::new(1);
+        loader.want([path.clone()]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !loader.shared.queue.lock().unwrap().done.contains(&path) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Written over after it was decoded, before it was taken.
+        loader.forget(std::slice::from_ref(&path));
+        assert!(loader.poll().is_none());
+        let mut got = None;
+        while got.is_none() && Instant::now() < deadline {
+            // Asked for every frame, as `App::update_wanted` does.
+            loader.want([path.clone()]);
+            got = loader.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(got.map(|d| d.path), Some(path));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
