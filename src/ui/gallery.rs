@@ -446,6 +446,7 @@ impl App {
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, true);
         self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, true);
+        self.convert_menu(ui);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
         ui.separator();
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));

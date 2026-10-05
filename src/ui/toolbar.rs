@@ -28,6 +28,7 @@ enum Icon {
     Star(bool),
     RotateLeft,
     RotateRight,
+    Crop,
     ZoomIn,
     ZoomOut,
     Delete,
@@ -39,8 +40,12 @@ impl App {
         let has_image = self.shown.is_some();
         let prev = self.index.is_some_and(|i| i > 0);
         let next = self.index.is_some_and(|i| i + 1 < self.files.len());
-        let file = self.current.is_some();
-        let open = (Icon::Gallery, Cmd::Gallery, tr!("Gallery (G)", "Галерея (G)").into(), true);
+        // Browsing and the file waits while an image is cropped.
+        let cropping = self.crop.is_some();
+        let (prev, next) = (prev && !cropping, next && !cropping);
+        let file = self.current.is_some() && !cropping;
+        let crop = self.editable().is_some();
+        let open = (Icon::Gallery, Cmd::Gallery, tr!("Gallery (G)", "Галерея (G)").into(), !cropping);
         let delete = (Icon::Delete, Cmd::Delete, tr!("Delete (Del)", "Удалить (Del)").into(), file);
         let favorite = self.current.as_deref().is_some_and(|c| self.favorites.contains(c));
         let star = if favorite {
@@ -75,6 +80,7 @@ impl App {
                             vec![
                                 (Icon::RotateLeft, Cmd::RotateLeft, tr!("Rotate Left ([)", "Повернуть влево ([)").into(), has_image),
                                 (Icon::RotateRight, Cmd::RotateRight, tr!("Rotate Right (])", "Повернуть вправо (])").into(), has_image),
+                                (Icon::Crop, Cmd::Crop, tr!("Crop (C)", "Обрезать (C)").into(), crop),
                             ],
                             vec![
                                 (Icon::ZoomIn, Cmd::ZoomIn, tr!("Zoom In (+)", "Увеличить (+)").into(), has_image),
@@ -88,7 +94,7 @@ impl App {
                             divider(ui);
                         }
                         for (icon, cmd, tip, enabled) in group.iter() {
-                            let on = matches!(icon, Icon::Gallery) && gallery;
+                            let on = (matches!(icon, Icon::Gallery) && gallery) || (matches!(icon, Icon::Crop) && cropping);
                             if icon_button(ui, *icon, tip, *enabled, on) {
                                 self.clicked.push(*cmd);
                             }
@@ -214,6 +220,12 @@ fn paint_icon(painter: &Painter, icon: Icon, c: Pos2, color: Color32) {
             }
             painter.add(Shape::line(line, stroke));
             painter.add(Shape::convex_polygon(head, color, Stroke::NONE));
+        }
+        Icon::Crop => {
+            // Two right angles crossing, as on a cropping tool.
+            let p = |x: f32, y: f32| c + vec2(x, y);
+            painter.add(Shape::line(vec![p(-4.5, -8.0), p(-4.5, 4.5), p(8.0, 4.5)], stroke));
+            painter.add(Shape::line(vec![p(-8.0, -4.5), p(4.5, -4.5), p(4.5, 8.0)], stroke));
         }
         Icon::ZoomIn | Icon::ZoomOut => {
             let lens = c + vec2(-1.5, -1.5);

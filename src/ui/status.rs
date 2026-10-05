@@ -45,6 +45,14 @@ impl App {
                     } else {
                         zoom
                     });
+                    // A turn is the view's until it is saved.
+                    if self.view.turns != 0 && self.crop.is_none() && !m.animated {
+                        let degrees = self.view.turns as u32 * 90;
+                        fields.push(tr!(
+                            format!("Turned {degrees}°, Ctrl+S saves"),
+                            format!("Повёрнуто на {degrees}°, Ctrl+S — сохранить")
+                        ));
+                    }
                 }
             }
             // One line: the error and what Windows needs (see `wic::needs`)

@@ -20,7 +20,7 @@ use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, metadata::Orie
 
 /// Decoder allocation limit: a 20000 x 20000 RGBA image fits, a corrupt
 /// header claiming more does not take the machine's memory.
-const MAX_ALLOC: u64 = 2 << 30;
+pub const MAX_ALLOC: u64 = 2 << 30;
 
 /// What the status bar shows about an image.
 #[derive(Clone, Debug)]
@@ -221,7 +221,7 @@ pub fn read(path: &Path) -> Result<(DynamicImage, Meta), String> {
 /// libheif first when its DLL is there (`heif`), then to Windows if that
 /// fails. Otherwise the error says which extension from the Microsoft
 /// Store the format needs.
-fn read_wic(path: &Path, bgra: bool) -> Result<(DynamicImage, Meta), String> {
+pub fn read_wic(path: &Path, bgra: bool) -> Result<(DynamicImage, Meta), String> {
     use std::os::windows::fs::MetadataExt;
     let file = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let image = match crate::heif::decode(path, bgra) {

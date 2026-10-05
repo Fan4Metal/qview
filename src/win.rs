@@ -60,6 +60,24 @@ pub fn recycle(path: &Path, owner: Option<isize>) -> Result<(), String> {
     }
 }
 
+/// Put `replacement` in the place of `target`, which keeps its creation
+/// date, attributes and permissions; `replacement` is gone afterwards.
+pub fn replace_file(target: &Path, replacement: &Path) -> Result<(), String> {
+    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW};
+    let (target, replacement) = (wide(target), wide(replacement));
+    let ok = unsafe {
+        ReplaceFileW(
+            target.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_IGNORE_MERGE_ERRORS,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if ok != 0 { Ok(()) } else { Err(std::io::Error::last_os_error().to_string()) }
+}
+
 /// Open Explorer on the folder of `path` with the file selected, in front
 /// of qview. `explorer.exe /select` is not used: the process it starts
 /// hands the folder to the Explorer already running, which Windows then

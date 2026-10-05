@@ -43,8 +43,18 @@ pub enum Cmd {
     Delete,
     /// Rename the current file (F2).
     Rename,
-    /// Undo the last rename (Ctrl+Z).
+    /// Undo the last rename or save (Ctrl+Z).
     Undo,
+    /// Crop the image (C), or stop cropping.
+    Crop,
+    /// Save the image turned and cropped over its file (Ctrl+S), and while
+    /// cropping with Enter.
+    Save,
+    /// Save it into a file the user picks (Ctrl+Shift+S).
+    SaveAs,
+    /// Save it in this format beside its file, which stays current (File →
+    /// Convert To).
+    ConvertTo(crate::edit::Format),
     Copy,
     Open,
     ShowInExplorer,
@@ -119,7 +129,10 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
         Key::L if letter => KeepZoom,
+        Key::S if m.ctrl && m.shift && !m.alt => SaveAs,
+        Key::S if m.ctrl && !m.alt => Save,
         Key::S if letter => Favorite,
+        Key::C if letter => Crop,
         Key::G if letter => Gallery,
         Key::Enter if plain && !m.shift => Gallery,
         Key::W if m.ctrl && !m.alt => Close,
@@ -153,9 +166,32 @@ pub fn gallery_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
     }
 }
 
-/// Commands of this frame's key presses, in the gallery or the viewer.
-pub fn keys(ctx: &egui::Context, gallery: bool) -> Vec<Cmd> {
-    let map = if gallery { gallery_command } else { command };
+/// The command of a key press while cropping: Enter saves, the other keys
+/// are the viewer's (see [`command`]; `App::run_in_crop` decides which of
+/// them work).
+pub fn crop_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
+    match key {
+        Key::Enter if !m.ctrl && !m.alt && !m.shift => (!repeat).then_some(Cmd::Save),
+        _ => command(key, m, repeat),
+    }
+}
+
+/// Where the keys go.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Viewer,
+    Gallery,
+    Crop,
+}
+
+/// Commands of this frame's key presses in `mode`.
+pub fn keys(ctx: &egui::Context, mode: Mode) -> Vec<Cmd> {
+    let gallery = mode == Mode::Gallery;
+    let map = match mode {
+        Mode::Viewer => command,
+        Mode::Gallery => gallery_command,
+        Mode::Crop => crop_command,
+    };
     ctx.input(|i| {
         i.events
             .iter()
@@ -257,7 +293,14 @@ mod tests {
         assert_eq!(command(Key::L, NONE, true), None);
         assert_eq!(command(Key::S, NONE, false), Some(Cmd::Favorite));
         assert_eq!(command(Key::S, NONE, true), None);
-        assert_eq!(command(Key::S, CTRL, false), None);
+        assert_eq!(command(Key::S, CTRL, false), Some(Cmd::Save));
+        assert_eq!(command(Key::S, CTRL | SHIFT, false), Some(Cmd::SaveAs));
+        assert_eq!(command(Key::S, CTRL, true), None);
+        assert_eq!(command(Key::C, NONE, false), Some(Cmd::Crop));
+        assert_eq!(command(Key::C, SHIFT, false), None);
+        assert_eq!(crop_command(Key::Enter, NONE, false), Some(Cmd::Save));
+        assert_eq!(crop_command(Key::Enter, NONE, true), None);
+        assert_eq!(crop_command(Key::Escape, NONE, false), Some(Cmd::Escape));
     }
 
     #[test]

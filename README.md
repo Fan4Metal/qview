@@ -29,6 +29,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - The EXIF orientation of photos is applied.
 - The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
 - Deletion moves the file to the Recycle Bin after a confirmation.
+- Images can be rotated and cropped and saved over the file or as another file; a JPEG that is only rotated keeps its compressed data (see [Rotating and cropping](#rotating-and-cropping)).
 - The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour.
 - The interface is in Russian when Windows is in Russian, and in English otherwise; another language is chosen in Help → About qview.
 - No network access beyond the optional update check (see [Update check and privacy](#update-check-and-privacy)).
@@ -57,14 +58,17 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Fill the entire window (the edges are cropped) | `4` |
 | Keep the zoom and position for the next images (on / off) | `L` |
 | Scroll a zoomed image | arrow keys, dragging with the left button |
-| Rotate left / right (view only) | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
+| Rotate left / right | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
+| Crop | `C` (`Enter` saves, `Esc` cancels) |
+| Save the rotated or cropped image | `Ctrl+S` |
+| Save as another file or format | `Ctrl+Shift+S` |
 | Full screen | `F`, `Ctrl+Shift+F`, middle click |
 | Gallery | `G`, `Enter`, `Esc`, double click |
 | Leave full screen | `Esc` |
 | Close | `Ctrl+W`, `Alt+F4`; `Esc` in the gallery |
 | Move to the Recycle Bin | `Delete` (`Enter` confirms, `Esc` cancels) |
 | Rename the file | `F2` (`Enter` renames, `Esc` cancels) |
-| Undo the last rename (up to 20 in a session) | `Ctrl+Z` |
+| Undo the last rename or save (up to 20 in a session) | `Ctrl+Z` |
 | Copy the file to the clipboard | `Ctrl+C` |
 | Add to / remove from the favorites | `S` |
 | Open a file | `Ctrl+O`, or dropping a file onto the window |
@@ -73,6 +77,18 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | List of shortcuts | `F1` |
 
 The arrow keys scroll an image that is larger than the window in that direction; otherwise they browse. Letter keys also work with the Russian keyboard layout.
+
+## Rotating and cropping
+
+Rotation (`[`, `]`, the toolbar, View and the context menu) changes only the view until it is saved; the status bar then notes the angle. File → Save (`Ctrl+S`) writes the rotated image over its file, File → Save As… (`Ctrl+Shift+S`) into another file, whose format follows its extension: JPEG, PNG, WebP (lossless), TIFF or BMP. The name suggested there is that of the original with `_crop` for a cropped image or `_rotate` for a rotated one (`photo_crop.jpg`), numbered if such a file already exists (`photo_crop_2.jpg`), so that no file is replaced by accident. Formats that qview cannot write, such as HEIC, AVIF, RAW and GIF, as well as lossy WebP, are saved through Save As, JPEG being offered by default. Animated images are not edited.
+
+File → Convert To (also in the context menus of the image and of a thumbnail in the gallery) saves a copy of the image in JPEG, PNG, WebP (lossless), TIFF or BMP next to the original, under the same name with the new extension (`photo.heic` → `photo.jpg`, `photo_2.jpg` if that name is taken), without a dialog; an unsaved rotation is applied to the copy. The original stays unchanged and remains the current image; `Ctrl+Z` deletes the copy.
+
+A JPEG that is only rotated is not re-encoded: its EXIF orientation (and the XMP one, if present) is changed instead, so the image loses no quality and its metadata stays as it was. In all other cases the image is decoded, rotated, cropped and encoded anew, JPEG with quality 92; the ICC profile and the EXIF data of the original are carried over, with the orientation reset, the dimensions updated and the embedded thumbnail removed.
+
+Crop (`C`, the toolbar button, View and the context menu) shows a frame over the middle of the image, inside its edges, and a bar above it. The frame is moved by dragging inside it and resized by its edges and corners; dragging outside it draws a new one. The bar sets the proportions (free, those of the image, 1:1, 4:3, 3:2, 16:9 and their portrait forms), shows the size of the frame in pixels and holds Save (`Enter`), Save As… and Cancel (`Esc`). While cropping, browsing and the file commands are unavailable; rotating turns the frame with the image, and the zoom keys and `Ctrl+wheel` work as usual.
+
+A file is never overwritten in place: the new image is written to a temporary file next to it, which then replaces the original, keeping its creation date and permissions. The previous contents are kept in memory until the program is closed, so `Ctrl+Z` (File → Undo Save) restores them, together with the modification date; a file created by Save As is deleted by it.
 
 ## Gallery
 

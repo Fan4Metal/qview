@@ -51,8 +51,8 @@ pub struct View {
     /// The mode chosen with the keys 1-4 (never `Scale`): what the next
     /// image opens in after zoom steps; kept between runs.
     pub mode: Zoom,
-    /// Clockwise quarter turns, 0..=3 (display only, the file is not
-    /// changed).
+    /// Clockwise quarter turns, 0..=3: the view's only, until Ctrl+S
+    /// saves them into the file (see `edit`).
     pub turns: u8,
     /// Centre of the image relative to the centre of the viewport, in
     /// points.

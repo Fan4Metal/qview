@@ -116,28 +116,9 @@ fn jpeg(r: &mut BufReader<File>) -> Option<Size> {
 }
 
 /// The orientation in an APP1 segment's payload, if it is EXIF and has
-/// one: tag 0x0112 of the first IFD.
+/// one.
 fn exif_orientation(data: &[u8]) -> Option<Orientation> {
-    let tiff = data.strip_prefix(b"Exif\0\0")?;
-    let big = match tiff.get(..2)? {
-        b"MM" => true,
-        b"II" => false,
-        _ => return None,
-    };
-    let u16_at = |i: usize| -> Option<u16> {
-        let b: [u8; 2] = tiff.get(i..i + 2)?.try_into().ok()?;
-        Some(if big { u16::from_be_bytes(b) } else { u16::from_le_bytes(b) })
-    };
-    let u32_at = |i: usize| -> Option<u32> {
-        let b: [u8; 4] = tiff.get(i..i + 4)?.try_into().ok()?;
-        Some(if big { u32::from_be_bytes(b) } else { u32::from_le_bytes(b) })
-    };
-    let ifd = u32_at(4)? as usize;
-    let count = u16_at(ifd)? as usize;
-    (0..count).map(|k| ifd + 2 + 12 * k).find(|&e| u16_at(e) == Some(0x0112)).and_then(|e| {
-        // A SHORT, in the first two bytes of the value field.
-        Orientation::from_exif(u16_at(e + 8)?.try_into().ok()?)
-    })
+    Orientation::from_exif(crate::exif::orientation(data.strip_prefix(b"Exif\0\0")?)?)
 }
 
 #[cfg(test)]

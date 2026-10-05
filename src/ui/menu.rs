@@ -11,6 +11,10 @@ use crate::input::Cmd;
 struct Enabled {
     file: bool,
     image: bool,
+    /// The image can be turned, cropped and saved (see `App::editable`).
+    edit: bool,
+    /// Turned or being cropped: Save has something to save.
+    edited: bool,
     prev: bool,
     next: bool,
     any: bool,
@@ -22,6 +26,8 @@ impl App {
         Enabled {
             file: self.current.is_some(),
             image: self.shown.is_some(),
+            edit: self.editable().is_some() && !self.saving(),
+            edited: self.editable().is_some() && !self.saving() && (self.view.turns != 0 || self.crop.is_some()),
             prev: self.index.is_some_and(|i| i > 0),
             next: self.index.is_some_and(|i| i + 1 < n),
             any: n > 0,
@@ -59,12 +65,15 @@ impl App {
     fn file_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
         self.item(ui, tr!("Open…", "Открыть…").into(), "Ctrl+O", Cmd::Open, true);
+        self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, e.edited);
+        self.item(ui, tr!("Save As…", "Сохранить как…").into(), "Ctrl+Shift+S", Cmd::SaveAs, e.edit);
+        self.convert_menu(ui);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, e.file);
         self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, e.file);
-        let undo = !self.renames.is_empty();
-        self.item(ui, tr!("Undo Rename", "Отменить переименование").into(), "Ctrl+Z", Cmd::Undo, undo);
+        let undo = !self.undo.is_empty() && self.crop.is_none();
+        self.item(ui, self.undo_label().into(), "Ctrl+Z", Cmd::Undo, undo);
         self.item(ui, tr!("Delete…", "Удалить…").into(), "Del", Cmd::Delete, e.file);
         ui.separator();
         self.item(ui, tr!("File Associations…", "Сопоставление файлов…").into(), "", Cmd::Associations, true);
@@ -94,6 +103,21 @@ impl App {
         self.item(ui, tr!("Refresh", "Обновить").into(), "F5", Cmd::Refresh, e.file);
     }
 
+    /// Convert To: the formats the current image can be converted to, a
+    /// copy beside it. Its own format is left out but for WebP, whose copy
+    /// is lossless.
+    pub(super) fn convert_menu(&mut self, ui: &mut Ui) {
+        use crate::edit::Format;
+        let own = self.current.as_deref().and_then(Format::of).filter(|&f| f != Format::WebP);
+        ui.add_enabled_ui(self.can_convert(), |ui| {
+            ui.menu_button(tr!("Convert To", "Конвертировать в"), |ui| {
+                for format in Format::ALL {
+                    self.item(ui, format.name().into(), "", Cmd::ConvertTo(format), own != Some(format));
+                }
+            })
+        });
+    }
+
     fn zoom_items(&mut self, ui: &mut Ui, e: &Enabled) {
         self.item(ui, tr!("Zoom In", "Увеличить").into(), "+", Cmd::ZoomIn, e.image);
         self.item(ui, tr!("Zoom Out", "Уменьшить").into(), "-", Cmd::ZoomOut, e.image);
@@ -108,6 +132,11 @@ impl App {
     fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {
         self.item(ui, tr!("Rotate Left", "Повернуть влево").into(), "[", Cmd::RotateLeft, e.image);
         self.item(ui, tr!("Rotate Right", "Повернуть вправо").into(), "]", Cmd::RotateRight, e.image);
+        let cropping = self.crop.is_some();
+        if ui.add_enabled(e.edit, Button::new(tr!("Crop", "Обрезать")).shortcut_text("C").selected(cropping)).clicked() {
+            self.clicked.push(Cmd::Crop);
+            ui.close();
+        }
     }
 
     /// The order of the folder, or of the favourites, which have one of
@@ -201,6 +230,9 @@ impl App {
         self.zoom_items(ui, &e);
         ui.separator();
         self.rotate_items(ui, &e);
+        if e.edited {
+            self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, true);
+        }
         ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
         ui.separator();
@@ -211,6 +243,7 @@ impl App {
         ui.separator();
         self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, e.file);
         self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, e.file);
+        self.convert_menu(ui);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
         self.item(ui, tr!("Delete…", "Удалить…").into(), "Del", Cmd::Delete, e.file);

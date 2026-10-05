@@ -19,12 +19,14 @@ use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureHandle, Vec2};
 
+use crate::crop::Crop;
+use crate::edit;
 use crate::favorites::{self, Favorites};
 use crate::folder::{self, Order, Scan, SortKey};
 use crate::gallery::{self, Gallery, Scroll};
 use crate::history::{History, Place};
 use crate::i18n::LangChoice;
-use crate::input::{Arrow, Cmd, Wheel};
+use crate::input::{Arrow, Cmd, Mode, Wheel};
 use crate::loader::{Decoded, Loader, Meta, Pixels};
 use crate::texture::Texture;
 use crate::view::{self, View, Zoom};
@@ -74,8 +76,11 @@ const AHEAD: usize = 3;
 /// Pixels of the textures kept at most, the current image included: four
 /// 24-megapixel photos, about half a gigabyte of texture memory.
 const CACHE_BUDGET: usize = 100_000_000;
-/// Renames Ctrl+Z can undo, the latest last.
-const UNDO_RENAMES: usize = 20;
+/// Renames and saves Ctrl+Z can undo, the latest last.
+const UNDO_STEPS: usize = 20;
+/// The old contents of saved files kept for Ctrl+Z, at most; the oldest
+/// are forgotten first, the latest always kept.
+const UNDO_BYTES: usize = 512 << 20;
 
 const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
@@ -128,6 +133,22 @@ pub struct Rename {
     /// the extension, as Explorer does.
     pub focus: bool,
     pub select: bool,
+}
+
+/// What Ctrl+Z undoes.
+pub enum Undo {
+    Rename { old: PathBuf, new: PathBuf },
+    /// A file saved (turned or cropped): its contents before, None if it
+    /// was made by saving.
+    Save { path: PathBuf, before: Option<edit::Before> },
+}
+
+/// An image being saved on a thread (see `edit::save`).
+struct Saving {
+    job: edit::Job,
+    /// A copy in another format (Convert To): the original stays current.
+    convert: bool,
+    done: mpsc::Receiver<Result<edit::Saved, String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,8 +213,14 @@ pub struct App {
     /// The file the delete confirmation asks about.
     pub confirm_delete: Option<PathBuf>,
     pub rename: Option<Rename>,
-    /// The renames of this session, `(old, new)`, for Ctrl+Z.
-    pub renames: Vec<(PathBuf, PathBuf)>,
+    /// The renames and saves of this session, for Ctrl+Z.
+    pub undo: Vec<Undo>,
+    /// The frame of C over the current image, while it is cropped.
+    pub crop: Option<Crop>,
+    saving: Option<Saving>,
+    /// The current file was saved over: when it is decoded again, the
+    /// view's rotation, now in the file, is dropped.
+    reloading: Option<PathBuf>,
     /// The folders shown before and after this one, for Back and Forward.
     pub history: History,
     /// The favourite images (S), listed in the gallery as `favorites::DIR`.
@@ -382,7 +409,10 @@ impl App {
                 .unwrap_or(DEFAULT_BACKGROUND),
             confirm_delete: None,
             rename: None,
-            renames: Vec::new(),
+            undo: Vec::new(),
+            crop: None,
+            saving: None,
+            reloading: None,
             history: History::default(),
             favorites: Favorites::load(eframe::storage_dir(crate::APP_ID).map(|d| d.join(favorites::FILE))),
             confirm_clear_favorites: false,
@@ -682,22 +712,101 @@ impl App {
             return Ok(());
         }
         self.move_file(ctx, path, &new)?;
-        if self.renames.len() == UNDO_RENAMES {
-            self.renames.remove(0);
-        }
-        self.renames.push((path.to_path_buf(), new));
+        self.push_undo(Undo::Rename { old: path.to_path_buf(), new });
         Ok(())
     }
 
-    /// Give the last rename's file its old name back (Ctrl+Z).
-    fn undo_rename(&mut self, ctx: &egui::Context) {
-        let Some((old, new)) = self.renames.pop() else { return };
-        let from = file_name(&new);
-        let text = match self.move_file(ctx, &new, &old) {
-            Ok(()) => tr!("Rename undone", "Переименование отменено").into(),
-            Err(e) => tr!(format!("Cannot rename {from} back: {e}"), format!("Не удалось вернуть имя {from}: {e}")),
+    /// Remember `undo` for Ctrl+Z, forgetting the oldest beyond the limits.
+    fn push_undo(&mut self, undo: Undo) {
+        self.undo.push(undo);
+        let bytes = |u: &Undo| match u {
+            Undo::Save { before: Some(b), .. } => b.bytes.len(),
+            _ => 0,
         };
-        self.notice(text);
+        while self.undo.len() > UNDO_STEPS
+            || (self.undo.len() > 1 && self.undo.iter().map(bytes).sum::<usize>() > UNDO_BYTES)
+        {
+            self.undo.remove(0);
+        }
+    }
+
+    /// Undo the last rename or save (Ctrl+Z): the old name back, or the old
+    /// contents (a file made by saving is deleted).
+    fn undo(&mut self, ctx: &egui::Context) {
+        if self.saving.is_some() {
+            self.notice(tr!("Saving…".into(), "Сохранение…".into()));
+            return;
+        }
+        match self.undo.pop() {
+            None => {}
+            Some(Undo::Rename { old, new }) => {
+                let from = file_name(&new);
+                let text = match self.move_file(ctx, &new, &old) {
+                    Ok(()) => tr!("Rename undone", "Переименование отменено").into(),
+                    Err(e) => tr!(format!("Cannot rename {from} back: {e}"), format!("Не удалось вернуть имя {from}: {e}")),
+                };
+                self.notice(text);
+            }
+            Some(Undo::Save { path, before }) => {
+                let name = file_name(&path);
+                let result = match &before {
+                    Some(before) => edit::restore(&path, before),
+                    None => std::fs::remove_file(&path).map_err(|e| e.to_string()),
+                };
+                let text = match result {
+                    Ok(()) => {
+                        if before.is_some() {
+                            self.changed(ctx, &path);
+                        } else {
+                            self.forget_file(&path);
+                            self.unlist(&path);
+                        }
+                        tr!(format!("Save undone: {name}"), format!("Сохранение отменено: {name}"))
+                    }
+                    Err(e) => tr!(
+                        format!("Cannot undo the save of {name}: {e}"),
+                        format!("Не удалось отменить сохранение {name}: {e}")
+                    ),
+                };
+                self.notice(text);
+            }
+        }
+    }
+
+    /// What Ctrl+Z would undo, for the menu.
+    pub fn undo_label(&self) -> &'static str {
+        match self.undo.last() {
+            Some(Undo::Save { .. }) => tr!("Undo Save", "Отменить сохранение"),
+            _ => tr!("Undo Rename", "Отменить переименование"),
+        }
+    }
+
+    /// Drop what was decoded of `path`, the image and its thumbnail; the
+    /// picture on screen stays until it is decoded again.
+    fn forget_file(&mut self, path: &Path) {
+        self.cache.remove(path);
+        self.partial.remove(path);
+        self.pending.retain(|d| d.path != path);
+        if let Some(gallery) = &mut self.gallery {
+            gallery.forget(&[path.to_path_buf()]);
+        }
+    }
+
+    /// `path` was written: it is decoded again, the current image without
+    /// the view's rotation (it is in the file now), and its folder listed
+    /// again, since its date and size changed or it is new there.
+    fn changed(&mut self, ctx: &egui::Context, path: &Path) {
+        self.forget_file(path);
+        if self.current.as_deref() == Some(path) {
+            self.reloading = Some(path.to_path_buf());
+        }
+        let in_dir = path.parent().zip(self.dir.as_deref()).is_some_and(|(p, d)| folder::same_path(p, d));
+        if (in_dir || folder::position(&self.files, path).is_some())
+            && let Some(dir) = self.dir.clone()
+        {
+            self.place = self.index;
+            self.scan = Some(self.scan_dir(dir, self.current.clone(), ctx));
+        }
     }
 
     /// Rename `path` to `new`, unless another file has that name.
@@ -1013,6 +1122,12 @@ impl App {
                 if !same_texture {
                     if !same_path {
                         self.view.next_image();
+                    } else if self.reloading.as_ref() == Some(current) {
+                        self.view.turns = 0;
+                        self.view.offset = Vec2::ZERO;
+                    }
+                    if self.reloading.as_ref() == Some(current) {
+                        self.reloading = None;
                     }
                     self.shown = Some((current.clone(), picture.clone()));
                     if !self.first_image_logged {
@@ -1099,6 +1214,9 @@ impl App {
 
     /// Carry out `cmd`.
     fn run(&mut self, ctx: &egui::Context, frame: &eframe::Frame, cmd: Cmd) {
+        if self.crop.is_some() && self.run_in_crop(ctx, frame, cmd) {
+            return;
+        }
         if self.gallery_open && self.run_in_gallery(ctx, cmd) {
             return;
         }
@@ -1145,7 +1263,11 @@ impl App {
                     self.confirm_delete = self.current.clone().filter(|p| p.is_file());
                 }
             }
-            Cmd::Undo => self.undo_rename(ctx),
+            Cmd::Undo => self.undo(ctx),
+            Cmd::Crop => self.start_crop(),
+            Cmd::Save => self.save(ctx, frame, false),
+            Cmd::SaveAs => self.save(ctx, frame, true),
+            Cmd::ConvertTo(format) => self.convert(ctx, format),
             Cmd::Rename => {
                 if let Some(path) = self.current.clone().filter(|p| p.is_file()) {
                     let name = file_name(&path);
@@ -1263,8 +1385,16 @@ impl App {
                     gallery.scroll = Some(Scroll::Visible);
                 }
             }
-            // Nothing to zoom or turn.
-            Cmd::Actual | Cmd::Fit | Cmd::Fill | Cmd::Cover | Cmd::RotateLeft | Cmd::RotateRight => {}
+            // Nothing to zoom, turn or save.
+            Cmd::Actual
+            | Cmd::Fit
+            | Cmd::Fill
+            | Cmd::Cover
+            | Cmd::RotateLeft
+            | Cmd::RotateRight
+            | Cmd::Crop
+            | Cmd::Save
+            | Cmd::SaveAs => {}
             Cmd::Gallery => self.leave_gallery(),
             // F shows the image in full screen; Ctrl+Shift+F
             // (`WindowFullScreen`) turns the gallery's window, as in the viewer.
@@ -1386,6 +1516,241 @@ impl App {
         }
     }
 
+    /// Where the keys go now.
+    fn key_mode(&self) -> Mode {
+        if self.gallery_open {
+            Mode::Gallery
+        } else if self.crop.is_some() {
+            Mode::Crop
+        } else {
+            Mode::Viewer
+        }
+    }
+
+    /// The image on screen if it can be turned, cropped and saved: the
+    /// current one, decoded, in the viewer, not animated.
+    pub fn editable(&self) -> Option<(PathBuf, Picture)> {
+        let (path, picture) = self.shown.as_ref()?;
+        (!self.gallery_open && self.current.as_ref() == Some(path) && !picture.meta.animated)
+            .then(|| (path.clone(), picture.clone()))
+    }
+
+    /// Start cropping the image on screen (C): the frame in its middle,
+    /// the image as large as the window allows.
+    fn start_crop(&mut self) {
+        if self.shown.as_ref().is_some_and(|(_, p)| p.meta.animated) {
+            self.notice(tr!("Animated images cannot be edited".into(), "Анимированные изображения не редактируются".into()));
+            return;
+        }
+        let Some((path, picture)) = self.editable() else { return };
+        let size = self.view.rotated(picture.size());
+        self.crop = Some(Crop::new(path, size, self.view.zoom, self.view.offset));
+        self.view.zoom = Zoom::Fill;
+        self.view.offset = Vec2::ZERO;
+    }
+
+    /// Stop cropping; the zoom and panning are as they were before.
+    pub fn end_crop(&mut self) {
+        if let Some(crop) = self.crop.take() {
+            self.view.zoom = crop.zoom;
+            self.view.offset = crop.offset;
+        }
+    }
+
+    /// Cropping ends when its image is no longer on screen (another file
+    /// opened from Explorer, the gallery).
+    fn check_crop(&mut self) {
+        let gone = self.crop.as_ref().is_some_and(|c| self.editable().is_none_or(|(p, _)| p != c.path));
+        if gone {
+            self.end_crop();
+        }
+    }
+
+    /// Carry out `cmd` while cropping: browsing and the file commands wait
+    /// until the frame is saved or given up. False for the commands that
+    /// work as in the viewer.
+    fn run_in_crop(&mut self, ctx: &egui::Context, frame: &eframe::Frame, cmd: Cmd) -> bool {
+        match cmd {
+            Cmd::Escape | Cmd::Crop => self.end_crop(),
+            Cmd::Save => self.save(ctx, frame, false),
+            Cmd::SaveAs => self.save(ctx, frame, true),
+            Cmd::RotateLeft | Cmd::RotateRight => {
+                // The frame turns with the image; the view turns it.
+                if let (Some(crop), Some((_, picture))) = (&mut self.crop, &self.shown) {
+                    crop.turn(self.view.rotated(picture.size()), cmd == Cmd::RotateRight);
+                }
+                return false;
+            }
+            // Panning, never browsing.
+            Cmd::Arrow(arrow) => {
+                let ppp = ctx.pixels_per_point();
+                let can = self.shown.as_ref().map_or([false; 2], |(_, p)| self.view.pannable(p.size(), self.viewport, ppp));
+                return !can[usize::from(matches!(arrow, Arrow::Up | Arrow::Down))];
+            }
+            Cmd::ZoomIn
+            | Cmd::ZoomOut
+            | Cmd::Actual
+            | Cmd::Fit
+            | Cmd::Fill
+            | Cmd::Cover
+            | Cmd::FullScreen
+            | Cmd::WindowFullScreen
+            | Cmd::ToggleToolbar
+            | Cmd::ToggleStatusBar
+            | Cmd::Shortcuts
+            | Cmd::About
+            | Cmd::Close => return false,
+            _ => {}
+        }
+        true
+    }
+
+    /// Save the image on screen turned, and cropped while cropping: over
+    /// its file, or with `as_new` (or in a format that cannot be saved
+    /// over) into a file the user picks. On a thread; `poll_save` takes the
+    /// outcome.
+    fn save(&mut self, ctx: &egui::Context, frame: &eframe::Frame, as_new: bool) {
+        if self.saving.is_some() {
+            self.notice(tr!("Saving…".into(), "Сохранение…".into()));
+            return;
+        }
+        if self.shown.as_ref().is_some_and(|(_, p)| p.meta.animated) {
+            self.notice(tr!("Animated images cannot be edited".into(), "Анимированные изображения не редактируются".into()));
+            return;
+        }
+        let Some((path, picture)) = self.editable() else { return };
+        let turned = self.view.rotated(picture.size());
+        let crop = self
+            .crop
+            .as_ref()
+            .filter(|c| !crate::crop::is_whole(c.rect, turned))
+            .map(|c| crate::crop::pixels(c.rect, turned));
+        let dst = if !as_new && edit::can_overwrite(&path) {
+            if self.view.turns == 0 && crop.is_none() {
+                self.notice(tr!(
+                    "Nothing to save: the image is neither turned nor cropped".into(),
+                    "Нечего сохранять: изображение не повёрнуто и не обрезано".into()
+                ));
+                return;
+            }
+            path.clone()
+        } else {
+            let suffix = if crop.is_some() {
+                "_crop"
+            } else if self.view.turns != 0 {
+                "_rotate"
+            } else {
+                ""
+            };
+            let Some(dst) = Self::pick_save_path(frame, &path, suffix) else { return };
+            dst
+        };
+        let job = edit::Job { src: path, dst, size: [picture.meta.width, picture.meta.height], turns: self.view.turns, crop };
+        self.start_save(ctx, job, false);
+    }
+
+    /// The current image can be converted (File → Convert To), in the
+    /// viewer or in the gallery, decoded or not.
+    pub fn can_convert(&self) -> bool {
+        self.current.is_some() && self.crop.is_none() && self.saving.is_none()
+    }
+
+    /// Save the current image in `format` beside its file, under its name
+    /// with that format's extension (numbered if taken), turned as it is
+    /// shown in the viewer; the file itself stays as it is, and current.
+    fn convert(&mut self, ctx: &egui::Context, format: edit::Format) {
+        if self.saving.is_some() {
+            self.notice(tr!("Saving…".into(), "Сохранение…".into()));
+            return;
+        }
+        if self.editable().is_none() && self.shown.as_ref().is_some_and(|(p, pic)| self.current.as_ref() == Some(p) && pic.meta.animated) {
+            self.notice(tr!("Animated images cannot be edited".into(), "Анимированные изображения не редактируются".into()));
+            return;
+        }
+        let Some(path) = self.current.clone().filter(|p| p.is_file()) else { return };
+        // The view's turn counts only for the image it shows.
+        let turns = if self.editable().is_some() { self.view.turns } else { 0 };
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let name = edit::suggested_name(&path, format.extensions()[0], "", |n| dir.join(n).exists());
+        let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, crop: None };
+        self.start_save(ctx, job, true);
+    }
+
+    /// Carry out `job` on a thread; `poll_save` takes the outcome.
+    fn start_save(&mut self, ctx: &egui::Context, job: edit::Job, convert: bool) {
+        let (tx, done) = mpsc::channel();
+        let (ctx, work) = (ctx.clone(), job.clone());
+        std::thread::spawn(move || {
+            // Windows' codecs may decode the original.
+            let _com = win::com_init();
+            let _ = tx.send(edit::save(&work));
+            ctx.request_repaint();
+        });
+        self.saving = Some(Saving { job, convert, done });
+    }
+
+    /// The file to save `path` as, from the Save As dialog: its own format
+    /// first if it can be saved in it, otherwise JPEG; the name suggested
+    /// has `suffix` and is not taken (see `edit::suggested_name`).
+    fn pick_save_path(frame: &eframe::Frame, path: &Path, suffix: &str) -> Option<PathBuf> {
+        let own = edit::Format::of(path).filter(|_| edit::can_overwrite(path));
+        let first = own.unwrap_or(edit::Format::Jpeg);
+        let ext = match own {
+            Some(_) => path.extension().unwrap_or_default().to_string_lossy().into_owned(),
+            None => "jpg".to_string(),
+        };
+        let dir = path.parent().unwrap_or(Path::new(""));
+        let name = edit::suggested_name(path, &ext, suffix, |name| dir.join(name).exists());
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(tr!("Save As", "Сохранить как"))
+            .set_file_name(name)
+            .set_parent(frame);
+        for format in std::iter::once(first).chain(edit::Format::ALL.into_iter().filter(|&f| f != first)) {
+            dialog = dialog.add_filter(format.name(), format.extensions());
+        }
+        if let Some(dir) = path.parent() {
+            dialog = dialog.set_directory(dir);
+        }
+        dialog.save_file()
+    }
+
+    /// The outcome of `save` and `convert`: a file saved over is decoded
+    /// again, one saved as a new file opened, a converted one listed; Ctrl+Z
+    /// can undo it.
+    fn poll_save(&mut self, ctx: &egui::Context) {
+        let Some(saving) = &self.saving else { return };
+        let Ok(result) = saving.done.try_recv() else { return };
+        let Saving { job, convert, .. } = self.saving.take().expect("checked above");
+        let name = file_name(&job.dst);
+        match result {
+            Ok(saved) => {
+                self.push_undo(Undo::Save { path: job.dst.clone(), before: saved.before });
+                if self.crop.as_ref().is_some_and(|c| c.path == job.src) {
+                    self.end_crop();
+                }
+                self.changed(ctx, &job.dst);
+                if convert {
+                    self.notice(tr!(format!("Converted: {name}"), format!("Сконвертировано: {name}")));
+                    return;
+                }
+                if !folder::same_path(&job.src, &job.dst) {
+                    self.open(ctx, job.dst.clone());
+                }
+                self.notice(if saved.lossless {
+                    tr!(format!("Saved without recompression: {name}"), format!("Сохранено без пересжатия: {name}"))
+                } else {
+                    tr!(format!("Saved: {name}"), format!("Сохранено: {name}"))
+                });
+            }
+            Err(e) => self.notice(tr!(format!("Cannot save {name}: {e}"), format!("Не удалось сохранить {name}: {e}"))),
+        }
+    }
+
+    /// An image is being saved.
+    pub fn saving(&self) -> bool {
+        self.saving.is_some()
+    }
+
     /// The image area: the picture, panning, the wheel and the context
     /// menu.
     fn image_area(&mut self, ui: &mut egui::Ui) {
@@ -1409,12 +1774,14 @@ impl App {
             view::paint(&painter, texture, view.place(size, rect, ppp), 0);
         } else if let Some((_, picture)) = self.shown.clone() {
             let size = picture.size();
-            if response.dragged_by(PointerButton::Primary) {
+            if response.dragged_by(PointerButton::Primary) && self.crop.is_none() {
                 self.view.pan(response.drag_delta(), size, rect, ppp);
             }
             let place = self.view.place(size, rect, ppp);
             view::paint(&painter, picture.texture.id(), place, self.view.turns);
-            if self.view.pannable(size, rect, ppp).contains(&true) && response.hovered() {
+            if let Some(crop) = &mut self.crop {
+                crate::ui::crop::frame(crop, &response, &painter, place, self.view.rotated(size));
+            } else if self.view.pannable(size, rect, ppp).contains(&true) && response.hovered() {
                 ctx.set_cursor_icon(if response.dragged() {
                     egui::CursorIcon::Grabbing
                 } else {
@@ -1444,7 +1811,8 @@ impl App {
             }
         }
 
-        if crate::input::double_clicked(&response) && self.image_clicked {
+        let cropping = self.crop.is_some();
+        if crate::input::double_clicked(&response) && self.image_clicked && !cropping {
             self.clicked.push(Cmd::Gallery);
         }
         if response.clicked() {
@@ -1459,7 +1827,8 @@ impl App {
         let modal_open = self.modal_open();
         if !modal_open && !egui::Popup::is_any_open(&ctx) {
             let (browse, zoom) = self.wheel.read(&ctx);
-            // Wheel up: the previous image.
+            // Wheel up: the previous image; not while cropping.
+            let browse = if cropping { 0 } else { browse };
             for _ in 0..browse.unsigned_abs() {
                 self.clicked.push(if browse > 0 { Cmd::Prev } else { Cmd::Next });
             }
@@ -1472,7 +1841,9 @@ impl App {
                 }
             }
         }
-        response.context_menu(|ui| self.context_menu(ui));
+        if !cropping {
+            response.context_menu(|ui| self.context_menu(ui));
+        }
     }
 
     /// The gallery's thumbnail of the current image and the image's size,
@@ -1600,6 +1971,7 @@ impl eframe::App for App {
         }
         self.poll_delete();
         self.poll_copy();
+        self.poll_save(&ctx);
         self.updates.poll();
         self.handle_drop(&ctx);
         self.sync_shown();
@@ -1611,11 +1983,12 @@ impl eframe::App for App {
             if let Some(id) = ctx.memory(|m| m.focused()) {
                 ctx.memory_mut(|m| m.surrender_focus(id));
             }
-            for cmd in crate::input::keys(&ctx, self.gallery_open) {
+            for cmd in crate::input::keys(&ctx, self.key_mode()) {
                 self.run(&ctx, frame, cmd);
             }
             self.sync_shown();
         }
+        self.check_crop();
         self.complete_current_if_needed(&ctx);
         self.animate(&ctx);
 
@@ -1631,6 +2004,10 @@ impl eframe::App for App {
             if self.show_status_bar {
                 self.status_bar(root_ui);
             }
+        }
+        // In full screen too: it has the frame's size and buttons.
+        if self.crop.is_some() {
+            self.crop_bar(root_ui);
         }
         if self.gallery_open {
             self.gallery_ui(root_ui);

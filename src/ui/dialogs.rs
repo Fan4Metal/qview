@@ -25,7 +25,17 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ("L", tr!("Keep zoom and position for the next images", "Сохранять масштаб и положение для следующих")),
         ("←  →  ↑  ↓", tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
         (tr!("Drag", "Перетаскивание"), tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
-        ("[  ]  Ctrl+Alt+←  Ctrl+Alt+→", tr!("Rotate left / right (view only)", "Повернуть влево / вправо (только просмотр)")),
+        (
+            "[  ]  Ctrl+Alt+←  Ctrl+Alt+→",
+            tr!("Rotate left / right (the file changes on saving)", "Повернуть влево / вправо (файл меняется при сохранении)"),
+        ),
+        ("C", tr!("Crop: drag the frame, its edges or corners", "Обрезка: перетаскивайте рамку, её края или углы")),
+        (
+            tr!("Crop: Enter  Esc", "Обрезка: Enter  Esc"),
+            tr!("Save the cropped image / cancel", "Сохранить обрезанное / отменить"),
+        ),
+        ("Ctrl+S", tr!("Save the turned or cropped image", "Сохранить повёрнутое или обрезанное")),
+        ("Ctrl+Shift+S", tr!("Save as another file or format", "Сохранить в другой файл или формат")),
         (
             tr!("F  Ctrl+Shift+F  Middle click", "F  Ctrl+Shift+F  Средняя кнопка"),
             tr!("Full screen", "Полный экран"),
@@ -52,7 +62,7 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ("S", tr!("Add to / remove from the favorites", "Добавить в избранное / убрать из него")),
         ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
         ("F2", tr!("Rename the file", "Переименовать файл")),
-        ("Ctrl+Z", tr!("Undo the last rename", "Отменить последнее переименование")),
+        ("Ctrl+Z", tr!("Undo the last rename or save", "Отменить последнее переименование или сохранение")),
         ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
         ("Ctrl+O", tr!("Open a file", "Открыть файл")),
         (
