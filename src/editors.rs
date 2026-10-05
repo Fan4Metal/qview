@@ -116,9 +116,17 @@ pub fn open(editor: Option<&Editor>, files: &[PathBuf]) -> Result<(), String> {
     let Some(editor) = editor else { return edit_verb(files) };
     let ext = files.first().and_then(|f| f.extension()).map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     if let Some((_, handler)) = handlers(&ext).into_iter().find(|(e, _)| e.id.eq_ignore_ascii_case(&editor.id)) {
-        let data = data_object(files)?;
-        let hr = unsafe { handler.method::<Invoke>(HANDLER_INVOKE)(handler.0, data.0) };
-        return if hr >= 0 { Ok(()) } else { Err(format!("error {hr:#x}")) };
+        let invoke = |files: &[PathBuf]| -> Result<(), String> {
+            let data = data_object(files)?;
+            let hr = unsafe { handler.method::<Invoke>(HANDLER_INVOKE)(handler.0, data.0) };
+            if hr >= 0 { Ok(()) } else { Err(format!("error {hr:#x}")) }
+        };
+        // Many handlers take one file at a time (E_FAIL for several, as
+        // Paint's): then each is opened on its own.
+        return match invoke(files) {
+            Err(_) if files.len() > 1 => files.iter().try_for_each(|f| invoke(std::slice::from_ref(f))),
+            result => result,
+        };
     }
     if Path::new(&editor.id).is_file() {
         return std::process::Command::new(&editor.id).args(files).spawn().map(|_| ()).map_err(|e| e.to_string());
@@ -191,6 +199,20 @@ mod tests {
         for e in for_extension(&ext) {
             println!("{}  ({})", e.name, e.id);
         }
+    }
+
+    #[test]
+    fn several_files_make_one_data_object() {
+        let _com = crate::win::com_init();
+        let dir = std::env::temp_dir().join(format!("qview_editors_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = (0..3).map(|i| dir.join(format!("{i}.png"))).collect();
+        for f in &files {
+            std::fs::write(f, b"x").unwrap();
+        }
+        assert!(data_object(&files[..1]).is_ok());
+        assert!(data_object(&files).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

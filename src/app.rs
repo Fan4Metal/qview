@@ -78,6 +78,9 @@ const AHEAD: usize = 3;
 /// Pixels of the textures kept at most, the current image included: four
 /// 24-megapixel photos, about half a gigabyte of texture memory.
 const CACHE_BUDGET: usize = 100_000_000;
+/// Opening more files than this in an editor asks first: many editors
+/// open a window for each.
+const EDIT_WITHOUT_ASKING: usize = 5;
 /// Renames and saves Ctrl+Z can undo, the latest last.
 const UNDO_STEPS: usize = 20;
 /// The old contents of saved files kept for Ctrl+Z, at most; the oldest
@@ -148,6 +151,13 @@ pub enum Undo {
     /// Files saved (turned, cropped, converted): each one's contents
     /// before, None if saving made it.
     Save(Vec<(PathBuf, Option<edit::Before>)>),
+}
+
+/// Files to open in an editor once the user agrees (more than
+/// `EDIT_WITHOUT_ASKING`): the editor chosen for them, if any.
+pub struct EditRequest {
+    pub files: Vec<PathBuf>,
+    pub editor: Option<Editor>,
 }
 
 /// Files sent to the Recycle Bin, and how it went (see `App::delete`).
@@ -248,6 +258,8 @@ pub struct App {
     pub menu_editors: Vec<Editor>,
     /// An editor being started on a thread.
     opening: Option<mpsc::Receiver<Result<(), String>>>,
+    /// Many files to open in an editor, waiting for the user's yes.
+    pub confirm_edit: Option<EditRequest>,
     /// The renames and saves of this session, for Ctrl+Z.
     pub undo: Vec<Undo>,
     /// The frame of C over the current image, while it is cropped.
@@ -453,6 +465,7 @@ impl App {
             editors: HashMap::new(),
             menu_editors: Vec::new(),
             opening: None,
+            confirm_edit: None,
             undo: Vec::new(),
             crop: None,
             saving: None,
@@ -751,6 +764,7 @@ impl App {
         self.confirm_delete.is_some()
             || self.rename.is_some()
             || self.batch_rename.is_some()
+            || self.confirm_edit.is_some()
             || self.dialog.is_some()
             || self.confirm_clear_favorites
     }
@@ -2043,10 +2057,25 @@ impl App {
 
     /// Open the current image, or those chosen in the gallery, in `editor`,
     /// which is kept as the editor; with none, in the one kept, or with
-    /// Windows' "edit" verb. On a thread: a program may take a while to
-    /// start.
+    /// Windows' "edit" verb. More than `EDIT_WITHOUT_ASKING` files wait for
+    /// the user's yes (`confirm_edit`).
     fn open_in_editor(&mut self, ctx: &egui::Context, editor: Option<Editor>) {
         let files: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
+        if files.len() > EDIT_WITHOUT_ASKING {
+            self.confirm_edit = Some(EditRequest { files, editor });
+        } else {
+            self.edit_files(ctx, files, editor);
+        }
+    }
+
+    /// The name of the editor `files` would open in (see `open_in_editor`).
+    pub fn editor_name(&self, editor: Option<&Editor>) -> Option<String> {
+        editor.or(self.editor.as_ref()).map(|e| e.name.clone())
+    }
+
+    /// Open `files` in `editor` (kept as the editor), or in the one kept.
+    /// On a thread: a program may take a while to start.
+    pub fn edit_files(&mut self, ctx: &egui::Context, files: Vec<PathBuf>, editor: Option<Editor>) {
         if files.is_empty() {
             return;
         }

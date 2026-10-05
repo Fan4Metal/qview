@@ -96,6 +96,7 @@ impl App {
     pub(crate) fn dialogs(&mut self, ctx: &egui::Context) {
         self.confirm_delete_dialog(ctx);
         self.confirm_clear_favorites_dialog(ctx);
+        self.confirm_edit_dialog(ctx);
         self.rename_dialog(ctx);
         self.batch_rename_dialog(ctx);
         // The key that opened a dialog this frame must not close it.
@@ -426,6 +427,51 @@ impl App {
 }
 
 impl App {
+    /// Open many files in the editor? Enter opens, Esc cancels.
+    fn confirm_edit_dialog(&mut self, ctx: &egui::Context) {
+        let Some(request) = &self.confirm_edit else { return };
+        let n = request.files.len();
+        let name = self.editor_name(request.editor.as_ref());
+        let mut decision = None;
+        let modal = egui::Modal::new(egui::Id::new("confirm_edit")).show(ctx, |ui| {
+            ui.set_width(400.0);
+            ui.heading(tr!("Open in Editor", "Открытие в редакторе"));
+            ui.add_space(6.0);
+            ui.label(match &name {
+                Some(name) => tr!(format!("Open {n} files in {name}?"), format!("Открыть файлы ({n}) в {name}?")),
+                None => tr!(format!("Open {n} files in the editor?"), format!("Открыть файлы ({n}) в редакторе?")),
+            });
+            ui.weak(tr!(
+                "Programs that take one file at a time open a window for each.",
+                "Программы, открывающие по одному файлу, откроют окно для каждого."
+            ));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let text = |s: &str| RichText::new(s).size(16.0);
+                if ui.add(egui::Button::new(text(tr!("Open", "Открыть"))).min_size(egui::vec2(160.0, 34.0))).clicked() {
+                    decision = Some(true);
+                }
+                if ui.add(egui::Button::new(text(tr!("Cancel", "Отмена"))).min_size(egui::vec2(100.0, 34.0))).clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        if decision.is_none() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter)) {
+                decision = Some(true);
+            } else if modal.should_close() {
+                decision = Some(false);
+            }
+        }
+        if let Some(open) = decision
+            && let Some(request) = self.confirm_edit.take()
+            && open
+        {
+            self.edit_files(ctx, request.files, request.editor);
+        }
+    }
+
     /// Clear the favourites? Enter clears, Esc cancels.
     fn confirm_clear_favorites_dialog(&mut self, ctx: &egui::Context) {
         if !self.confirm_clear_favorites {
