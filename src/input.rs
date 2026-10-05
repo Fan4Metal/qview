@@ -62,6 +62,14 @@ pub enum Cmd {
     Save,
     /// Save it into a file the user picks (Ctrl+Shift+S).
     SaveAs,
+    /// Open the current image, or those chosen, in the editor chosen last
+    /// (Ctrl+E); with none chosen, with Windows' "edit" verb.
+    Edit,
+    /// Open them in this one of `App::menu_editors` and keep it as the
+    /// editor (File → Edit With).
+    EditWith(usize),
+    /// Pick a program to open them in, kept as the editor.
+    EditWithOther,
     /// Move in the gallery choosing the images on the way (Shift with the
     /// arrows, Page Up/Down, Home and End).
     SelectTo(Move),
@@ -152,6 +160,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::Enter if plain && !m.shift => Gallery,
         Key::W if m.ctrl && !m.alt => Close,
         Key::O if m.ctrl && !m.alt => Open,
+        Key::E if m.ctrl && !m.alt && !m.shift => Edit,
         Key::Delete if letter => Delete,
         Key::F2 if letter => Rename,
         Key::Z if m.ctrl && !m.alt && !m.shift => Undo,
@@ -329,6 +338,7 @@ mod tests {
         assert_eq!(command(Key::S, CTRL | SHIFT, false), Some(Cmd::SaveAs));
         assert_eq!(command(Key::S, CTRL, true), None);
         assert_eq!(command(Key::C, NONE, false), Some(Cmd::Crop));
+        assert_eq!(command(Key::E, CTRL, false), Some(Cmd::Edit));
         assert_eq!(command(Key::C, SHIFT, false), None);
         assert_eq!(crop_command(Key::Enter, NONE, false), Some(Cmd::Save));
         assert_eq!(crop_command(Key::Enter, NONE, true), None);

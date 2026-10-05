@@ -30,7 +30,7 @@ const WINCODEC_ERR_COMPONENTNOTFOUND: HRESULT = 0x88982f50_u32 as HRESULT;
 
 
 /// What the hand-declared vtables are called with.
-type Unknown = *mut c_void;
+pub(crate) type Unknown = *mut c_void;
 type QueryInterface = unsafe extern "system" fn(Unknown, *const GUID, *mut Unknown) -> HRESULT;
 type Release = unsafe extern "system" fn(Unknown) -> u32;
 /// A method that returns an interface.
@@ -50,14 +50,14 @@ unsafe extern "system" {
 }
 
 /// A COM interface pointer, released when dropped.
-struct Com(Unknown);
+pub(crate) struct Com(pub(crate) Unknown);
 
 impl Com {
     /// Method `index` of the interface's vtable, as a function of type `F`.
     ///
     /// # Safety
     /// `F` must be the method's signature.
-    unsafe fn method<F: Copy>(&self, index: usize) -> F {
+    pub(crate) unsafe fn method<F: Copy>(&self, index: usize) -> F {
         unsafe {
             let vtbl = *self.0.cast::<*const usize>();
             std::mem::transmute_copy(&*vtbl.add(index))

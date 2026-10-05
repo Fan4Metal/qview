@@ -36,6 +36,7 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ),
         ("Ctrl+S", tr!("Save the turned or cropped image", "Сохранить повёрнутое или обрезанное")),
         ("Ctrl+Shift+S", tr!("Save as another file or format", "Сохранить в другой файл или формат")),
+        ("Ctrl+E", tr!("Open in the editor chosen last", "Открыть в последнем выбранном редакторе")),
         (
             tr!("F  Ctrl+Shift+F  Middle click", "F  Ctrl+Shift+F  Средняя кнопка"),
             tr!("Full screen", "Полный экран"),

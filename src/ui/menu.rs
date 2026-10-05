@@ -68,6 +68,7 @@ impl App {
         self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, e.edited);
         self.item(ui, tr!("Save As…", "Сохранить как…").into(), "Ctrl+Shift+S", Cmd::SaveAs, e.edit);
         self.convert_menu(ui);
+        self.editor_items(ui, e.file && self.crop.is_none());
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
         self.copy_item(ui, e.file);
@@ -207,6 +208,36 @@ impl App {
         self.item(ui, text.into(), "S", Cmd::Favorite, enabled);
     }
 
+    /// Open in the editor chosen last (Ctrl+E), and Edit With: the programs
+    /// Windows offers for the type, the one in use ticked, and any other;
+    /// the one picked becomes the editor.
+    pub(super) fn editor_items(&mut self, ui: &mut Ui, enabled: bool) {
+        let text = match &self.editor {
+            Some(e) => tr!(format!("Open in {}", e.name), format!("Открыть в {}", e.name)),
+            None => tr!("Open in Editor", "Открыть в редакторе").into(),
+        };
+        self.item(ui, text, "Ctrl+E", Cmd::Edit, enabled);
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.menu_button(tr!("Edit With", "Редактировать в"), |ui| {
+                // Read from Windows only while the menu is open.
+                let choices = self.editor_choices();
+                if choices.is_empty() {
+                    ui.weak(tr!("Windows offers no programs", "Windows не предлагает программ"));
+                }
+                for (k, editor) in choices.iter().enumerate() {
+                    let on = self.editor.as_ref().is_some_and(|e| e.id.eq_ignore_ascii_case(&editor.id));
+                    if ui.add(Button::new(&editor.name).selected(on)).clicked() {
+                        self.clicked.push(Cmd::EditWith(k));
+                        ui.close();
+                    }
+                }
+                self.menu_editors = choices;
+                ui.separator();
+                self.item(ui, tr!("Other Program…", "Другая программа…").into(), "", Cmd::EditWithOther, true);
+            })
+        });
+    }
+
     /// How many images the file commands act on, when more than one.
     fn several(&self) -> Option<usize> {
         Some(self.targets().len()).filter(|&n| n > 1)
@@ -279,6 +310,7 @@ impl App {
         self.copy_item(ui, e.file);
         self.rename_item(ui, e.file);
         self.convert_menu(ui);
+        self.editor_items(ui, e.file);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
         self.delete_item(ui, e.file);

@@ -1,4 +1,4 @@
-//! The toolbar: previous and next, rotate, zoom and delete buttons with
+//! The toolbar: previous and next, rotate, crop, edit, zoom and delete buttons with
 //! icons drawn as vector shapes, so they are crisp at any display scaling
 //! and need no icon font. In the gallery: back, forward and up through the
 //! folders instead, the gallery button and delete staying where they are.
@@ -29,6 +29,8 @@ enum Icon {
     RotateLeft,
     RotateRight,
     Crop,
+    /// Open in the editor (a pencil).
+    Edit,
     ZoomIn,
     ZoomOut,
     Delete,
@@ -45,6 +47,11 @@ impl App {
         let (prev, next) = (prev && !cropping, next && !cropping);
         let file = self.current.is_some() && !cropping;
         let crop = self.editable().is_some();
+        let edit_tip = match &self.editor {
+            Some(e) => tr!(format!("Open in {} (Ctrl+E)", e.name), format!("Открыть в {} (Ctrl+E)", e.name)),
+            None => tr!("Open in Editor (Ctrl+E)", "Открыть в редакторе (Ctrl+E)").into(),
+        };
+        let edit = (Icon::Edit, Cmd::Edit, edit_tip, file);
         let open = (Icon::Gallery, Cmd::Gallery, tr!("Gallery (G)", "Галерея (G)").into(), !cropping);
         let delete = (Icon::Delete, Cmd::Delete, tr!("Delete (Del)", "Удалить (Del)").into(), file);
         let favorite = self.current.as_deref().is_some_and(|c| self.favorites.contains(c));
@@ -68,7 +75,7 @@ impl App {
                                 (Icon::Next, Cmd::Forward, tr!("Forward (Alt+→)", "Вперёд (Alt+→)").into(), self.history.can_go_forward()),
                                 (Icon::Up, Cmd::Up, tr!("Up (Alt+↑)", "Вверх (Alt+↑)").into(), self.parent_dir().is_some()),
                             ],
-                            vec![star, delete],
+                            vec![edit, star, delete],
                         ]
                     } else {
                         vec![
@@ -81,6 +88,7 @@ impl App {
                                 (Icon::RotateLeft, Cmd::RotateLeft, tr!("Rotate Left ([)", "Повернуть влево ([)").into(), has_image),
                                 (Icon::RotateRight, Cmd::RotateRight, tr!("Rotate Right (])", "Повернуть вправо (])").into(), has_image),
                                 (Icon::Crop, Cmd::Crop, tr!("Crop (C)", "Обрезать (C)").into(), crop),
+                                edit,
                             ],
                             vec![
                                 (Icon::ZoomIn, Cmd::ZoomIn, tr!("Zoom In (+)", "Увеличить (+)").into(), has_image),
@@ -226,6 +234,17 @@ fn paint_icon(painter: &Painter, icon: Icon, c: Pos2, color: Color32) {
             let p = |x: f32, y: f32| c + vec2(x, y);
             painter.add(Shape::line(vec![p(-4.5, -8.0), p(-4.5, 4.5), p(8.0, 4.5)], stroke));
             painter.add(Shape::line(vec![p(-8.0, -4.5), p(4.5, -4.5), p(4.5, 8.0)], stroke));
+        }
+        Icon::Edit => {
+            // A pencil from the bottom left, its point down: along `d`, as
+            // wide as `n` across.
+            let (d, n) = (vec2(1.0, -1.0).normalized(), vec2(1.0, 1.0).normalized());
+            let tip = c + vec2(-7.0, 7.0);
+            let side = |along: f32, across: f32| tip + d * along + n * across;
+            painter.add(Shape::closed_line(vec![tip, side(5.0, 2.8), side(17.5, 2.8), side(17.5, -2.8), side(5.0, -2.8)], stroke));
+            // Where the point is sharpened, and the band by the end.
+            painter.line_segment([side(5.0, 2.8), side(5.0, -2.8)], Stroke::new(1.2, color));
+            painter.line_segment([side(14.5, 2.8), side(14.5, -2.8)], Stroke::new(1.2, color));
         }
         Icon::ZoomIn | Icon::ZoomOut => {
             let lens = c + vec2(-1.5, -1.5);

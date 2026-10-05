@@ -543,6 +543,7 @@ impl App {
         self.copy_item(ui, true);
         self.rename_item(ui, true);
         self.convert_menu(ui);
+        self.editor_items(ui, true);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
         ui.separator();
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));

@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureHandle, Vec2};
 
 use crate::crop::Crop;
+use crate::editors::Editor;
 use crate::edit;
 use crate::favorites::{self, Favorites};
 use crate::folder::{self, Order, Scan, SortKey};
@@ -101,6 +102,10 @@ const FAVORITES_SORT_DESCENDING_KEY: &str = "favorites_sort_descending";
 const CHECK_UPDATES_KEY: &str = "check_updates";
 const LAST_UPDATE_CHECK_KEY: &str = "last_update_check";
 const BY_FOLDER_KEY: &str = "by_folder";
+/// The editor chosen last (see `editors`): its handler's name and how it is
+/// shown.
+const EDITOR_KEY: &str = "editor";
+const EDITOR_NAME_KEY: &str = "editor_name";
 /// The window's normal rectangle (`win::normal_rect`), as "left,top,right,bottom":
 /// eframe saves a maximized window with its maximized size, which it would
 /// then be restored to.
@@ -234,6 +239,15 @@ pub struct App {
     pub batch_rename: Option<BatchRename>,
     /// The images chosen in the gallery (see `selection`).
     pub selection: Selection,
+    /// The editor chosen last, which Ctrl+E opens (kept between runs).
+    pub editor: Option<Editor>,
+    /// The editors Windows offers, by extension, read once.
+    editors: HashMap<String, Vec<Editor>>,
+    /// Those listed in the Edit With menu this frame, which
+    /// `Cmd::EditWith` counts in.
+    pub menu_editors: Vec<Editor>,
+    /// An editor being started on a thread.
+    opening: Option<mpsc::Receiver<Result<(), String>>>,
     /// The renames and saves of this session, for Ctrl+Z.
     pub undo: Vec<Undo>,
     /// The frame of C over the current image, while it is cropped.
@@ -432,6 +446,13 @@ impl App {
             rename: None,
             batch_rename: None,
             selection: Selection::default(),
+            editor: cc
+                .storage
+                .and_then(|s| Some(Editor { id: s.get_string(EDITOR_KEY)?, name: s.get_string(EDITOR_NAME_KEY)? }))
+                .filter(|e| !e.id.is_empty()),
+            editors: HashMap::new(),
+            menu_editors: Vec::new(),
+            opening: None,
             undo: Vec::new(),
             crop: None,
             saving: None,
@@ -1356,6 +1377,22 @@ impl App {
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::ConvertTo(format) => self.convert(ctx, format),
+            Cmd::Edit => self.open_in_editor(ctx, None),
+            Cmd::EditWith(k) => {
+                if let Some(editor) = self.menu_editors.get(k).cloned() {
+                    self.open_in_editor(ctx, Some(editor));
+                }
+            }
+            Cmd::EditWithOther => {
+                let picked = rfd::FileDialog::new()
+                    .set_title(tr!("Choose an editor", "Выбор редактора"))
+                    .add_filter(tr!("Programs", "Программы"), &["exe"])
+                    .set_parent(frame)
+                    .pick_file();
+                if let Some(program) = picked {
+                    self.open_in_editor(ctx, Some(Editor::program(&program)));
+                }
+            }
             Cmd::Rename => {
                 let paths: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
                 if paths.len() > 1 {
@@ -1984,6 +2021,56 @@ impl App {
         });
     }
 
+    /// The editors to choose from for the current image: those Windows
+    /// offers for its type, and the one chosen last if it is not among
+    /// them, first.
+    pub fn editor_choices(&mut self) -> Vec<Editor> {
+        let ext = self
+            .targets()
+            .first()
+            .and_then(|f| f.extension())
+            .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
+            .unwrap_or_default();
+        let mut choices = self.editors.entry(ext.clone()).or_insert_with(|| crate::editors::for_extension(&ext)).clone();
+        if let Some(editor) = &self.editor
+            && !choices.iter().any(|e| e.id.eq_ignore_ascii_case(&editor.id))
+        {
+            choices.insert(0, editor.clone());
+        }
+        choices
+    }
+
+    /// Open the current image, or those chosen in the gallery, in `editor`,
+    /// which is kept as the editor; with none, in the one kept, or with
+    /// Windows' "edit" verb. On a thread: a program may take a while to
+    /// start.
+    fn open_in_editor(&mut self, ctx: &egui::Context, editor: Option<Editor>) {
+        let files: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
+        if files.is_empty() {
+            return;
+        }
+        if editor.is_some() {
+            self.editor = editor;
+        }
+        let (tx, rx) = mpsc::channel();
+        let (ctx, editor) = (ctx.clone(), self.editor.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::editors::open(editor.as_ref(), &files));
+            ctx.request_repaint();
+        });
+        self.opening = Some(rx);
+    }
+
+    /// A failure to start the editor, shown.
+    fn poll_opening(&mut self) {
+        let Some(rx) = &self.opening else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        self.opening = None;
+        if let Err(e) = result {
+            self.notice(tr!(format!("Cannot open the editor: {e}"), format!("Не удалось открыть редактор: {e}")));
+        }
+    }
+
     /// An image is being saved.
     pub fn saving(&self) -> bool {
         self.saving.is_some()
@@ -2210,6 +2297,7 @@ impl eframe::App for App {
         self.poll_delete();
         self.poll_copy();
         self.poll_save(&ctx);
+        self.poll_opening();
         self.updates.poll();
         self.handle_drop(&ctx);
         self.sync_shown();
@@ -2299,6 +2387,9 @@ impl eframe::App for App {
         storage.set_string(FAVORITES_SORT_KEY, self.favorites_sort.key.name().to_string());
         storage.set_string(FAVORITES_SORT_DESCENDING_KEY, self.favorites_sort.descending.to_string());
         storage.set_string(BY_FOLDER_KEY, self.by_folder.to_string());
+        let editor = self.editor.clone().unwrap_or(Editor { id: String::new(), name: String::new() });
+        storage.set_string(EDITOR_KEY, editor.id);
+        storage.set_string(EDITOR_NAME_KEY, editor.name);
         storage.set_string(CHECK_UPDATES_KEY, self.updates.enabled.to_string());
         storage.set_string(LAST_UPDATE_CHECK_KEY, self.updates.last_check.to_string());
         if let Some(r) = self.hwnd.filter(|_| !self.fullscreen).and_then(win::normal_rect) {

@@ -7,6 +7,7 @@ mod app;
 mod assoc;
 mod crop;
 mod edit;
+mod editors;
 mod exif;
 mod favorites;
 mod filetypes;
