@@ -104,6 +104,21 @@ impl Favorites {
         Ok(marked)
     }
 
+    /// Mark those of `paths` that are not marked; how many.
+    pub fn add_all(&mut self, paths: &[PathBuf]) -> Result<usize, String> {
+        let mut added = 0;
+        for path in paths {
+            if self.keys.insert(key(path)) {
+                self.entries.push(Entry { path: path.clone(), rest: String::new() });
+                added += 1;
+            }
+        }
+        if added > 0 {
+            self.save()?;
+        }
+        Ok(added)
+    }
+
     /// `old` is now called `new`.
     pub fn renamed(&mut self, old: &Path, new: &Path) -> Result<(), String> {
         let Some(e) = self.entries.iter_mut().find(|e| key(&e.path) == key(old)) else { return Ok(()) };

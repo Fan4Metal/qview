@@ -70,11 +70,11 @@ impl App {
         self.convert_menu(ui);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
-        self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, e.file);
-        self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, e.file);
+        self.copy_item(ui, e.file);
+        self.rename_item(ui, e.file);
         let undo = !self.undo.is_empty() && self.crop.is_none();
         self.item(ui, self.undo_label().into(), "Ctrl+Z", Cmd::Undo, undo);
-        self.item(ui, tr!("Delete…", "Удалить…").into(), "Del", Cmd::Delete, e.file);
+        self.delete_item(ui, e.file);
         ui.separator();
         self.item(ui, tr!("File Associations…", "Сопоставление файлов…").into(), "", Cmd::Associations, true);
         ui.separator();
@@ -110,7 +110,11 @@ impl App {
         use crate::edit::Format;
         let own = self.current.as_deref().and_then(Format::of).filter(|&f| f != Format::WebP);
         ui.add_enabled_ui(self.can_convert(), |ui| {
-            ui.menu_button(tr!("Convert To", "Конвертировать в"), |ui| {
+            let text = match self.several() {
+                Some(n) => tr!(format!("Convert {n} Files To"), format!("Конвертировать файлы ({n}) в")),
+                None => tr!("Convert To", "Конвертировать в").into(),
+            };
+            ui.menu_button(text, |ui| {
                 for format in Format::ALL {
                     self.item(ui, format.name().into(), "", Cmd::ConvertTo(format), own != Some(format));
                 }
@@ -191,14 +195,45 @@ impl App {
         self.item(ui, tr!("Clear Favorites…", "Очистить избранное…").into(), "", Cmd::ClearFavorites, any);
     }
 
-    /// Add the current image to the favourites, or remove it.
+    /// Add the current image, or those chosen, to the favourites, or
+    /// remove them when they all are.
     pub(super) fn favorite_item(&mut self, ui: &mut Ui, enabled: bool) {
-        let text = if self.current.as_deref().is_some_and(|c| self.favorites.contains(c)) {
+        let targets = self.targets();
+        let text = if !targets.is_empty() && targets.iter().all(|p| self.favorites.contains(p)) {
             tr!("Remove from Favorites", "Убрать из избранного")
         } else {
             tr!("Add to Favorites", "Добавить в избранное")
         };
         self.item(ui, text.into(), "S", Cmd::Favorite, enabled);
+    }
+
+    /// How many images the file commands act on, when more than one.
+    fn several(&self) -> Option<usize> {
+        Some(self.targets().len()).filter(|&n| n > 1)
+    }
+
+    pub(super) fn copy_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let text = match self.several() {
+            Some(n) => tr!(format!("Copy {n} Files"), format!("Копировать файлы ({n})")),
+            None => tr!("Copy", "Копировать").into(),
+        };
+        self.item(ui, text, "Ctrl+C", Cmd::Copy, enabled);
+    }
+
+    pub(super) fn rename_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let text = match self.several() {
+            Some(n) => tr!(format!("Rename {n} Files…"), format!("Переименовать файлы ({n})…")),
+            None => tr!("Rename…", "Переименовать…").into(),
+        };
+        self.item(ui, text, "F2", Cmd::Rename, enabled);
+    }
+
+    pub(super) fn delete_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let text = match self.several() {
+            Some(n) => tr!(format!("Delete {n} Files…"), format!("Удалить файлы ({n})…")),
+            None => tr!("Delete…", "Удалить…").into(),
+        };
+        self.item(ui, text, "Del", Cmd::Delete, enabled);
     }
 
     /// The current image's folder, from the favourites or the sub-folders.
@@ -241,11 +276,11 @@ impl App {
             self.go_to_folder_item(ui);
         }
         ui.separator();
-        self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, e.file);
-        self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, e.file);
+        self.copy_item(ui, e.file);
+        self.rename_item(ui, e.file);
         self.convert_menu(ui);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
-        self.item(ui, tr!("Delete…", "Удалить…").into(), "Del", Cmd::Delete, e.file);
+        self.delete_item(ui, e.file);
     }
 }

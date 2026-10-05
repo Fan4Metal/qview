@@ -569,6 +569,14 @@ impl Layout {
         let s = &self.sections[t];
         (s.first + (row - s.row) * self.columns + local % self.columns).min(s.first + self.len(t) - 1)
     }
+
+    /// The cells `band` touches, in the grid's coordinates (a frame dragged
+    /// over it).
+    pub fn cells_in(&self, band: Rect) -> Vec<usize> {
+        self.visible(band.top(), band.bottom())
+            .filter(|&i| Rect::from_min_size(self.cell_pos(i).to_pos2(), self.cell).intersects(band))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -587,6 +595,19 @@ mod tests {
         // Narrower than one cell: still one column.
         assert_eq!(grid(50.0, frame_size(160.0, 1.0), 3).columns, 1);
         assert_eq!(grid(1000.0, frame_size(160.0, 1.0), 0).rows, 0);
+    }
+
+    #[test]
+    fn a_band_takes_the_cells_it_touches() {
+        // 10 cells of 100x50 in rows of 4: 0-3, 4-7, 8-9.
+        let frame = egui::vec2(100.0 - 2.0 * PAD, 50.0 - 2.0 * PAD - LABEL);
+        let l = Layout::new(400.0, frame, 10, &[], 0.0);
+        assert_eq!((l.columns, l.cell), (4, egui::vec2(100.0, 50.0)));
+        let band = |x0: f32, y0: f32, x1: f32, y1: f32| l.cells_in(Rect::from_min_max(pos2(x0, y0), pos2(x1, y1)));
+        assert_eq!(band(150.0, 20.0, 250.0, 60.0), [1, 2, 5, 6]);
+        // Below the last cell of a short row: nothing there.
+        assert_eq!(band(250.0, 110.0, 390.0, 140.0), Vec::<usize>::new());
+        assert_eq!(band(0.0, 0.0, 1.0, 1.0), [0]);
     }
 
     #[test]

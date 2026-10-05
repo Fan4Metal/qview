@@ -27,27 +27,28 @@ pub fn logical_cmp(a: &[u16], b: &[u16]) -> Ordering {
     r.cmp(&0)
 }
 
-/// Move `path` to the Recycle Bin through the shell, which asks before
+/// Move `paths` to the Recycle Bin through the shell, which asks before
 /// deleting for good a file that cannot be recycled (a network drive, a
 /// file too large for the bin). Blocks until done, so call it off the UI
 /// thread. The shell's questions are owned by window `owner`, so they come
 /// in front of it. `Err` says why it stopped; either way, check what is
 /// left on disk.
-pub fn recycle(path: &Path, owner: Option<isize>) -> Result<(), String> {
+pub fn recycle(paths: &[PathBuf], owner: Option<isize>) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::{
         FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, FOF_WANTNUKEWARNING, SHFILEOPSTRUCTW,
         SHFileOperationW,
     };
-    // pFrom is a list of paths ending with an empty one: two NULs.
-    let mut from = wide(path);
+    // pFrom is a list of paths, each NUL-terminated, ending with an empty one.
+    let mut from: Vec<u16> = paths.iter().flat_map(wide).collect();
     from.push(0);
     let mut op = SHFILEOPSTRUCTW {
         hwnd: owner.unwrap_or(0) as windows_sys::Win32::Foundation::HWND,
         wFunc: FO_DELETE,
         pFrom: from.as_ptr(),
         // The confirmation is the app's own; the shell still warns before a
-        // permanent delete. No progress window for a single file.
-        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_SILENT) as u16,
+        // permanent delete. No progress window for a single file; for
+        // several, the shell's.
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | if paths.len() == 1 { FOF_SILENT } else { 0 }) as u16,
         ..Default::default()
     };
     let code = unsafe { SHFileOperationW(&mut op) };

@@ -63,6 +63,14 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
         ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
         ("F2", tr!("Rename the file", "Переименовать файл")),
         ("Ctrl+Z", tr!("Undo the last rename or save", "Отменить последнее переименование или сохранение")),
+        (
+            tr!("Gallery: Ctrl+click  Shift+click  drag", "Галерея: Ctrl+щелчок  Shift+щелчок  перетаскивание"),
+            tr!("Choose several images", "Выбрать несколько изображений"),
+        ),
+        (
+            tr!("Gallery: Shift+arrows  Ctrl+A  Esc", "Галерея: Shift+стрелки  Ctrl+A  Esc"),
+            tr!("Choose on the way / all / none", "Выбрать по пути / все / снять выбор"),
+        ),
         ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
         ("Ctrl+O", tr!("Open a file", "Открыть файл")),
         (
@@ -88,6 +96,7 @@ impl App {
         self.confirm_delete_dialog(ctx);
         self.confirm_clear_favorites_dialog(ctx);
         self.rename_dialog(ctx);
+        self.batch_rename_dialog(ctx);
         // The key that opened a dialog this frame must not close it.
         let fresh = std::mem::take(&mut self.dialog_fresh);
         let closed = match self.dialog {
@@ -364,17 +373,24 @@ impl App {
     }
 
     fn confirm_delete_dialog(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.confirm_delete.clone() else { return };
+        let Some(paths) = self.confirm_delete.clone() else { return };
         let mut decision = None;
         let modal = egui::Modal::new(egui::Id::new("confirm_delete")).show(ctx, |ui| {
             ui.set_width(380.0);
-            ui.heading(tr!("Delete File", "Удаление файла"));
-            ui.add_space(6.0);
-            let name = file_name(&path);
-            ui.label(tr!(
-                format!("Move \"{name}\" to the Recycle Bin?"),
-                format!("Переместить «{name}» в корзину?")
-            ));
+            let n = paths.len();
+            if n == 1 {
+                ui.heading(tr!("Delete File", "Удаление файла"));
+                ui.add_space(6.0);
+                let name = file_name(&paths[0]);
+                ui.label(tr!(
+                    format!("Move \"{name}\" to the Recycle Bin?"),
+                    format!("Переместить «{name}» в корзину?")
+                ));
+            } else {
+                ui.heading(tr!("Delete Files", "Удаление файлов"));
+                ui.add_space(6.0);
+                ui.label(tr!(format!("Move {n} files to the Recycle Bin?"), format!("Переместить файлы ({n}) в корзину?")));
+            }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
@@ -400,7 +416,7 @@ impl App {
         match decision {
             Some(true) => {
                 self.confirm_delete = None;
-                self.delete(ctx, path);
+                self.delete(ctx, paths);
             }
             Some(false) => self.confirm_delete = None,
             None => {}
@@ -510,6 +526,102 @@ impl App {
                 }
             }
             Some(false) => self.rename = None,
+            None => {}
+        }
+    }
+}
+
+impl App {
+    /// Several files renamed to a name and a number each, in the order of
+    /// the grid; the first and last new names shown. Enter renames, Esc
+    /// cancels.
+    fn batch_rename_dialog(&mut self, ctx: &egui::Context) {
+        let Some(batch) = self.batch_rename.as_mut() else { return };
+        let id = egui::Id::new("batch_rename_name");
+        let mut decision = None;
+        let modal = egui::Modal::new(egui::Id::new("batch_rename")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            let n = batch.paths.len();
+            ui.heading(tr!(format!("Rename {n} Files"), format!("Переименование файлов ({n})")));
+            ui.add_space(8.0);
+            let mut changed = false;
+            egui::Grid::new("batch_rename_fields").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.label(tr!("Name:", "Имя:"));
+                let edit = ui.add(egui::TextEdit::singleline(&mut batch.base).id(id).desired_width(f32::INFINITY));
+                if std::mem::take(&mut batch.focus) {
+                    edit.request_focus();
+                }
+                if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    decision = Some(true);
+                }
+                changed |= edit.changed();
+                ui.end_row();
+                ui.label(tr!("Start at:", "Начать с:"));
+                changed |= ui.add(egui::DragValue::new(&mut batch.start).range(0..=999_999)).changed();
+                ui.end_row();
+            });
+            if changed {
+                batch.error = None;
+            }
+            ui.add_space(8.0);
+            // The first names and the last: what the numbering looks like.
+            let news = crate::rename::numbered(&batch.paths, &batch.base, batch.start);
+            let shown: Vec<usize> = if n <= 4 { (0..n).collect() } else { vec![0, 1, 2, n - 1] };
+            // The old and the new names share the width, the arrow between.
+            let half = ((ui.available_width() - 30.0) / 2.0).max(60.0);
+            let height = ui.spacing().interact_size.y;
+            let name = |ui: &mut Ui, text: RichText| {
+                ui.allocate_ui_with_layout(egui::vec2(half, height), Layout::left_to_right(Align::Center), |ui| {
+                    ui.set_width(half);
+                    ui.add(egui::Label::new(text).truncate());
+                });
+            };
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (k, &i) in shown.iter().enumerate() {
+                    if k == 3 && n > 4 {
+                        ui.weak("…");
+                    }
+                    ui.horizontal(|ui| {
+                        name(ui, RichText::new(file_name(&batch.paths[i])).weak());
+                        ui.weak("→");
+                        name(ui, RichText::new(file_name(&news[i])));
+                    });
+                }
+            });
+            if let Some(error) = &batch.error {
+                ui.add_space(4.0);
+                ui.colored_label(egui::Color32::from_rgb(0xff, 0x8a, 0x80), error);
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let text = |s: &str| RichText::new(s).size(16.0);
+                if ui.add(egui::Button::new(text(tr!("Rename", "Переименовать"))).min_size(egui::vec2(160.0, 34.0))).clicked() {
+                    decision = Some(true);
+                }
+                if ui.add(egui::Button::new(text(tr!("Cancel", "Отмена"))).min_size(egui::vec2(100.0, 34.0))).clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        if decision.is_none() && modal.should_close() {
+            decision = Some(false);
+        }
+        match decision {
+            Some(true) => {
+                let (paths, base, start) = (batch.paths.clone(), batch.base.clone(), batch.start);
+                match self.rename_batch(ctx, &paths, &base, start) {
+                    Ok(()) => self.batch_rename = None,
+                    Err(e) => {
+                        if let Some(batch) = &mut self.batch_rename {
+                            batch.error = Some(e);
+                            batch.focus = true;
+                        }
+                    }
+                }
+            }
+            Some(false) => self.batch_rename = None,
             None => {}
         }
     }

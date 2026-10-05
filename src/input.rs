@@ -15,6 +15,16 @@ pub enum Arrow {
     Down,
 }
 
+/// Where a key moves in the gallery's grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Move {
+    Arrow(Arrow),
+    PageUp,
+    PageDown,
+    First,
+    Last,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cmd {
     Next,
@@ -52,6 +62,11 @@ pub enum Cmd {
     Save,
     /// Save it into a file the user picks (Ctrl+Shift+S).
     SaveAs,
+    /// Move in the gallery choosing the images on the way (Shift with the
+    /// arrows, Page Up/Down, Home and End).
+    SelectTo(Move),
+    /// Choose every image of the gallery (Ctrl+A).
+    SelectAll,
     /// Save it in this format beside its file, which stays current (File →
     /// Convert To).
     ConvertTo(crate::edit::Format),
@@ -152,7 +167,24 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
 /// The command of a key press in the gallery: Page Up and Page Down move
 /// a page there, the other keys are the viewer's (see [`command`]).
 pub fn gallery_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
+    if m.shift && !m.ctrl && !m.alt {
+        let to = match key {
+            Key::ArrowLeft => Some(Move::Arrow(Arrow::Left)),
+            Key::ArrowRight => Some(Move::Arrow(Arrow::Right)),
+            Key::ArrowUp => Some(Move::Arrow(Arrow::Up)),
+            Key::ArrowDown => Some(Move::Arrow(Arrow::Down)),
+            Key::PageUp => Some(Move::PageUp),
+            Key::PageDown => Some(Move::PageDown),
+            Key::Home => Some(Move::First),
+            Key::End => Some(Move::Last),
+            _ => None,
+        };
+        if let Some(to) = to {
+            return Some(Cmd::SelectTo(to));
+        }
+    }
     match key {
+        Key::A if m.ctrl && !m.alt && !m.shift => (!repeat).then_some(Cmd::SelectAll),
         Key::PageUp if !m.ctrl && !m.alt => Some(Cmd::PageUp),
         Key::PageDown if !m.ctrl && !m.alt => Some(Cmd::PageDown),
         Key::F if m.ctrl && m.shift && !m.alt => Some(Cmd::WindowFullScreen),
@@ -320,6 +352,10 @@ mod tests {
         assert_eq!(gallery_command(Key::Backspace, NONE, true), None);
         assert_eq!(gallery_command(Key::ArrowLeft, CTRL | ALT, false), Some(Cmd::RotateLeft));
         assert_eq!(command(Key::ArrowLeft, ALT, false), None);
+        assert_eq!(gallery_command(Key::ArrowDown, SHIFT, true), Some(Cmd::SelectTo(Move::Arrow(Arrow::Down))));
+        assert_eq!(gallery_command(Key::End, SHIFT, false), Some(Cmd::SelectTo(Move::Last)));
+        assert_eq!(gallery_command(Key::A, CTRL, false), Some(Cmd::SelectAll));
+        assert_eq!(command(Key::A, CTRL, false), None);
     }
 
     #[test]

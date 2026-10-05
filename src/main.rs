@@ -20,6 +20,8 @@ mod icon;
 mod input;
 mod instance;
 mod loader;
+mod rename;
+mod selection;
 mod texture;
 mod thumbs;
 mod tree;

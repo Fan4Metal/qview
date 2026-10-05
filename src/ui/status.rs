@@ -18,6 +18,10 @@ impl App {
             _ if self.current.is_none() && self.scan.is_none() => return fields,
             _ => "?/?".into(),
         });
+        let chosen = self.selection.len();
+        if self.gallery_open && chosen > 1 {
+            fields.push(tr!(format!("Selected: {chosen}"), format!("Выбрано: {chosen}")));
+        }
         let Some(current) = &self.current else { return fields };
         fields.push(self.display_name(current));
         if self.favorites.contains(current) {

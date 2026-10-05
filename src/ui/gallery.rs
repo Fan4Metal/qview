@@ -3,7 +3,7 @@
 //! `gallery`).
 
 use egui::text::{LayoutJob, TextWrapping};
-use egui::{Align, Align2, Color32, FontId, Layout, Margin, Painter, Rect, Response, RichText, Sense, Ui, pos2, vec2};
+use egui::{Align, Align2, Color32, FontId, Layout, Margin, Painter, PointerButton, Pos2, Rect, Response, RichText, Sense, Ui, pos2, vec2};
 
 use super::{TEXT, TEXT_WEAK, panel_frame};
 use crate::app::{App, file_name};
@@ -15,6 +15,13 @@ const TREE_BG: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
 pub const GRID_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 const CELL_HOVER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
 const CELL_SELECTED: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
+/// The outline of the current image among several chosen.
+const CELL_FOCUS: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
+/// The frame dragged over the grid to choose images.
+const BAND: Color32 = Color32::from_rgb(0x4a, 0x90, 0xe2);
+/// How fast the grid scrolls while the frame is dragged past its edge: a
+/// part of the distance, in points per frame.
+const BAND_SCROLL: f32 = 0.3;
 /// The frame of a thumbnail still being made.
 const CELL_EMPTY: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
 /// The bar above the grid: darker than the toolbar above it, with a line
@@ -264,11 +271,29 @@ impl App {
             gallery.scroll = None;
             gallery.scrolled_to = self.current.clone();
         }
+        // A frame dragged past the top or bottom edge scrolls the grid.
+        if self.selection.band.is_some()
+            && let Some(p) = ctx.pointer_latest_pos()
+        {
+            let beyond = if p.y < rect.top() { p.y - rect.top() } else { (p.y - rect.bottom()).max(0.0) };
+            if beyond != 0.0 {
+                let bottom = (layout.height - rect.height()).max(0.0);
+                offset = Some((offset.unwrap_or(gallery.top) + beyond * BAND_SCROLL).clamp(0.0, bottom));
+                ctx.request_repaint();
+            }
+        }
         // The empty space between and after the cells: its right click
-        // offers the order. Made before the cells, which are on top of it.
-        let background = ui.interact(rect, ui.id().with("grid_background"), Sense::CLICK);
-        // Each folder keeps its own scroll position.
-        let mut area = egui::ScrollArea::vertical().id_salt(("grid", &listing)).auto_shrink([false, false]);
+        // offers the order. Made before the cells, which are on top of it;
+        // drags anywhere on the grid are its own, for the frame that
+        // chooses images (the cells take only clicks).
+        let background = ui.interact(rect, ui.id().with("grid_background"), Sense::CLICK | Sense::DRAG);
+        // Each folder keeps its own scroll position. Dragging chooses
+        // images, it does not scroll, even on a touch screen.
+        let source = egui::scroll_area::ScrollSource { drag: egui::scroll_area::DragScroll::Never, ..Default::default() };
+        let mut area = egui::ScrollArea::vertical()
+            .id_salt(("grid", &listing))
+            .auto_shrink([false, false])
+            .scroll_source(source);
         if let Some(y) = offset {
             area = area.vertical_scroll_offset(y);
         }
@@ -282,6 +307,8 @@ impl App {
         let index = self.index;
         let (dir, deep) = (self.dir.as_deref(), self.deep);
         let favorites = &self.favorites;
+        let selection = &self.selection;
+        let band = selection.band.as_ref().map(|b| b.start).zip(ctx.pointer_latest_pos());
         // A folder whose header was double-clicked.
         let mut folder = None;
         let out = area.show_viewport(ui, |ui, viewport| {
@@ -325,10 +352,14 @@ impl App {
                     Some(relative) => response.on_hover_text(relative.to_string_lossy()),
                     None => response,
                 };
-                if index == Some(i) {
+                // With none chosen, the current image is.
+                if selection.contains(path) || (selection.is_empty() && index == Some(i)) {
                     painter.rect_filled(cell.shrink(1.0), 3.0, CELL_SELECTED);
                 } else if response.hovered() {
                     painter.rect_filled(cell.shrink(1.0), 3.0, CELL_HOVER);
+                }
+                if !selection.is_empty() && index == Some(i) {
+                    painter.rect_stroke(cell.shrink(1.0), 3.0, egui::Stroke::new(1.0, CELL_FOCUS), egui::StrokeKind::Inside);
                 }
                 if response.hovered() {
                     hovered = Some(path.clone());
@@ -364,6 +395,10 @@ impl App {
                 label(&painter, &file_name(path), cell, square.bottom() + 2.0);
                 cells.push((i, response));
             }
+            if let Some((start, pointer)) = band {
+                let r = Rect::from_two_pos(origin + start.to_vec2(), pointer);
+                painter.rect(r, 0.0, BAND.gamma_multiply(0.15), egui::Stroke::new(1.0, BAND), egui::StrokeKind::Inside);
+            }
             visible
         });
         gallery.top = out.state.offset.y;
@@ -397,15 +432,25 @@ impl App {
         }
 
         let mut opened = None;
+        let modifiers = ctx.input(|i| i.modifiers);
         for (i, response) in cells {
-            if response.clicked() || response.secondary_clicked() {
-                self.go(i);
+            if response.clicked() {
+                self.click_cell(i, modifiers);
             }
-            if crate::input::double_clicked(&response) {
+            if response.secondary_clicked() {
+                self.right_click_cell(i);
+            }
+            // Ctrl and Shift choose; a double click with them opens nothing.
+            if crate::input::double_clicked(&response) && !modifiers.ctrl && !modifiers.shift {
                 opened = Some(i);
             }
             response.context_menu(|ui| self.cell_menu(ui));
         }
+        // A click on the empty space chooses nothing.
+        if background.clicked() && !modifiers.ctrl {
+            self.selection.clear();
+        }
+        self.drag_band(&ctx, &background, rect);
         background.context_menu(|ui| {
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
             if self.in_favorites() {
@@ -423,6 +468,30 @@ impl App {
             self.open_folder(&ctx, dir, self.deep);
         }
         opened
+    }
+
+    /// The frame dragged over the grid (from anywhere on it): the images it
+    /// touches are chosen, with Ctrl besides those chosen before.
+    fn drag_band(&mut self, ctx: &egui::Context, background: &Response, rect: Rect) {
+        let Some(top) = self.gallery.as_ref().map(|g| g.top) else { return };
+        let to_grid = |p: Pos2| pos2(p.x - rect.min.x, p.y - rect.min.y + top);
+        if background.drag_started_by(PointerButton::Primary)
+            && let Some(origin) = ctx.input(|i| i.pointer.press_origin())
+        {
+            let before = if ctx.input(|i| i.modifiers.ctrl) { self.chosen_or_current() } else { Default::default() };
+            self.selection.band = Some(crate::selection::Band { start: to_grid(origin), before });
+        }
+        let Some(band) = &self.selection.band else { return };
+        if !background.dragged() {
+            self.selection.band = None;
+            return;
+        }
+        let Some(p) = background.interact_pointer_pos() else { return };
+        let Some(gallery) = &self.gallery else { return };
+        let cells = gallery.layout.cells_in(Rect::from_two_pos(band.start, to_grid(p)));
+        let before = band.before.clone();
+        let chosen: Vec<_> = cells.into_iter().filter_map(|i| self.files.get(i).cloned()).collect();
+        self.selection.set(&before, chosen);
     }
 
     /// Keep the current image in view when the cells change size.
@@ -444,14 +513,14 @@ impl App {
             self.favorites_items(ui);
         }
         ui.separator();
-        self.item(ui, tr!("Copy", "Копировать").into(), "Ctrl+C", Cmd::Copy, true);
-        self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, true);
+        self.copy_item(ui, true);
+        self.rename_item(ui, true);
         self.convert_menu(ui);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
         ui.separator();
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         ui.separator();
-        self.item(ui, tr!("Delete…", "Удалить…").into(), "Del", Cmd::Delete, true);
+        self.delete_item(ui, true);
     }
 }
 

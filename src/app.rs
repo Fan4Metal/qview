@@ -26,8 +26,9 @@ use crate::folder::{self, Order, Scan, SortKey};
 use crate::gallery::{self, Gallery, Scroll};
 use crate::history::{History, Place};
 use crate::i18n::LangChoice;
-use crate::input::{Arrow, Cmd, Mode, Wheel};
+use crate::input::{Arrow, Cmd, Mode, Move, Wheel};
 use crate::loader::{Decoded, Loader, Meta, Pixels};
+use crate::selection::Selection;
 use crate::texture::Texture;
 use crate::view::{self, View, Zoom};
 use crate::win;
@@ -135,20 +136,37 @@ pub struct Rename {
     pub select: bool,
 }
 
-/// What Ctrl+Z undoes.
+/// What Ctrl+Z undoes, all of it at once.
 pub enum Undo {
-    Rename { old: PathBuf, new: PathBuf },
-    /// A file saved (turned or cropped): its contents before, None if it
-    /// was made by saving.
-    Save { path: PathBuf, before: Option<edit::Before> },
+    /// Files renamed, `(old, new)`.
+    Rename(Vec<(PathBuf, PathBuf)>),
+    /// Files saved (turned, cropped, converted): each one's contents
+    /// before, None if saving made it.
+    Save(Vec<(PathBuf, Option<edit::Before>)>),
 }
 
-/// An image being saved on a thread (see `edit::save`).
+/// Files sent to the Recycle Bin, and how it went (see `App::delete`).
+type Deleted = (Vec<PathBuf>, Result<(), String>);
+
+/// Images being saved on a thread, one after another (see `edit::save`).
 struct Saving {
-    job: edit::Job,
-    /// A copy in another format (Convert To): the original stays current.
+    jobs: Vec<edit::Job>,
+    /// Copies in another format (Convert To): the originals stay current.
     convert: bool,
     done: mpsc::Receiver<Result<edit::Saved, String>>,
+    /// The outcomes so far, in the order of `jobs`.
+    results: Vec<Result<edit::Saved, String>>,
+}
+
+/// Several files being renamed at once (F2 with several images chosen in
+/// the gallery): a name and the first number (see `rename::numbered`).
+pub struct BatchRename {
+    pub paths: Vec<PathBuf>,
+    pub base: String,
+    pub start: u32,
+    pub error: Option<String>,
+    /// Focus the name on the next frame.
+    pub focus: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,9 +228,12 @@ pub struct App {
     pub show_status_bar: bool,
     /// Background of the image area.
     pub background: Color32,
-    /// The file the delete confirmation asks about.
-    pub confirm_delete: Option<PathBuf>,
+    /// The files the delete confirmation asks about.
+    pub confirm_delete: Option<Vec<PathBuf>>,
     pub rename: Option<Rename>,
+    pub batch_rename: Option<BatchRename>,
+    /// The images chosen in the gallery (see `selection`).
+    pub selection: Selection,
     /// The renames and saves of this session, for Ctrl+Z.
     pub undo: Vec<Undo>,
     /// The frame of C over the current image, while it is cropped.
@@ -250,7 +271,7 @@ pub struct App {
     pub lang: LangChoice,
     /// The update check (off unless enabled in About).
     pub updates: crate::update::Updates,
-    deleting: Option<mpsc::Receiver<(PathBuf, Result<(), String>)>>,
+    deleting: Option<mpsc::Receiver<Deleted>>,
     pub dialog: Option<Dialog>,
     /// `dialog` was opened this frame.
     pub dialog_fresh: bool,
@@ -409,6 +430,8 @@ impl App {
                 .unwrap_or(DEFAULT_BACKGROUND),
             confirm_delete: None,
             rename: None,
+            batch_rename: None,
+            selection: Selection::default(),
             undo: Vec::new(),
             crop: None,
             saving: None,
@@ -632,6 +655,7 @@ impl App {
     /// Back to the image, the current one.
     pub fn leave_gallery(&mut self) {
         self.gallery_open = false;
+        self.selection.clear();
         self.image_clicked = false;
         if let Some(gallery) = &mut self.gallery {
             gallery.want(Vec::new());
@@ -642,6 +666,9 @@ impl App {
     fn start_scan(&mut self, ctx: &egui::Context, dir: PathBuf, deep: bool, keep: Option<PathBuf>) {
         let same = self.deep == deep && self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir));
         self.place = self.index.filter(|_| same);
+        if !same {
+            self.selection.clear();
+        }
         self.files.clear();
         self.starts.clear();
         self.index = None;
@@ -700,7 +727,11 @@ impl App {
 
     /// A modal dialog is open: keys and the wheel are its own.
     pub fn modal_open(&self) -> bool {
-        self.confirm_delete.is_some() || self.rename.is_some() || self.dialog.is_some() || self.confirm_clear_favorites
+        self.confirm_delete.is_some()
+            || self.rename.is_some()
+            || self.batch_rename.is_some()
+            || self.dialog.is_some()
+            || self.confirm_clear_favorites
     }
 
     /// Rename `path` to `name` in its folder, so that Ctrl+Z can undo it;
@@ -712,7 +743,28 @@ impl App {
             return Ok(());
         }
         self.move_file(ctx, path, &new)?;
-        self.push_undo(Undo::Rename { old: path.to_path_buf(), new });
+        self.push_undo(Undo::Rename(vec![(path.to_path_buf(), new)]));
+        Ok(())
+    }
+
+    /// Rename `paths` to `base` and a number from `start` each (see
+    /// `rename::numbered`), all or none, so that Ctrl+Z can undo it; why
+    /// not, if they cannot be.
+    pub fn rename_batch(&mut self, ctx: &egui::Context, paths: &[PathBuf], base: &str, start: u32) -> Result<(), String> {
+        let news = crate::rename::numbered(paths, base, start);
+        let pairs: Vec<(PathBuf, PathBuf)> = paths.iter().cloned().zip(news).filter(|(old, new)| old != new).collect();
+        if pairs.is_empty() {
+            return Ok(());
+        }
+        crate::rename::check(&pairs)?;
+        crate::rename::rename_all(&pairs)?;
+        for (old, new) in &pairs {
+            self.moved(old, new.clone());
+        }
+        self.list_again(ctx);
+        let n = pairs.len();
+        self.notice(tr!(format!("Files renamed: {n}"), format!("Переименовано файлов: {n}")));
+        self.push_undo(Undo::Rename(pairs));
         Ok(())
     }
 
@@ -720,8 +772,8 @@ impl App {
     fn push_undo(&mut self, undo: Undo) {
         self.undo.push(undo);
         let bytes = |u: &Undo| match u {
-            Undo::Save { before: Some(b), .. } => b.bytes.len(),
-            _ => 0,
+            Undo::Save(files) => files.iter().filter_map(|(_, b)| b.as_ref()).map(|b| b.bytes.len()).sum(),
+            Undo::Rename(_) => 0,
         };
         while self.undo.len() > UNDO_STEPS
             || (self.undo.len() > 1 && self.undo.iter().map(bytes).sum::<usize>() > UNDO_BYTES)
@@ -739,34 +791,43 @@ impl App {
         }
         match self.undo.pop() {
             None => {}
-            Some(Undo::Rename { old, new }) => {
-                let from = file_name(&new);
-                let text = match self.move_file(ctx, &new, &old) {
-                    Ok(()) => tr!("Rename undone", "Переименование отменено").into(),
-                    Err(e) => tr!(format!("Cannot rename {from} back: {e}"), format!("Не удалось вернуть имя {from}: {e}")),
+            Some(Undo::Rename(pairs)) => {
+                let back: Vec<(PathBuf, PathBuf)> = pairs.iter().map(|(old, new)| (new.clone(), old.clone())).collect();
+                let text = match crate::rename::check(&back).and_then(|()| crate::rename::rename_all(&back)) {
+                    Ok(()) => {
+                        for (from, to) in &back {
+                            self.moved(from, to.clone());
+                        }
+                        self.list_again(ctx);
+                        tr!("Rename undone", "Переименование отменено").into()
+                    }
+                    Err(e) => tr!(format!("Cannot rename back: {e}"), format!("Не удалось вернуть имена: {e}")),
                 };
                 self.notice(text);
             }
-            Some(Undo::Save { path, before }) => {
-                let name = file_name(&path);
-                let result = match &before {
-                    Some(before) => edit::restore(&path, before),
-                    None => std::fs::remove_file(&path).map_err(|e| e.to_string()),
-                };
-                let text = match result {
-                    Ok(()) => {
-                        if before.is_some() {
-                            self.changed(ctx, &path);
-                        } else {
-                            self.forget_file(&path);
-                            self.unlist(&path);
-                        }
+            Some(Undo::Save(files)) => {
+                let (mut restored, mut removed, mut error) = (Vec::new(), Vec::new(), None);
+                for (path, before) in &files {
+                    let result = match before {
+                        Some(before) => edit::restore(path, before).map(|()| restored.push(path.clone())),
+                        None => std::fs::remove_file(path).map(|()| removed.push(path.clone())).map_err(|e| e.to_string()),
+                    };
+                    if let Err(e) = result {
+                        error.get_or_insert(format!("{}: {e}", file_name(path)));
+                    }
+                }
+                self.written(ctx, &restored);
+                self.forget_files(&removed);
+                for path in &removed {
+                    self.unlist(path);
+                }
+                let text = match error {
+                    None if files.len() == 1 => {
+                        let name = file_name(&files[0].0);
                         tr!(format!("Save undone: {name}"), format!("Сохранение отменено: {name}"))
                     }
-                    Err(e) => tr!(
-                        format!("Cannot undo the save of {name}: {e}"),
-                        format!("Не удалось отменить сохранение {name}: {e}")
-                    ),
+                    None => tr!("Saves undone".into(), "Сохранения отменены".into()),
+                    Some(e) => tr!(format!("Cannot undo the save of {e}"), format!("Не удалось отменить сохранение {e}")),
                 };
                 self.notice(text);
             }
@@ -776,34 +837,48 @@ impl App {
     /// What Ctrl+Z would undo, for the menu.
     pub fn undo_label(&self) -> &'static str {
         match self.undo.last() {
-            Some(Undo::Save { .. }) => tr!("Undo Save", "Отменить сохранение"),
+            Some(Undo::Save(_)) => tr!("Undo Save", "Отменить сохранение"),
             _ => tr!("Undo Rename", "Отменить переименование"),
         }
     }
 
-    /// Drop what was decoded of `path`, the image and its thumbnail; the
-    /// picture on screen stays until it is decoded again.
-    fn forget_file(&mut self, path: &Path) {
-        self.cache.remove(path);
-        self.partial.remove(path);
-        self.pending.retain(|d| d.path != path);
+    /// Drop what was decoded of `paths`, the images and their thumbnails;
+    /// the picture on screen stays until it is decoded again.
+    fn forget_files(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        for path in paths {
+            self.cache.remove(path);
+            self.partial.remove(path);
+        }
+        self.pending.retain(|d| !paths.contains(&d.path));
         if let Some(gallery) = &mut self.gallery {
-            gallery.forget(&[path.to_path_buf()]);
+            gallery.forget(paths);
         }
     }
 
-    /// `path` was written: it is decoded again, the current image without
-    /// the view's rotation (it is in the file now), and its folder listed
-    /// again, since its date and size changed or it is new there.
-    fn changed(&mut self, ctx: &egui::Context, path: &Path) {
-        self.forget_file(path);
-        if self.current.as_deref() == Some(path) {
-            self.reloading = Some(path.to_path_buf());
+    /// `paths` were written: they are decoded again, the current image
+    /// without the view's rotation (it is in the file now), and the folder
+    /// listed again, since their dates and sizes changed or they are new
+    /// there.
+    fn written(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
+        self.forget_files(paths);
+        if let Some(current) = self.current.as_ref().filter(|c| paths.contains(c)) {
+            self.reloading = Some(current.clone());
         }
-        let in_dir = path.parent().zip(self.dir.as_deref()).is_some_and(|(p, d)| folder::same_path(p, d));
-        if (in_dir || folder::position(&self.files, path).is_some())
-            && let Some(dir) = self.dir.clone()
-        {
+        let shown_here = |path: &PathBuf| {
+            let in_dir = path.parent().zip(self.dir.as_deref()).is_some_and(|(p, d)| folder::same_path(p, d));
+            in_dir || folder::position(&self.files, path).is_some()
+        };
+        if paths.iter().any(shown_here) {
+            self.list_again(ctx);
+        }
+    }
+
+    /// List the folder again, the current image staying current.
+    fn list_again(&mut self, ctx: &egui::Context) {
+        if let Some(dir) = self.dir.clone() {
             self.place = self.index;
             self.scan = Some(self.scan_dir(dir, self.current.clone(), ctx));
         }
@@ -823,6 +898,14 @@ impl App {
     /// `old` is now `new`: what was decoded for it is kept, and the folder
     /// is listed again, since its place in the order may have changed.
     fn renamed(&mut self, ctx: &egui::Context, old: &Path, new: PathBuf) {
+        self.moved(old, new);
+        self.list_again(ctx);
+    }
+
+    /// `old` is now `new`: what was decoded for it, its thumbnail, its
+    /// place among the favourites and the chosen images go with it.
+    fn moved(&mut self, old: &Path, new: PathBuf) {
+        self.selection.renamed(old, &new);
         if let Some(i) = folder::position(&self.files, old) {
             self.files[i] = new.clone();
         }
@@ -844,10 +927,6 @@ impl App {
         }
         if let Err(e) = self.favorites.renamed(old, &new) {
             self.notice(e);
-        }
-        if let Some(dir) = self.dir.clone() {
-            self.place = self.index;
-            self.scan = Some(self.scan_dir(dir, self.current.clone(), ctx));
         }
     }
 
@@ -915,6 +994,7 @@ impl App {
             self.set_current(None);
         }
         self.starts = folder::starts(&self.files);
+        self.selection.retain_listed(&self.files);
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
         if std::mem::take(&mut self.centre_after_scan)
             && let Some(gallery) = &mut self.gallery
@@ -1143,21 +1223,28 @@ impl App {
 
     fn poll_delete(&mut self) {
         let Some(rx) = &self.deleting else { return };
-        let Ok((path, result)) = rx.try_recv() else { return };
+        let Ok((paths, result)) = rx.try_recv() else { return };
         self.deleting = None;
-        if path.exists() {
-            if let Err(e) = result
-                && e != "cancelled"
-            {
-                self.notice(tr!(format!("Cannot delete the file: {e}"), format!("Не удалось удалить файл: {e}")));
-            }
+        // The shell may have deleted some and not others.
+        let gone: Vec<PathBuf> = paths.into_iter().filter(|p| !p.exists()).collect();
+        if let Err(e) = result
+            && e != "cancelled"
+        {
+            self.notice(tr!(format!("Cannot delete the file: {e}"), format!("Не удалось удалить файл: {e}")));
+        }
+        if gone.is_empty() {
             return;
         }
-        self.cache.remove(&path);
-        if let Err(e) = self.favorites.remove_if(|p| folder::same_path(p, &path)) {
+        for path in &gone {
+            self.cache.remove(path);
+            self.selection.remove(path);
+        }
+        if let Err(e) = self.favorites.remove_if(|p| gone.iter().any(|g| folder::same_path(p, g))) {
             self.notice(e);
         }
-        self.unlist(&path);
+        for path in &gone {
+            self.unlist(path);
+        }
     }
 
     /// Take `path` out of `files` (deleted, or no longer a favourite among
@@ -1187,15 +1274,15 @@ impl App {
         }
     }
 
-    /// Move `path` to the Recycle Bin on a thread; the shell may ask
+    /// Move `paths` to the Recycle Bin on a thread; the shell may ask
     /// questions of its own (a file that cannot be recycled).
-    pub fn delete(&mut self, ctx: &egui::Context, path: PathBuf) {
+    pub fn delete(&mut self, ctx: &egui::Context, paths: Vec<PathBuf>) {
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         let owner = self.hwnd;
         std::thread::spawn(move || {
-            let result = win::recycle(&path, owner);
-            let _ = tx.send((path, result));
+            let result = win::recycle(&paths, owner);
+            let _ = tx.send((paths, result));
             ctx.request_repaint();
         });
         self.deleting = Some(rx);
@@ -1259,8 +1346,9 @@ impl App {
             Cmd::Escape => self.enter_gallery(ctx),
             Cmd::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::Delete => {
-                if self.deleting.is_none() {
-                    self.confirm_delete = self.current.clone().filter(|p| p.is_file());
+                let files: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
+                if self.deleting.is_none() && !files.is_empty() {
+                    self.confirm_delete = Some(files);
                 }
             }
             Cmd::Undo => self.undo(ctx),
@@ -1269,19 +1357,30 @@ impl App {
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::ConvertTo(format) => self.convert(ctx, format),
             Cmd::Rename => {
-                if let Some(path) = self.current.clone().filter(|p| p.is_file()) {
+                let paths: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
+                if paths.len() > 1 {
+                    // The folder's name, as a start.
+                    let base = paths[0].parent().map(file_name).unwrap_or_default();
+                    self.batch_rename = Some(BatchRename { paths, base, start: 1, error: None, focus: true });
+                } else if let Some(path) = paths.into_iter().next() {
                     let name = file_name(&path);
                     self.rename = Some(Rename { path, name, error: None, focus: true, select: true });
                 }
             }
             Cmd::Copy => {
-                if let Some(path) = self.current.clone() {
-                    let text = match win::copy_file(&path) {
-                        Ok(()) => tr!("Copied to the clipboard".into(), "Скопировано в буфер обмена".into()),
-                        Err(e) => tr!(format!("Cannot copy: {e}"), format!("Не удалось скопировать: {e}")),
-                    };
-                    self.notice(text);
-                }
+                let files = self.targets();
+                let n = files.len();
+                let result = match &files[..] {
+                    [] => return,
+                    [one] => win::copy_file(one),
+                    _ => win::copy_files(&files),
+                };
+                let text = match result {
+                    Ok(()) if n == 1 => tr!("Copied to the clipboard".into(), "Скопировано в буфер обмена".into()),
+                    Ok(()) => tr!(format!("Files copied to the clipboard: {n}"), format!("Скопировано в буфер обмена файлов: {n}")),
+                    Err(e) => tr!(format!("Cannot copy: {e}"), format!("Не удалось скопировать: {e}")),
+                };
+                self.notice(text);
             }
             Cmd::Open => self.pick_file(ctx, frame),
             Cmd::ShowInExplorer => {
@@ -1314,8 +1413,8 @@ impl App {
                     tr!("The next images open in the zoom mode".into(), "Следующие изображения откроются в режиме масштаба".into())
                 });
             }
-            // The gallery's folders.
-            Cmd::Back | Cmd::Forward | Cmd::Up => {}
+            // The gallery's folders and choice.
+            Cmd::Back | Cmd::Forward | Cmd::Up | Cmd::SelectTo(_) | Cmd::SelectAll => {}
             Cmd::Favorite => self.toggle_favorite(ctx),
             Cmd::Favorites => {
                 self.open_folder(ctx, PathBuf::from(favorites::DIR), self.deep);
@@ -1350,22 +1449,34 @@ impl App {
     /// Carry out `cmd` the gallery's way; false for the commands that work
     /// as in the viewer.
     fn run_in_gallery(&mut self, ctx: &egui::Context, cmd: Cmd) -> bool {
-        let Some(gallery) = &self.gallery else { return false };
-        let page = gallery.page_rows as isize;
-        let rows = |app: &mut Self, rows: isize| {
-            if let Some(i) = app.index
-                && let Some(g) = &app.gallery
-            {
-                app.go(g.layout.move_rows(i, rows));
-            }
+        if self.gallery.is_none() {
+            return false;
+        }
+        // Moving alone chooses nothing; with Shift, the images on the way.
+        let to = match cmd {
+            Cmd::Arrow(arrow) => Some(Move::Arrow(arrow)),
+            Cmd::PageUp => Some(Move::PageUp),
+            Cmd::PageDown => Some(Move::PageDown),
+            Cmd::First => Some(Move::First),
+            Cmd::Last => Some(Move::Last),
+            _ => None,
         };
+        if let Some(to) = to {
+            if let Some(i) = self.grid_target(to) {
+                self.selection.clear();
+                self.go(i);
+            }
+            return true;
+        }
         match cmd {
-            Cmd::Arrow(Arrow::Left) => self.step(-1),
-            Cmd::Arrow(Arrow::Right) => self.step(1),
-            Cmd::Arrow(Arrow::Up) => rows(self, -1),
-            Cmd::Arrow(Arrow::Down) => rows(self, 1),
-            Cmd::PageUp => rows(self, -page),
-            Cmd::PageDown => rows(self, page),
+            Cmd::SelectTo(to) => {
+                if let Some(i) = self.grid_target(to) {
+                    self.select_to(i);
+                }
+            }
+            Cmd::SelectAll => self.select_all(),
+            // First what is chosen, then the program.
+            Cmd::Escape if !self.selection.is_empty() => self.selection.clear(),
             Cmd::Back => {
                 let here = self.here();
                 if let Some(place) = self.history.back(here) {
@@ -1419,10 +1530,35 @@ impl App {
         true
     }
 
+    /// The cell `to` leads to from the current one in the gallery's grid.
+    fn grid_target(&self, to: Move) -> Option<usize> {
+        let last = self.files.len().checked_sub(1)?;
+        let layout = &self.gallery.as_ref()?.layout;
+        let page = self.gallery.as_ref()?.page_rows as isize;
+        match (to, self.index) {
+            (Move::First, _) => Some(0),
+            (Move::Last, _) => Some(last),
+            (_, None) => None,
+            (Move::Arrow(Arrow::Left), Some(i)) => Some(i.saturating_sub(1)),
+            (Move::Arrow(Arrow::Right), Some(i)) => Some((i + 1).min(last)),
+            (Move::Arrow(Arrow::Up), Some(i)) => Some(layout.move_rows(i, -1)),
+            (Move::Arrow(Arrow::Down), Some(i)) => Some(layout.move_rows(i, 1)),
+            (Move::PageUp, Some(i)) => Some(layout.move_rows(i, -page)),
+            (Move::PageDown, Some(i)) => Some(layout.move_rows(i, page)),
+        }
+    }
+
     /// Mark the current image as a favourite, or unmark it; among the
     /// favourites it then leaves the list, the next one taking its place.
+    /// Several chosen in the gallery are all marked, or all unmarked when
+    /// they all are.
     fn toggle_favorite(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.current.clone() else { return };
+        let targets = self.targets();
+        if targets.len() > 1 {
+            self.toggle_favorites(ctx, &targets);
+            return;
+        }
+        let Some(path) = targets.into_iter().next() else { return };
         let text = match self.favorites.toggle(&path) {
             Ok(true) => tr!("Added to the favorites".into(), "Добавлено в избранное".into()),
             Ok(false) => {
@@ -1436,6 +1572,32 @@ impl App {
                 tr!("Removed from the favorites".into(), "Убрано из избранного".into())
             }
             Err(e) => e,
+        };
+        self.notice(text);
+    }
+
+    fn toggle_favorites(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
+        let n = paths.len();
+        let text = if paths.iter().all(|p| self.favorites.contains(p)) {
+            match self.favorites.remove_if(|p| paths.iter().any(|t| folder::same_path(p, t))) {
+                Ok(_) => {
+                    if self.in_favorites() {
+                        if self.scan.is_some() {
+                            self.relist(ctx);
+                        }
+                        for path in paths {
+                            self.unlist(path);
+                        }
+                    }
+                    tr!(format!("Removed from the favorites: {n}"), format!("Убрано из избранного: {n}"))
+                }
+                Err(e) => e,
+            }
+        } else {
+            match self.favorites.add_all(paths) {
+                Ok(added) => tr!(format!("Added to the favorites: {added}"), format!("Добавлено в избранное: {added}")),
+                Err(e) => e,
+            }
         };
         self.notice(text);
     }
@@ -1646,11 +1808,11 @@ impl App {
             dst
         };
         let job = edit::Job { src: path, dst, size: [picture.meta.width, picture.meta.height], turns: self.view.turns, crop };
-        self.start_save(ctx, job, false);
+        self.start_save(ctx, vec![job], false);
     }
 
-    /// The current image can be converted (File → Convert To), in the
-    /// viewer or in the gallery, decoded or not.
+    /// The current image, or those chosen in the gallery, can be converted
+    /// (File → Convert To), decoded or not.
     pub fn can_convert(&self) -> bool {
         self.current.is_some() && self.crop.is_none() && self.saving.is_none()
     }
@@ -1658,7 +1820,13 @@ impl App {
     /// Save the current image in `format` beside its file, under its name
     /// with that format's extension (numbered if taken), turned as it is
     /// shown in the viewer; the file itself stays as it is, and current.
+    /// Several chosen in the gallery are converted one after another.
     fn convert(&mut self, ctx: &egui::Context, format: edit::Format) {
+        let targets = self.targets();
+        if targets.len() > 1 {
+            self.convert_all(ctx, format, targets);
+            return;
+        }
         if self.saving.is_some() {
             self.notice(tr!("Saving…".into(), "Сохранение…".into()));
             return;
@@ -1673,20 +1841,51 @@ impl App {
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let name = edit::suggested_name(&path, format.extensions()[0], "", |n| dir.join(n).exists());
         let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, crop: None };
-        self.start_save(ctx, job, true);
+        self.start_save(ctx, vec![job], true);
     }
 
-    /// Carry out `job` on a thread; `poll_save` takes the outcome.
-    fn start_save(&mut self, ctx: &egui::Context, job: edit::Job, convert: bool) {
+    /// Convert `paths` to `format`, each beside itself; two of the same name
+    /// (`a.png` and `a.heic` into JPEG) do not take the same new name.
+    fn convert_all(&mut self, ctx: &egui::Context, format: edit::Format, paths: Vec<PathBuf>) {
+        let mut planned = std::collections::HashSet::new();
+        let jobs: Vec<edit::Job> = paths
+            .into_iter()
+            .filter(|p| p.is_file())
+            .map(|src| {
+                let dir = src.parent().map(Path::to_path_buf).unwrap_or_default();
+                let name = edit::suggested_name(&src, format.extensions()[0], "", |n| {
+                    let dst = dir.join(n);
+                    dst.exists() || planned.contains(&dst.to_string_lossy().to_lowercase())
+                });
+                let dst = dir.join(name);
+                planned.insert(dst.to_string_lossy().to_lowercase());
+                edit::Job { src, dst, size: [0, 0], turns: 0, crop: None }
+            })
+            .collect();
+        let n = jobs.len();
+        self.notice(tr!(format!("Converting 0 of {n}…"), format!("Конвертирование: 0 из {n}…")));
+        self.start_save(ctx, jobs, true);
+    }
+
+    /// Carry out `jobs` one after another on a thread; `poll_save` takes
+    /// the outcomes.
+    fn start_save(&mut self, ctx: &egui::Context, jobs: Vec<edit::Job>, convert: bool) {
+        if jobs.is_empty() {
+            return;
+        }
         let (tx, done) = mpsc::channel();
-        let (ctx, work) = (ctx.clone(), job.clone());
+        let (ctx, work) = (ctx.clone(), jobs.clone());
         std::thread::spawn(move || {
-            // Windows' codecs may decode the original.
+            // Windows' codecs may decode the originals.
             let _com = win::com_init();
-            let _ = tx.send(edit::save(&work));
-            ctx.request_repaint();
+            for job in &work {
+                if tx.send(edit::save(job)).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+            }
         });
-        self.saving = Some(Saving { job, convert, done });
+        self.saving = Some(Saving { jobs, convert, done, results: Vec::new() });
     }
 
     /// The file to save `path` as, from the Save As dialog: its own format
@@ -1716,19 +1915,32 @@ impl App {
 
     /// The outcome of `save` and `convert`: a file saved over is decoded
     /// again, one saved as a new file opened, a converted one listed; Ctrl+Z
-    /// can undo it.
+    /// can undo it. Several converted are counted as they come.
     fn poll_save(&mut self, ctx: &egui::Context) {
-        let Some(saving) = &self.saving else { return };
-        let Ok(result) = saving.done.try_recv() else { return };
-        let Saving { job, convert, .. } = self.saving.take().expect("checked above");
+        let Some(saving) = &mut self.saving else { return };
+        let before = saving.results.len();
+        saving.results.extend(saving.done.try_iter());
+        let (done, total) = (saving.results.len(), saving.jobs.len());
+        if done < total {
+            if done > before && total > 1 {
+                self.notice(tr!(format!("Converting {done} of {total}…"), format!("Конвертирование: {done} из {total}…")));
+            }
+            return;
+        }
+        let Saving { jobs, convert, results, .. } = self.saving.take().expect("checked above");
+        if jobs.len() > 1 {
+            self.converted_all(ctx, &jobs, results);
+            return;
+        }
+        let (Some(job), Some(result)) = (jobs.into_iter().next(), results.into_iter().next()) else { return };
         let name = file_name(&job.dst);
         match result {
             Ok(saved) => {
-                self.push_undo(Undo::Save { path: job.dst.clone(), before: saved.before });
+                self.push_undo(Undo::Save(vec![(job.dst.clone(), saved.before)]));
                 if self.crop.as_ref().is_some_and(|c| c.path == job.src) {
                     self.end_crop();
                 }
-                self.changed(ctx, &job.dst);
+                self.written(ctx, std::slice::from_ref(&job.dst));
                 if convert {
                     self.notice(tr!(format!("Converted: {name}"), format!("Сконвертировано: {name}")));
                     return;
@@ -1744,6 +1956,32 @@ impl App {
             }
             Err(e) => self.notice(tr!(format!("Cannot save {name}: {e}"), format!("Не удалось сохранить {name}: {e}"))),
         }
+    }
+
+    /// The outcome of converting several: the copies listed, one Ctrl+Z
+    /// for them all, and how many failed.
+    fn converted_all(&mut self, ctx: &egui::Context, jobs: &[edit::Job], results: Vec<Result<edit::Saved, String>>) {
+        let total = jobs.len();
+        let (mut saved, mut failed) = (Vec::new(), Vec::new());
+        for (job, result) in jobs.iter().zip(results) {
+            match result {
+                Ok(s) => saved.push((job.dst.clone(), s.before)),
+                Err(e) => failed.push(format!("{}: {e}", file_name(&job.src))),
+            }
+        }
+        let paths: Vec<PathBuf> = saved.iter().map(|(p, _)| p.clone()).collect();
+        let n = saved.len();
+        if !saved.is_empty() {
+            self.push_undo(Undo::Save(saved));
+        }
+        self.written(ctx, &paths);
+        self.notice(match failed.first() {
+            None => tr!(format!("Converted: {n} files"), format!("Сконвертировано файлов: {n}")),
+            Some(e) => tr!(
+                format!("Converted {n} of {total}; {e}"),
+                format!("Сконвертировано {n} из {total}; {e}")
+            ),
+        });
     }
 
     /// An image is being saved.
