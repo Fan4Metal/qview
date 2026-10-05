@@ -198,6 +198,15 @@ git push origin v0.1.0
 
 Ручной запуск workflow (Actions → Release → Run workflow) только собирает файлы и прикрепляет их к запуску, не создавая выпуск.
 
+## Используемые проекты
+
+qview построен на следующих проектах с открытым исходным кодом:
+
+- [egui / eframe](https://github.com/emilk/egui): интерфейс и окно программы;
+- [image](https://github.com/image-rs/image): декодирование и кодирование большинства форматов;
+- [libheif](https://github.com/strukturag/libheif) и [libde265](https://github.com/strukturag/libde265): декодирование HEIC/HEIF;
+- [Inno Setup](https://jrsoftware.org/isinfo.php): установщик.
+
 ## Лицензия
 
 MIT, текст приведён в файле [LICENSE](LICENSE).

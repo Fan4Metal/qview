@@ -198,6 +198,15 @@ git push origin v0.1.0
 
 Running the workflow manually (Actions → Release → Run workflow) only builds the files and attaches them to the run, without a release.
 
+## Built with
+
+qview is built on the following open-source projects:
+
+- [egui / eframe](https://github.com/emilk/egui): the user interface and the window;
+- [image](https://github.com/image-rs/image): decoding and encoding of most formats;
+- [libheif](https://github.com/strukturag/libheif) and [libde265](https://github.com/strukturag/libde265): decoding of HEIC/HEIF;
+- [Inno Setup](https://jrsoftware.org/isinfo.php): the installer.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
