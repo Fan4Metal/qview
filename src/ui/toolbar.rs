@@ -46,7 +46,9 @@ impl App {
         let cropping = self.crop.is_some();
         let (prev, next) = (prev && !cropping, next && !cropping);
         let file = self.current.is_some() && !cropping;
-        let crop = self.editable().is_some();
+        // As the turns: while browsing fast the image on screen is often not
+        // the current one yet, and the button would flicker.
+        let crop = has_image;
         let edit_tip = match &self.editor {
             Some(e) => tr!(format!("Open in {} (Ctrl+E)", e.name), format!("Открыть в {} (Ctrl+E)", e.name)),
             None => tr!("Open in Editor (Ctrl+E)", "Открыть в редакторе (Ctrl+E)").into(),

@@ -1737,7 +1737,8 @@ impl App {
     /// Start cropping the image on screen (C): the frame in its middle,
     /// the image as large as the window allows.
     fn start_crop(&mut self) {
-        if self.shown.as_ref().is_some_and(|(_, p)| p.meta.animated) {
+        // Not yet decoded, the image on screen is another: nothing to crop.
+        if self.shown.as_ref().is_some_and(|(p, pic)| self.current.as_ref() == Some(p) && pic.meta.animated) {
             self.notice(tr!("Animated images cannot be edited".into(), "Анимированные изображения не редактируются".into()));
             return;
         }
