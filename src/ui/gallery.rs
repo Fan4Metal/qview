@@ -15,10 +15,13 @@ const TREE_BG: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
 pub const GRID_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 const CELL_HOVER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
 const CELL_SELECTED: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
-/// The outline of the current image among several chosen.
-const CELL_FOCUS: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
-/// The frame dragged over the grid to choose images.
-const BAND: Color32 = Color32::from_rgb(0x4a, 0x90, 0xe2);
+/// The outline of the current image while images are chosen.
+const CELL_FOCUS: Color32 = Color32::WHITE;
+/// The colour of choosing: the outline and the tick of a chosen image, the
+/// frame dragged over the grid.
+const ACCENT: Color32 = Color32::from_rgb(0x4a, 0x90, 0xe2);
+/// A chosen cell: the accent at 30% over the grid.
+const CELL_CHOSEN: Color32 = Color32::from_rgb(0x2e, 0x42, 0x5d);
 /// How fast the grid scrolls while the frame is dragged past its edge: a
 /// part of the distance, in points per frame.
 const BAND_SCROLL: f32 = 0.3;
@@ -301,7 +304,9 @@ impl App {
         let fill = self.thumb_fill;
         let frame_px = frame * ppp;
         let mut requests = Vec::new();
-        let mut cells: Vec<(usize, Response)> = Vec::new();
+        // Each visible cell, and while images are chosen the centre of its
+        // circle, which a click alone ticks or unticks.
+        let mut cells: Vec<(usize, Response, Option<Pos2>)> = Vec::new();
         let mut hovered = None;
         let files = &self.files;
         let index = self.index;
@@ -352,14 +357,22 @@ impl App {
                     Some(relative) => response.on_hover_text(relative.to_string_lossy()),
                     None => response,
                 };
-                // With none chosen, the current image is.
-                if selection.contains(path) || (selection.is_empty() && index == Some(i)) {
+                // Chosen images in the accent; with none chosen, the current
+                // image in grey, as it always was.
+                let choosing = !selection.is_empty();
+                let chosen = selection.contains(path);
+                if chosen {
+                    let outline = egui::Stroke::new(2.0, ACCENT);
+                    painter.rect(cell.shrink(1.0), 3.0, CELL_CHOSEN, outline, egui::StrokeKind::Inside);
+                } else if !choosing && index == Some(i) {
                     painter.rect_filled(cell.shrink(1.0), 3.0, CELL_SELECTED);
                 } else if response.hovered() {
                     painter.rect_filled(cell.shrink(1.0), 3.0, CELL_HOVER);
                 }
-                if !selection.is_empty() && index == Some(i) {
-                    painter.rect_stroke(cell.shrink(1.0), 3.0, egui::Stroke::new(1.0, CELL_FOCUS), egui::StrokeKind::Inside);
+                // Where Shift goes from: inside the accent when chosen.
+                if choosing && index == Some(i) {
+                    let inset = if chosen { 3.5 } else { 1.0 };
+                    painter.rect_stroke(cell.shrink(inset), 2.0, egui::Stroke::new(1.0, CELL_FOCUS), egui::StrokeKind::Inside);
                 }
                 if response.hovered() {
                     hovered = Some(path.clone());
@@ -370,8 +383,10 @@ impl App {
                 if gallery.needs(path, side) {
                     requests.push(Request { path: path.clone(), side });
                 }
-                // Where the star of a favourite goes: the image's corner.
+                // The image's corners: the star of a favourite goes in the
+                // right one, the tick of a chosen image in the left.
                 let mut corner = square.right_top();
+                let mut left = square.left_top();
                 match gallery.thumb(path) {
                     Some(t) => match &t.texture {
                         Some(texture) => {
@@ -379,6 +394,7 @@ impl App {
                             let (rect, uv) = gallery::place_thumb(square, px, ppp, fill, t.shrunk());
                             painter.image(texture.id(), rect, uv, Color32::WHITE);
                             corner = rect.right_top();
+                            left = rect.left_top();
                         }
                         None => {
                             let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
@@ -392,12 +408,19 @@ impl App {
                 if favorites.contains(path) {
                     star(&painter, corner);
                 }
+                let circle = choosing.then(|| left + vec2(TICK_INSET, TICK_INSET));
+                if let Some(c) = circle {
+                    tick(&painter, c, chosen);
+                    if response.hover_pos().is_some_and(|p| p.distance(c) <= TICK_REACH) {
+                        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                }
                 label(&painter, &file_name(path), cell, square.bottom() + 2.0);
-                cells.push((i, response));
+                cells.push((i, response, circle));
             }
             if let Some((start, pointer)) = band {
                 let r = Rect::from_two_pos(origin + start.to_vec2(), pointer);
-                painter.rect(r, 0.0, BAND.gamma_multiply(0.15), egui::Stroke::new(1.0, BAND), egui::StrokeKind::Inside);
+                painter.rect(r, 0.0, ACCENT.gamma_multiply(0.15), egui::Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
             }
             visible
         });
@@ -433,15 +456,19 @@ impl App {
 
         let mut opened = None;
         let modifiers = ctx.input(|i| i.modifiers);
-        for (i, response) in cells {
+        for (i, response, circle) in cells {
+            // The circle of a cell ticks or unticks it, as Ctrl+click does
+            // anywhere on the cell.
+            let on_circle = circle.zip(response.interact_pointer_pos()).is_some_and(|(c, p)| p.distance(c) <= TICK_REACH);
             if response.clicked() {
-                self.click_cell(i, modifiers);
+                self.click_cell(i, if on_circle { egui::Modifiers::CTRL } else { modifiers });
             }
             if response.secondary_clicked() {
                 self.right_click_cell(i);
             }
-            // Ctrl and Shift choose; a double click with them opens nothing.
-            if crate::input::double_clicked(&response) && !modifiers.ctrl && !modifiers.shift {
+            // Ctrl and Shift choose, as does the circle; a double click with
+            // them opens nothing.
+            if crate::input::double_clicked(&response) && !modifiers.ctrl && !modifiers.shift && !on_circle {
                 opened = Some(i);
             }
             response.context_menu(|ui| self.cell_menu(ui));
@@ -559,6 +586,24 @@ fn star(painter: &Painter, corner: egui::Pos2) {
     let c = corner + vec2(-10.0, 10.0);
     painter.circle_filled(c, 9.0, Color32::from_black_alpha(150));
     super::paint_star(painter, c, 6.5, Some(super::STAR), super::STAR);
+}
+
+/// The circle's centre from the image's top left corner, and how near it a
+/// click ticks it (a little beyond the circle, as it is small).
+const TICK_INSET: f32 = 10.0;
+const TICK_REACH: f32 = 11.0;
+
+/// The mark of choosing at `c`, in the top left corner of a thumbnail: a
+/// tick on the accent when chosen, otherwise an empty circle; a click on
+/// either ticks or unticks the image.
+fn tick(painter: &Painter, c: Pos2, chosen: bool) {
+    if chosen {
+        painter.circle(c, 8.0, ACCENT, egui::Stroke::new(1.5, Color32::WHITE));
+        let points = vec![c + vec2(-3.6, 0.2), c + vec2(-1.0, 2.8), c + vec2(3.8, -2.6)];
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.8, Color32::WHITE)));
+    } else {
+        painter.circle(c, 8.0, Color32::from_black_alpha(90), egui::Stroke::new(1.5, Color32::from_white_alpha(200)));
+    }
 }
 
 /// The file name under a thumbnail, cut short with an ellipsis.
