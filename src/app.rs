@@ -2308,6 +2308,8 @@ impl eframe::App for App {
             log::debug!("frame {frame_nr} at {:.0} ms", crate::since_start_ms());
         }
         self.uncloak(&ctx);
+        // The previous frame, which may have drawn them, is painted.
+        crate::texture::delete_dropped();
 
         // A file opened while qview is running (see `instance`).
         let received = crate::instance::take();
@@ -2399,6 +2401,7 @@ impl eframe::App for App {
         if let Some(gallery) = &mut self.gallery {
             gallery.clear();
         }
+        crate::texture::delete_dropped();
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

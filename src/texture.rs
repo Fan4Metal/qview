@@ -13,7 +13,7 @@
 //! levels below are uploaded later ([`Texture::complete`]), when a frame
 //! has nothing else to upload or when the user zooms in.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,8 +22,8 @@ use glow::HasContext;
 use crate::loader::Pixels;
 
 /// A texture of the GL context `gl`, registered with egui as `id`. Deleted
-/// when dropped, which must happen on the UI thread while the context
-/// lives (see `App::on_exit`).
+/// after it is dropped, by [`delete_dropped`] on the UI thread while the
+/// context lives (see `App::on_exit`).
 pub struct Texture {
     gl: Arc<glow::Context>,
     native: glow::Texture,
@@ -114,12 +114,13 @@ impl Texture {
 impl Texture {
     /// Replace the picture with `pixels`, every level (the next frame of
     /// an animation). The same size is written into the texture's memory,
-    /// which is not allocated anew.
+    /// which is not allocated anew, once every level has been allocated
+    /// (levels below the base level have none).
     pub fn replace(&self, pixels: &Pixels) {
         let size = (pixels.width, pixels.height, pixels.levels.len());
         unsafe {
             self.gl.bind_texture(glow::TEXTURE_2D, Some(self.native));
-            if size == self.size {
+            if size == self.size && self.base_level.get() == 0 {
                 self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
                 for (level, data) in pixels.levels.iter().enumerate() {
                     self.gl.tex_sub_image_2d(
@@ -135,7 +136,9 @@ impl Texture {
                     );
                 }
             } else {
-                log::warn!("a frame of {}x{} for a texture of {}x{}", size.0, size.1, self.size.0, self.size.1);
+                if size != self.size {
+                    log::warn!("a frame of {}x{} for a texture of {}x{}", size.0, size.1, self.size.0, self.size.1);
+                }
                 upload_levels(&self.gl, pixels, 0..pixels.levels.len() as u32);
                 self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, pixels.levels.len() as i32 - 1);
             }
@@ -146,9 +149,26 @@ impl Texture {
     }
 }
 
+thread_local! {
+    /// Textures dropped since the last [`delete_dropped`]. A texture
+    /// dropped while a frame is built (the cache after a wheel browse or a
+    /// toolbar click, which run after the image area is drawn) is still in
+    /// that frame's shapes: deleted at once, the frame showed whatever the
+    /// driver had put in its memory (white streaks in the corner).
+    static DROPPED: RefCell<Vec<(Arc<glow::Context>, glow::Texture)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Delete the textures dropped since the last call: at the start of a
+/// frame, when the previous one has been painted, and on exit.
+pub fn delete_dropped() {
+    for (gl, native) in DROPPED.take() {
+        unsafe { gl.delete_texture(native) };
+    }
+}
+
 impl Drop for Texture {
     fn drop(&mut self) {
-        unsafe { self.gl.delete_texture(self.native) };
+        DROPPED.with_borrow_mut(|d| d.push((self.gl.clone(), self.native)));
     }
 }
 
