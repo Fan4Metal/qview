@@ -1,8 +1,7 @@
 //! The folder tree of the gallery: the favourites, the user's Pictures and
 //! Desktop and the drives at the top, each folder listed on a thread the
 //! first time it is expanded (a network or a sleeping drive can take
-//! seconds). Only the visible rows are laid out, as in disk_flashlight's
-//! tree.
+//! seconds). Only the visible rows are laid out.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -513,7 +512,7 @@ fn has_subfolder(dir: &Path) -> bool {
         .is_ok_and(|mut it| it.any(|e| e.is_ok_and(|e| e.metadata().is_ok_and(|m| crate::win::is_visible_folder(m.file_attributes())))))
 }
 
-/// The expand/collapse triangle, as in disk_flashlight.
+/// The expand/collapse triangle.
 fn paint_arrow(painter: &egui::Painter, c: Pos2, expanded: bool, color: Color32) {
     let s = 4.0;
     let points = if expanded {

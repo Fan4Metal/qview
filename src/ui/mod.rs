@@ -14,7 +14,7 @@ pub const TOOLBAR_BG: Color32 = Color32::from_rgb(0x3e, 0x3e, 0x3e);
 pub const STATUS_BG: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
 pub const TEXT: Color32 = Color32::from_rgb(0xd8, 0xd8, 0xd8);
 pub const TEXT_WEAK: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
-/// Fill of the buttons of destructive actions, as in disk_flashlight.
+/// Fill of the buttons of destructive actions.
 pub const DANGER: Color32 = Color32::from_rgb(200, 40, 40);
 /// The star of a favourite image.
 pub const STAR: Color32 = Color32::from_rgb(0xf2, 0xc0, 0x3c);

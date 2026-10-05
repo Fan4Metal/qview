@@ -1,6 +1,5 @@
 //! Interface language: English or Russian, taken from the language of the
-//! Windows interface unless chosen in the About window (as in
-//! disk_flashlight).
+//! Windows interface unless chosen in the About window.
 //!
 //! Strings stay next to the code that shows them, both languages together:
 //! `tr!("Delete", "Удалить")` gives the one of the current language (and

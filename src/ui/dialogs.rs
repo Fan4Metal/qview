@@ -100,8 +100,8 @@ impl App {
     }
 
     /// Icon, name, version, a short description, the author, links from
-    /// Cargo.toml when they are set, and where the settings are kept, as in
-    /// disk_flashlight. True when closed.
+    /// Cargo.toml when they are set, and where the settings are kept. True
+    /// when closed.
     fn about(&mut self, ctx: &egui::Context, fresh: bool) -> bool {
         const ICON: f32 = 64.0;
         const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -156,9 +156,8 @@ impl App {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
-                // As in disk_flashlight: the label over the list, both
-                // centred; a fixed width keeps the list from jumping when
-                // the language changes.
+                // The label over the list, both centred; a fixed width
+                // keeps the list from jumping when the language changes.
                 ui.weak(tr!("Interface language", "Язык интерфейса"));
                 let mut choice = self.lang;
                 // A combo box lays itself out left to right, ignoring the
