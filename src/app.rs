@@ -92,6 +92,8 @@ const SORT_KEY: &str = "sort";
 const SORT_DESCENDING_KEY: &str = "sort_descending";
 const FAVORITES_SORT_KEY: &str = "favorites_sort";
 const FAVORITES_SORT_DESCENDING_KEY: &str = "favorites_sort_descending";
+const CHECK_UPDATES_KEY: &str = "check_updates";
+const LAST_UPDATE_CHECK_KEY: &str = "last_update_check";
 const BY_FOLDER_KEY: &str = "by_folder";
 /// The window's normal rectangle (`win::normal_rect`), as "left,top,right,bottom":
 /// eframe saves a maximized window with its maximized size, which it would
@@ -219,6 +221,8 @@ pub struct App {
     pub thumb_aspect: Option<f32>,
     /// Interface language, chosen in About.
     pub lang: LangChoice,
+    /// The update check (off unless enabled in About).
+    pub updates: crate::update::Updates,
     deleting: Option<mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     pub dialog: Option<Dialog>,
     /// `dialog` was opened this frame.
@@ -396,6 +400,10 @@ impl App {
                 v => Some(v.and_then(|v| gallery::ASPECTS.iter().find(|(n, _)| *n == v)).map_or(1.0, |(_, a)| *a)),
             },
             lang,
+            updates: crate::update::Updates::new(
+                cc.storage.and_then(|s| s.get_string(CHECK_UPDATES_KEY)).as_deref() == Some("true"),
+                cc.storage.and_then(|s| s.get_string(LAST_UPDATE_CHECK_KEY)).and_then(|v| v.parse().ok()).unwrap_or(0),
+            ),
             deleting: None,
             dialog: None,
             dialog_fresh: false,
@@ -416,6 +424,7 @@ impl App {
         if let Some(path) = initial {
             app.open(ctx, path);
         }
+        app.updates.start_if_due(ctx);
         app
     }
 
@@ -1591,6 +1600,7 @@ impl eframe::App for App {
         }
         self.poll_delete();
         self.poll_copy();
+        self.updates.poll();
         self.handle_drop(&ctx);
         self.sync_shown();
 
@@ -1674,6 +1684,8 @@ impl eframe::App for App {
         storage.set_string(FAVORITES_SORT_KEY, self.favorites_sort.key.name().to_string());
         storage.set_string(FAVORITES_SORT_DESCENDING_KEY, self.favorites_sort.descending.to_string());
         storage.set_string(BY_FOLDER_KEY, self.by_folder.to_string());
+        storage.set_string(CHECK_UPDATES_KEY, self.updates.enabled.to_string());
+        storage.set_string(LAST_UPDATE_CHECK_KEY, self.updates.last_check.to_string());
         if let Some(r) = self.hwnd.filter(|_| !self.fullscreen).and_then(win::normal_rect) {
             storage.set_string(WINDOW_NORMAL_KEY, format!("{},{},{},{}", r[0], r[1], r[2], r[3]));
         }

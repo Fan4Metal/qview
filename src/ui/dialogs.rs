@@ -178,6 +178,10 @@ impl App {
                     self.lang = choice;
                     crate::i18n::set_lang(choice.resolve());
                 }
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                update_section(ui, &mut self.updates);
                 ui.add_space(4.0);
             });
             closed
@@ -514,6 +518,58 @@ fn select_stem(ctx: &egui::Context, id: egui::Id, name: &str) {
 }
 
 /// A cross button, as in a window caption; true when clicked.
+/// The update check: the start-up option, a button to check now and the
+/// outcome.
+fn update_section(ui: &mut Ui, updates: &mut crate::update::Updates) {
+    use crate::update::{Status, release_url, version_of};
+    let before = updates.enabled;
+    ui.checkbox(
+        &mut updates.enabled,
+        tr!("Check for updates at start-up (once a day)", "Проверять обновления при запуске (раз в сутки)"),
+    )
+    .on_hover_text(tr!(
+        "Asks api.github.com for the latest release; nothing else is sent, and nothing is downloaded",
+        "Запрашивает у api.github.com последний выпуск; больше ничего не отправляется и не скачивается"
+    ));
+    if updates.enabled && !before {
+        updates.start_if_due(ui.ctx());
+    }
+    let checking = updates.status == Status::Checking;
+    if ui.add_enabled(!checking, egui::Button::new(tr!("Check now", "Проверить сейчас"))).clicked() {
+        updates.start(ui.ctx());
+    }
+    match &updates.status {
+        Status::Unknown => {}
+        Status::Checking => {
+            ui.horizontal(|ui| {
+                // Centred by hand, as the language list above.
+                ui.add_space(((ui.available_width() - 110.0) / 2.0).max(0.0));
+                ui.add(egui::Spinner::new());
+                ui.weak(tr!("Checking…", "Проверка…"));
+            });
+        }
+        Status::UpToDate => {
+            ui.weak(tr!("This is the latest version", "Установлена последняя версия"));
+        }
+        Status::Newer(tag) => {
+            let version = version_of(tag);
+            let url = release_url(tag);
+            // Not `hyperlink_to`: eframe's `links` feature is off.
+            if ui
+                .link(tr!(format!("Version {version} is available"), format!("Доступна версия {version}")))
+                .on_hover_text(&url)
+                .clicked()
+                && !crate::win::shell_open(&url)
+            {
+                log::warn!("could not open {url}");
+            }
+        }
+        Status::Failed(e) => {
+            ui.weak(tr!("Could not check for updates", "Не удалось проверить обновления")).on_hover_text(e);
+        }
+    }
+}
+
 fn close_cross(ui: &mut Ui) -> bool {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
     let visuals = ui.style().interact(&response);

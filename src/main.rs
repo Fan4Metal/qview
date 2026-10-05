@@ -22,6 +22,7 @@ mod thumbs;
 mod tree;
 mod type_icon;
 mod ui;
+mod update;
 mod view;
 mod wic;
 mod win;

@@ -94,9 +94,45 @@ impl App {
                             }
                         }
                     }
+                    // A newer release, found by the update check, at the
+                    // right end.
+                    if let Some(tag) = self.updates.newer() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if update_button(ui, tag).clicked() {
+                                let url = crate::update::release_url(tag);
+                                if !crate::win::shell_open(&url) {
+                                    log::warn!("could not open {url}");
+                                }
+                            }
+                        });
+                    }
                 });
             });
     }
+}
+
+/// A newer release: its version with a download arrow in the link colour;
+/// a click opens its release page.
+fn update_button(ui: &mut Ui, tag: &str) -> egui::Response {
+    let version = crate::update::version_of(tag);
+    let icon = ui.id().with("update_icon");
+    let resp = egui::Button::new((egui::Atom::custom(icon, vec2(12.0, 14.0)), version)).atom_ui(ui);
+    let response = resp.response.clone().on_hover_text(tr!(
+        format!("Version {version} is available: open its release page"),
+        format!("Доступна версия {version}: открыть страницу выпуска")
+    ));
+    if let Some(rect) = resp.rect(icon) {
+        let stroke = Stroke::new(1.6, ui.visuals().hyperlink_color);
+        let painter = ui.painter();
+        let (cx, top, bottom) = (rect.center().x, rect.top() + 1.5, rect.bottom() - 1.5);
+        let tip = bottom - 3.0;
+        // Arrow down onto a tray.
+        painter.line_segment([pos2(cx, top), pos2(cx, tip)], stroke);
+        painter.line_segment([pos2(cx - 4.0, tip - 4.0), pos2(cx, tip)], stroke);
+        painter.line_segment([pos2(cx + 4.0, tip - 4.0), pos2(cx, tip)], stroke);
+        painter.line_segment([pos2(rect.left() + 0.5, bottom), pos2(rect.right() - 0.5, bottom)], stroke);
+    }
+    response
 }
 
 fn divider(ui: &mut Ui) {

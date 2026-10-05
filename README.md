@@ -31,6 +31,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - Deletion moves the file to the Recycle Bin after a confirmation.
 - The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour.
 - The interface is in Russian when Windows is in Russian, and in English otherwise; another language is chosen in Help → About qview.
+- No network access beyond the optional update check (see [Update check and privacy](#update-check-and-privacy)).
 
 Supported formats: JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM), and HEIC/HEIF, read by the [libheif](https://github.com/strukturag/libheif) and [libde265](https://github.com/strukturag/libde265) libraries supplied with the program, so that no extensions from the Microsoft Store are needed for them. In addition, every format for which Windows has a codec (Windows Imaging Component) is opened through it: AVIF (with the AV1 Video Extension from the Microsoft Store), camera RAW files such as CR2, CR3, NEF, ARW and DNG (with the Raw Image Extension, included in Windows 11), JPEG XR, DDS and the formats of other installed codecs; HEIF files that libheif cannot read are passed to them as well. AVIF files are always listed; when the extension they need is missing, the image area names it. Windows' codecs also take over the files of the formats above that qview's own decoders cannot read. Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated.
 
@@ -104,6 +105,10 @@ The selected thumbnail is the current image: deletion, renaming, copying and Sho
 The Favorites menu, and in the favorites the context menus of the grid, copy all favorites at once: Copy All puts the files on the clipboard, to be pasted in Explorer; Copy All to Folder… copies them into a chosen folder, with the progress window of Windows and its question about files of the same name. Clear Favorites… removes all of them after a confirmation. The files themselves are never changed.
 
 The favorites are kept in `favorites.txt` next to the settings (`%APPDATA%\qview\data`), saved after every change: a UTF-8 text file with one full path per line, in the order the images were marked, which other programs and scripts can read as well. Renaming or deleting a file in qview updates the list. A favorite whose folder no longer contains it (deleted, renamed or moved in another program) is removed from the list when the favorites are shown, with a notice in the status bar; the favorites of a folder that cannot be reached, such as one on a disconnected drive, are kept.
+
+## Update check and privacy
+
+The update check is optional and off by default. With **Check for updates at start-up (once a day)** enabled in Help → About qview, the program asks the GitHub Releases API (`api.github.com`) for the latest release at most once a day; **Check now** in the same window asks at once. The request carries nothing but the program version in its `User-Agent` header, and nothing is downloaded or installed: when a newer release exists, a button with its version appears at the right end of the toolbar and opens the release page in the browser. Otherwise the program does not access the network.
 
 ## Usage
 
