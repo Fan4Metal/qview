@@ -21,6 +21,7 @@ use egui::{Align2, Color32, FontId, PointerButton, Rect, Sense, TextureHandle, V
 
 use crate::folder::{self, Order, Scan, SortKey};
 use crate::gallery::{self, Gallery, Scroll};
+use crate::history::{History, Place};
 use crate::i18n::LangChoice;
 use crate::input::{Arrow, Cmd, Wheel};
 use crate::loader::{Decoded, Loader, Meta, Pixels};
@@ -185,6 +186,8 @@ pub struct App {
     pub rename: Option<Rename>,
     /// The renames of this session, `(old, new)`, for Ctrl+Z.
     pub renames: Vec<(PathBuf, PathBuf)>,
+    /// The folders shown before and after this one, for Back and Forward.
+    pub history: History,
     /// Made when the gallery is first opened.
     pub gallery: Option<Gallery>,
     /// The gallery is shown instead of the image.
@@ -349,6 +352,7 @@ impl App {
             confirm_delete: None,
             rename: None,
             renames: Vec::new(),
+            history: History::default(),
             gallery: None,
             gallery_open: false,
             image_clicked: false,
@@ -401,6 +405,9 @@ impl App {
         let listed = self.scan.is_none()
             && !self.deep
             && matches!((&self.dir, &dir), (Some(a), Some(b)) if folder::same_path(a, b));
+        if let Some(dir) = dir.as_deref().filter(|_| !listed) {
+            self.leave_for(dir);
+        }
         self.index = if listed { folder::position(&self.files, &path) } else { None };
         self.set_current(Some(path.clone()));
         if self.index.is_none()
@@ -416,8 +423,63 @@ impl App {
         if self.deep == deep && self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir)) {
             return;
         }
+        self.leave_for(&dir);
         self.set_current(None);
         self.start_scan(ctx, dir, deep, None);
+    }
+
+    /// The folder on screen as Back would return to it.
+    fn here(&self) -> Option<Place> {
+        let dir = self.dir.clone()?;
+        // Where the current image's row is on screen, once the grid shows
+        // this listing.
+        let below = match (&self.gallery, self.index) {
+            (Some(g), Some(i)) if self.gallery_open && self.scan.is_none() => Some(g.layout.cell_pos(i).y - g.top),
+            _ => None,
+        };
+        Some(Place { dir, deep: self.deep, current: self.current.clone(), below })
+    }
+
+    /// Remember the folder on screen when `dir` is to replace it.
+    fn leave_for(&mut self, dir: &Path) {
+        if self.dir.as_deref().is_some_and(|d| !folder::same_path(d, dir))
+            && let Some(here) = self.here()
+        {
+            self.history.visit(here);
+        }
+    }
+
+    /// Show `place` again (Back, Forward): listed as it was, its image
+    /// current and where it was on screen.
+    fn return_to(&mut self, ctx: &egui::Context, place: Place) {
+        let keep = place.current.filter(|p| p.is_file());
+        self.set_current(keep.clone());
+        self.start_scan(ctx, place.dir.clone(), place.deep, keep);
+        if let Some(gallery) = &mut self.gallery {
+            gallery.tree.reveal(&place.dir);
+            gallery.scroll = Some(place.below.map_or(Scroll::Centre, Scroll::Keep));
+        }
+    }
+
+    /// The folder above the one on screen, if there is one.
+    pub fn parent_dir(&self) -> Option<PathBuf> {
+        self.dir.as_deref().and_then(Path::parent).map(Path::to_path_buf)
+    }
+
+    /// Show the folder above (Alt+↑). With the sub-folders, the current
+    /// image is among its images and stays current.
+    fn go_up(&mut self, ctx: &egui::Context) {
+        let Some(parent) = self.parent_dir() else { return };
+        self.leave_for(&parent);
+        let keep = self.current.clone().filter(|_| self.deep);
+        if keep.is_none() {
+            self.set_current(None);
+        }
+        self.start_scan(ctx, parent.clone(), self.deep, keep);
+        if let Some(gallery) = &mut self.gallery {
+            gallery.tree.reveal(&parent);
+            gallery.scroll = Some(Scroll::Centre);
+        }
     }
 
     /// List `dir` again with or without its sub-folders. The current image
@@ -1012,6 +1074,8 @@ impl App {
                     tr!("The next images open in the zoom mode".into(), "Следующие изображения откроются в режиме масштаба".into())
                 });
             }
+            // The gallery's folders.
+            Cmd::Back | Cmd::Forward | Cmd::Up => {}
             Cmd::Shortcuts | Cmd::About | Cmd::Associations => {
                 self.dialog = Some(match cmd {
                     Cmd::About => Dialog::About,
@@ -1042,6 +1106,19 @@ impl App {
             Cmd::Arrow(Arrow::Down) => rows(self, 1),
             Cmd::PageUp => rows(self, -page),
             Cmd::PageDown => rows(self, page),
+            Cmd::Back => {
+                let here = self.here();
+                if let Some(place) = self.history.back(here) {
+                    self.return_to(ctx, place);
+                }
+            }
+            Cmd::Forward => {
+                let here = self.here();
+                if let Some(place) = self.history.forward(here) {
+                    self.return_to(ctx, place);
+                }
+            }
+            Cmd::Up => self.go_up(ctx),
             Cmd::ZoomIn | Cmd::ZoomOut => {
                 self.thumb_size = gallery::step_size(self.thumb_size, cmd == Cmd::ZoomIn);
                 if let Some(gallery) = &mut self.gallery {

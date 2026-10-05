@@ -5,7 +5,7 @@
 //! `F` works with the Russian layout too. Numpad `*` has no `egui::Key`
 //! and arrives only as text. `Ctrl+C` arrives as `Event::Copy`.
 
-use egui::{Event, Key, Modifiers, MouseWheelUnit};
+use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrow {
@@ -65,6 +65,11 @@ pub enum Cmd {
     /// A page of the gallery up or down (Page Up / Page Down there).
     PageUp,
     PageDown,
+    /// The gallery's previous or next folder in its history (Alt+← and
+    /// Alt+→ there, the mouse's side buttons), and the folder above.
+    Back,
+    Forward,
+    Up,
 }
 
 /// The command of a key press with `m` held, if any. `repeat` is set for
@@ -124,6 +129,10 @@ pub fn gallery_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::PageUp if !m.ctrl && !m.alt => Some(Cmd::PageUp),
         Key::PageDown if !m.ctrl && !m.alt => Some(Cmd::PageDown),
         Key::F if m.ctrl && m.shift && !m.alt => Some(Cmd::WindowFullScreen),
+        // As in Explorer.
+        Key::ArrowLeft if m.alt && !m.ctrl && !repeat => Some(Cmd::Back),
+        Key::ArrowRight if m.alt && !m.ctrl && !repeat => Some(Cmd::Forward),
+        Key::ArrowUp if m.alt && !m.ctrl && !repeat => Some(Cmd::Up),
         _ => command(key, m, repeat),
     }
 }
@@ -136,6 +145,9 @@ pub fn keys(ctx: &egui::Context, gallery: bool) -> Vec<Cmd> {
             .iter()
             .filter_map(|e| match e {
                 Event::Key { key, pressed: true, repeat, modifiers, .. } => map(*key, *modifiers, *repeat),
+                // The mouse's side buttons go back and forward, as in Explorer.
+                Event::PointerButton { button: PointerButton::Extra1, pressed: true, .. } if gallery => Some(Cmd::Back),
+                Event::PointerButton { button: PointerButton::Extra2, pressed: true, .. } if gallery => Some(Cmd::Forward),
                 Event::Text(t) if t == "*" => Some(Cmd::Fit),
                 Event::Copy => Some(Cmd::Copy),
                 _ => None,
@@ -238,6 +250,12 @@ mod tests {
         assert_eq!(gallery_command(Key::F, NONE, false), Some(Cmd::FullScreen));
         assert_eq!(gallery_command(Key::F, CTRL | SHIFT, false), Some(Cmd::WindowFullScreen));
         assert_eq!(command(Key::PageDown, NONE, false), Some(Cmd::Next));
+        assert_eq!(gallery_command(Key::ArrowLeft, ALT, false), Some(Cmd::Back));
+        assert_eq!(gallery_command(Key::ArrowRight, ALT, false), Some(Cmd::Forward));
+        assert_eq!(gallery_command(Key::ArrowUp, ALT, false), Some(Cmd::Up));
+        assert_eq!(gallery_command(Key::ArrowLeft, ALT, true), None);
+        assert_eq!(gallery_command(Key::ArrowLeft, CTRL | ALT, false), Some(Cmd::RotateLeft));
+        assert_eq!(command(Key::ArrowLeft, ALT, false), None);
     }
 
     #[test]

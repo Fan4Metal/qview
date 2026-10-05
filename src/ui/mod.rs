@@ -19,6 +19,15 @@ pub const DANGER: Color32 = Color32::from_rgb(200, 40, 40);
 
 /// The dark style of the whole window.
 pub fn style(ctx: &egui::Context) {
+    // The proportional font and its emoji fallbacks have no arrows (← → ↑
+    // in the tooltips); the monospace one, loaded anyway, has them.
+    let mut fonts = egui::FontDefinitions::default();
+    if let Some(mono) = fonts.families.get(&egui::FontFamily::Monospace).and_then(|f| f.first()).cloned()
+        && let Some(proportional) = fonts.families.get_mut(&egui::FontFamily::Proportional)
+    {
+        proportional.push(mono);
+    }
+    ctx.set_fonts(fonts);
     ctx.set_theme(egui::Theme::Dark);
     ctx.style_mut_of(egui::Theme::Dark, |s| {
         s.visuals.panel_fill = MENU_BG;

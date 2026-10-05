@@ -1,6 +1,7 @@
 //! The toolbar: previous and next, rotate, zoom and delete buttons with
 //! icons drawn as vector shapes, so they are crisp at any display scaling
-//! and need no icon font.
+//! and need no icon font. In the gallery: back, forward and up through the
+//! folders instead, the gallery button and delete staying where they are.
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -21,6 +22,8 @@ enum Icon {
     Gallery,
     Prev,
     Next,
+    /// The folder above, in the gallery.
+    Up,
     RotateLeft,
     RotateRight,
     ZoomIn,
@@ -31,34 +34,46 @@ enum Icon {
 impl App {
     pub(crate) fn toolbar(&mut self, root_ui: &mut Ui) {
         let gallery = self.gallery_open;
-        // In the gallery the zoom buttons size the thumbnails.
-        let has_image = self.shown.is_some() && !gallery;
-        let zoom = has_image || gallery;
+        let has_image = self.shown.is_some();
         let prev = self.index.is_some_and(|i| i > 0);
         let next = self.index.is_some_and(|i| i + 1 < self.files.len());
         let file = self.current.is_some();
+        let open = (Icon::Gallery, Cmd::Gallery, tr!("Gallery (G)", "Галерея (G)").into(), true);
+        let delete = (Icon::Delete, Cmd::Delete, tr!("Delete (Del)", "Удалить (Del)").into(), file);
         egui::Panel::top("toolbar")
             .frame(panel_frame(TOOLBAR_BG, egui::Margin::symmetric(2, 2)))
             .show_separator_line(false)
             .show(root_ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    let buttons: [&[(Icon, Cmd, String, bool)]; 5] = [
-                        &[(Icon::Gallery, Cmd::Gallery, tr!("Gallery (G)", "Галерея (G)").into(), true)],
-                        &[
-                            (Icon::Prev, Cmd::Prev, tr!("Previous (Page Up)", "Предыдущее (Page Up)").into(), prev),
-                            (Icon::Next, Cmd::Next, tr!("Next (Page Down)", "Следующее (Page Down)").into(), next),
-                        ],
-                        &[
-                            (Icon::RotateLeft, Cmd::RotateLeft, tr!("Rotate Left ([)", "Повернуть влево ([)").into(), has_image),
-                            (Icon::RotateRight, Cmd::RotateRight, tr!("Rotate Right (])", "Повернуть вправо (])").into(), has_image),
-                        ],
-                        &[
-                            (Icon::ZoomIn, Cmd::ZoomIn, tr!("Zoom In (+)", "Увеличить (+)").into(), zoom),
-                            (Icon::ZoomOut, Cmd::ZoomOut, tr!("Zoom Out (-)", "Уменьшить (-)").into(), zoom),
-                        ],
-                        &[(Icon::Delete, Cmd::Delete, tr!("Delete (Del)", "Удалить (Del)").into(), file)],
-                    ];
+                    let buttons: Vec<Vec<(Icon, Cmd, String, bool)>> = if gallery {
+                        vec![
+                            vec![open],
+                            vec![
+                                (Icon::Prev, Cmd::Back, tr!("Back (Alt+←)", "Назад (Alt+←)").into(), self.history.can_go_back()),
+                                (Icon::Next, Cmd::Forward, tr!("Forward (Alt+→)", "Вперёд (Alt+→)").into(), self.history.can_go_forward()),
+                                (Icon::Up, Cmd::Up, tr!("Up (Alt+↑)", "Вверх (Alt+↑)").into(), self.parent_dir().is_some()),
+                            ],
+                            vec![delete],
+                        ]
+                    } else {
+                        vec![
+                            vec![open],
+                            vec![
+                                (Icon::Prev, Cmd::Prev, tr!("Previous (Page Up)", "Предыдущее (Page Up)").into(), prev),
+                                (Icon::Next, Cmd::Next, tr!("Next (Page Down)", "Следующее (Page Down)").into(), next),
+                            ],
+                            vec![
+                                (Icon::RotateLeft, Cmd::RotateLeft, tr!("Rotate Left ([)", "Повернуть влево ([)").into(), has_image),
+                                (Icon::RotateRight, Cmd::RotateRight, tr!("Rotate Right (])", "Повернуть вправо (])").into(), has_image),
+                            ],
+                            vec![
+                                (Icon::ZoomIn, Cmd::ZoomIn, tr!("Zoom In (+)", "Увеличить (+)").into(), has_image),
+                                (Icon::ZoomOut, Cmd::ZoomOut, tr!("Zoom Out (-)", "Уменьшить (-)").into(), has_image),
+                            ],
+                            vec![delete],
+                        ]
+                    };
                     for (g, group) in buttons.iter().enumerate() {
                         if g > 0 {
                             divider(ui);
@@ -135,6 +150,10 @@ fn paint_icon(painter: &Painter, icon: Icon, c: Pos2, color: Color32) {
             }
             painter.add(Shape::line(shaft, stroke));
             painter.add(Shape::line(head, stroke));
+        }
+        Icon::Up => {
+            painter.line_segment([pos2(c.x, c.y + 7.0), pos2(c.x, c.y - 7.5)], stroke);
+            painter.add(Shape::line(vec![pos2(c.x - 5.5, c.y - 1.5), pos2(c.x, c.y - 7.5), pos2(c.x + 5.5, c.y - 1.5)], stroke));
         }
         Icon::RotateLeft | Icon::RotateRight => {
             // A clockwise arc ending at the top, the arrow pointing right.

@@ -77,6 +77,8 @@ The arrow keys scroll an image that is larger than the window in that direction;
 
 The gallery is opened with `G`, `Enter`, `Esc`, a double click on the image or the toolbar button, and shows the folder of the current image, always with the menu and the bars (opening it in full screen leaves full screen): the folder tree on the left and the images as a grid of thumbnails on the right, under a bar with the path of the folder and the thumbnail size slider. The tree lists the Pictures and Desktop folders and the drives; a folder is shown by clicking it and expanded by clicking its arrow or double-clicking it. With the "Sub-folders" check box above the grid selected, the images of the folder and of all its sub-folders, hidden ones excepted, are shown as one list in the chosen sort order. The folders chosen in the tree are then shown the same way, until the check box is cleared; opening a file shows its folder alone. In this mode the status bar shows the path of the image from the folder, and so does the tooltip of a thumbnail, and the "By folder" check box next to "Sub-folders", inactive otherwise, takes effect: the images are then shown folder by folder in the order of the tree (the images of a folder before those of its sub-folders), sorted within each folder, and each folder starts a new row of the grid under a header with its path, the number of its images and a horizontal line. The "By folder" choice is kept between runs.
 
+The folders shown, whether chosen in the tree, opened from a header, reached with the Up button or those of files opened, form a history, as in Explorer: the Back and Forward buttons of the toolbar, `Alt+←` / `Alt+→` and the side buttons of the mouse return to the previous and the next folder with the image that was selected there, listed as it was (with or without the sub-folders) and scrolled as it was. The Up button and `Alt+↑` show the folder above; with the sub-folders listed, the selected image remains selected. The history lasts until the program is closed. In the gallery the toolbar holds these three buttons between the gallery button and the delete button, in place of the viewer's buttons for browsing, rotating and zooming.
+
 | Action | Keys and mouse |
 |---|---|
 | Select an image | click, arrow keys, `Page Up` / `Page Down`, `Home` / `End` |
@@ -86,6 +88,8 @@ The gallery is opened with `G`, `Enter`, `Esc`, a double click on the image or t
 | Thumbnail size | the slider above the grid, `+` / `-`, `Ctrl+wheel` |
 | Show the images of the sub-folders too | the "Sub-folders" check box above the grid |
 | Open a sub-folder (with "By folder") | double click on its header |
+| Previous / next folder shown | `Alt+←` / `Alt+→`, the side buttons of the mouse, the Back / Forward buttons of the toolbar |
+| Folder above | `Alt+↑`, the Up button of the toolbar |
 | Read the folder, the thumbnails and the folder tree again | `F5` |
 | Close the program | `Esc` |
 

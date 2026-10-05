@@ -43,6 +43,11 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
             tr!("Thumbnail size", "Размер миниатюр"),
         ),
         (tr!("Gallery: double click", "Галерея: двойной щелчок"), tr!("Show the image", "Показать изображение")),
+        (
+            tr!("Gallery: Alt+←  Alt+→  Mouse side buttons", "Галерея: Alt+←  Alt+→  Боковые кнопки мыши"),
+            tr!("Previous / next folder", "Предыдущая / следующая папка"),
+        ),
+        (tr!("Gallery: Alt+↑", "Галерея: Alt+↑"), tr!("Folder above", "Папка уровнем выше")),
         ("T  B", tr!("Show or hide the toolbar / status bar", "Панель инструментов / строка состояния")),
         ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
         ("F2", tr!("Rename the file", "Переименовать файл")),

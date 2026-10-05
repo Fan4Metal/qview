@@ -11,6 +11,7 @@ mod format;
 mod gallery;
 mod header;
 mod heif;
+mod history;
 mod icon;
 mod input;
 mod instance;
