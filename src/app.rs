@@ -90,6 +90,7 @@ const UNDO_BYTES: usize = 512 << 20;
 const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
 const BACKGROUND_KEY: &str = "background";
+const CHECKER_KEY: &str = "checker";
 const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
 const TREE_WIDTH_KEY: &str = "tree_width";
@@ -243,6 +244,10 @@ pub struct App {
     pub show_status_bar: bool,
     /// Background of the image area.
     pub background: Color32,
+    /// A checkerboard behind the image, seen where it is transparent.
+    pub checker: bool,
+    /// Its texture, made when first painted.
+    checker_texture: Option<TextureHandle>,
     /// The files the delete confirmation asks about.
     pub confirm_delete: Option<Vec<PathBuf>>,
     pub rename: Option<Rename>,
@@ -457,6 +462,8 @@ impl App {
                 .and_then(|s| s.get_string(BACKGROUND_KEY))
                 .and_then(|v| background_from_hex(&v))
                 .unwrap_or(DEFAULT_BACKGROUND),
+            checker: flag(CHECKER_KEY),
+            checker_texture: None,
             confirm_delete: None,
             rename: None,
             batch_rename: None,
@@ -2158,6 +2165,14 @@ impl App {
         self.saving.is_some()
     }
 
+    /// The checkerboard under an image placed at `place`, if chosen.
+    fn paint_checker(&mut self, painter: &egui::Painter, place: Rect, ppp: f32) {
+        if self.checker {
+            let texture = self.checker_texture.get_or_insert_with(|| view::checker_texture(painter.ctx()));
+            view::paint_checker(painter, texture.id(), place, ppp);
+        }
+    }
+
     /// The image area: the picture, panning, the wheel and the context
     /// menu.
     fn image_area(&mut self, ui: &mut egui::Ui) {
@@ -2178,13 +2193,16 @@ impl App {
             // previous image.
             let mut view = self.view;
             view.next_image();
-            view::paint(&painter, texture, view.place(size, rect, ppp), 0);
+            let place = view.place(size, rect, ppp);
+            self.paint_checker(&painter, place, ppp);
+            view::paint(&painter, texture, place, 0);
         } else if let Some((_, picture)) = self.shown.clone() {
             let size = picture.size();
             if response.dragged_by(PointerButton::Primary) && self.crop.is_none() {
                 self.view.pan(response.drag_delta(), size, rect, ppp);
             }
             let place = self.view.place(size, rect, ppp);
+            self.paint_checker(&painter, place, ppp);
             view::paint(&painter, picture.texture.id(), place, self.view.turns);
             if let Some(crop) = &mut self.crop {
                 crate::ui::crop::frame(crop, &response, &painter, place, self.view.rotated(size));
@@ -2461,6 +2479,7 @@ impl eframe::App for App {
         storage.set_string(TOOLBAR_KEY, self.show_toolbar.to_string());
         storage.set_string(STATUS_BAR_KEY, self.show_status_bar.to_string());
         storage.set_string(BACKGROUND_KEY, background_to_hex(self.background));
+        storage.set_string(CHECKER_KEY, self.checker.to_string());
         storage.set_string(ZOOM_KEY, self.view.mode.name().unwrap_or("fit").to_string());
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());

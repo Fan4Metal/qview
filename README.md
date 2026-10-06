@@ -32,7 +32,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
 - Deletion moves the file to the Recycle Bin after a confirmation.
 - Images can be rotated and cropped and saved over the file or as another file; a JPEG that is only rotated keeps its compressed data (see [Rotating and cropping](#rotating-and-cropping)).
-- The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour.
+- The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour. Transparent areas of an image are shown over a checkerboard, which can be turned off in the same menu.
 - The interface is in Russian when Windows is in Russian, and in English otherwise; another language is chosen in Help → About qview.
 - No network access beyond the optional update check (see [Update check and privacy](#update-check-and-privacy)).
 
@@ -162,7 +162,7 @@ qview.exe --unregister
 
 The registration refers to the location of `qview.exe`; after the program is moved, it is registered again.
 
-The zoom mode chosen with `1`–`4` applies to the following images as well, also after zooming in or out by steps. With `L` (View → Keep Zoom and Position) the following images keep the zoom set by steps and the scrolled position instead, so that a series of photos is compared at the same place and scale; the status bar marks the zoom as kept. This choice is not kept between runs. The window position and size, the visibility of the toolbar and the status bar, the background colour, the zoom mode, the sort orders, the language, the gallery's thumbnail size, cell proportions, "Fill cells" and "By folder" choices and tree width, the editor chosen last and the update check setting are kept in `%APPDATA%\qview\data\app.ron`; the favorites are kept apart, in `%APPDATA%\qview\data\favorites.txt`.
+The zoom mode chosen with `1`–`4` applies to the following images as well, also after zooming in or out by steps. With `L` (View → Keep Zoom and Position) the following images keep the zoom set by steps and the scrolled position instead, so that a series of photos is compared at the same place and scale; the status bar marks the zoom as kept. This choice is not kept between runs. The window position and size, the visibility of the toolbar and the status bar, the background colour and the checkerboard, the zoom mode, the sort orders, the language, the gallery's thumbnail size, cell proportions, "Fill cells" and "By folder" choices and tree width, the editor chosen last and the update check setting are kept in `%APPDATA%\qview\data\app.ron`; the favorites are kept apart, in `%APPDATA%\qview\data\favorites.txt`.
 
 ## Building
 

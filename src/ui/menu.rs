@@ -175,6 +175,12 @@ impl App {
             }
         }
         ui.separator();
+        let text = tr!("Checkerboard Behind Transparency", "Шахматка под прозрачными областями");
+        if ui.add(Button::new(text).selected(self.checker)).clicked() {
+            self.checker = !self.checker;
+            ui.close();
+        }
+        ui.separator();
         ui.label(tr!("Other colour:", "Другой цвет:"));
         egui::color_picker::color_picker_color32(ui, &mut self.background, egui::color_picker::Alpha::Opaque);
     }

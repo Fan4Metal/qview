@@ -227,6 +227,33 @@ pub fn paint(painter: &Painter, texture: TextureId, rect: Rect, turns: u8) {
     painter.add(Shape::mesh(mesh));
 }
 
+/// Squares of the checkerboard behind transparency, in points.
+const CHECKER_CELL: f32 = 8.0;
+
+/// The checkerboard behind transparent images: two by two texels, one per
+/// square, repeated and magnified without smoothing.
+pub fn checker_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let (a, b) = (Color32::from_gray(0x6a), Color32::from_gray(0x94));
+    let image = egui::ColorImage::new([2, 2], vec![a, b, b, a]);
+    let options = egui::TextureOptions {
+        magnification: egui::TextureFilter::Nearest,
+        minification: egui::TextureFilter::Nearest,
+        wrap_mode: egui::TextureWrapMode::Repeat,
+        mipmap_mode: None,
+    };
+    ctx.load_texture("checker", image, options)
+}
+
+/// Paint the checkerboard `texture` into `rect`, its squares a whole
+/// number of screen pixels from the rectangle's corner, which [`View::place`]
+/// puts on a whole pixel.
+pub fn paint_checker(painter: &Painter, texture: TextureId, rect: Rect, ppp: f32) {
+    // Two squares to a repeat of the texture.
+    let repeat = 2.0 * (CHECKER_CELL * ppp).round().max(1.0) / ppp;
+    let uv = Rect::from_min_max(Pos2::ZERO, (rect.size() / repeat).to_pos2());
+    painter.image(texture, rect, uv, Color32::WHITE);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
