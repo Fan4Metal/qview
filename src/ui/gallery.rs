@@ -40,6 +40,12 @@ const BAR_SEPARATOR: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
 /// The line of a folder's header in the grid.
 const HEADER_LINE: Color32 = Color32::from_rgb(0x48, 0x48, 0x48);
 
+/// The filter's text field (Ctrl+F); while it has the focus, the keys are
+/// its own (`App::ui`).
+pub const FILTER_ID: &str = "gallery_filter";
+/// Its width.
+const FILTER_WIDTH: f32 = 170.0;
+
 impl App {
     /// The gallery in place of the image area.
     pub(crate) fn gallery_ui(&mut self, root_ui: &mut Ui) {
@@ -68,9 +74,11 @@ impl App {
         }
     }
 
-    /// The folder and the cell size slider above the grid.
+    /// The folder, the filter, what is listed and how the cells look,
+    /// above the grid.
     fn gallery_bar(&mut self, root_ui: &mut Ui) {
         let before = (self.thumb_size, self.thumb_aspect, self.by_folder);
+        let filter_before = self.name_filter.clone();
         let mut deep = self.deep;
         let (in_favorites, mixed) = (self.in_favorites(), self.mixed());
         let shown = self.gallery.as_ref().map_or(1.0, |g| g.shown_aspect);
@@ -145,6 +153,8 @@ impl App {
                         "The images of all sub-folders too",
                         "Также изображения всех вложенных папок"
                     ));
+                    ui.add_space(12.0);
+                    self.filter_field(ui);
                     ui.add_space(8.0);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         if in_favorites {
@@ -161,12 +171,53 @@ impl App {
         if (self.thumb_size, self.thumb_aspect, self.by_folder) != before {
             self.thumb_size_changed();
         }
+        if self.name_filter != filter_before {
+            self.filter_changed();
+        }
         if deep != self.deep {
             self.set_deep(root_ui.ctx(), deep);
         } else if mixed && self.by_folder != before.2 {
             // In the order of each folder, or in one through all.
             self.relist(root_ui.ctx());
         }
+    }
+
+    /// The filter: a magnifier until it is wanted (`/`, Ctrl+F, a click on
+    /// it), then a field with a cross to clear it on its right (the bar is
+    /// laid out from the right). The field stays while it has the focus or
+    /// a filter, so that a filter in effect is always in sight; empty and
+    /// left, it is a magnifier again. Esc clears it, Enter gives the keys
+    /// back to the grid.
+    fn filter_field(&mut self, ui: &mut Ui) {
+        let id = egui::Id::new(FILTER_ID);
+        let open = std::mem::take(&mut self.filter_open);
+        if self.name_filter.is_empty() && !open && !ui.memory(|m| m.has_focus(id)) {
+            let tip = tr!("Filter the images by name ( / )", "Фильтр изображений по имени ( / )");
+            if magnifier(ui).on_hover_text(tip).clicked() {
+                ui.memory_mut(|m| m.request_focus(id));
+                self.filter_open = true;
+            }
+            return;
+        }
+        if !self.name_filter.is_empty() {
+            let clear = ui.add(egui::Button::new(RichText::new("×").color(TEXT_WEAK)).frame(false));
+            if clear.on_hover_text(tr!("Clear the filter", "Очистить фильтр")).clicked() {
+                self.name_filter.clear();
+            }
+        }
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let hint = RichText::new(tr!("Filter by name", "Фильтр по имени")).color(TEXT_WEAK);
+        let edit = egui::TextEdit::singleline(&mut self.name_filter).id(id).hint_text(hint).desired_width(FILTER_WIDTH);
+        let response = ui.add(edit).on_hover_text(tr!(
+            "Only the images whose names hold every word; *.png and other masks with * and ?. Esc clears it",
+            "Только изображения, в именах которых есть все слова; маски вида *.png с * и ?. Esc очищает"
+        ));
+        // egui takes the focus away on Esc (before the frame: see
+        // `App::filter_focused`).
+        if response.lost_focus() && escape {
+            self.name_filter.clear();
+        }
+        self.filter_focused = response.has_focus();
     }
 
     /// The cells of the visible rows, and the thumbnails to make: those of
@@ -206,6 +257,8 @@ impl App {
                 })
             } else if self.dir.is_none() {
                 Some(tr!("Choose a folder on the left", "Выберите папку слева").to_string())
+            } else if !self.name_filter.trim().is_empty() && self.listed_count() > 0 {
+                Some(tr!("No images match the filter", "Нет изображений, подходящих под фильтр").into())
             } else if in_favorites {
                 Some(tr!(
                     "No favorites yet: S marks the selected image",
@@ -625,6 +678,19 @@ fn bar_separator(ui: &mut Ui) {
 
 /// A square `side` points wide beside the slider: small thumbnails on its
 /// left, large on its right.
+/// The filter's button: a magnifying glass, drawn like the bar's other
+/// icons.
+fn magnifier(ui: &mut Ui) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::CLICK);
+    let colour = if response.hovered() { TEXT } else { SLIDER_ICON };
+    let stroke = egui::Stroke::new(1.4, colour);
+    let centre = rect.center() + vec2(-1.5, -1.5);
+    ui.painter().circle_stroke(centre, 4.5, stroke);
+    let from = centre + vec2(3.2, 3.2);
+    ui.painter().line_segment([from, from + vec2(3.5, 3.5)], egui::Stroke::new(1.8, colour));
+    response
+}
+
 fn size_icon(ui: &mut Ui, side: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
     let square = Rect::from_center_size(rect.center(), vec2(side, side));

@@ -49,6 +49,8 @@ pub enum Cmd {
     FlipVertical,
     /// Put the image as shown on the clipboard (Ctrl+Shift+C).
     CopyImage,
+    /// Type a filter for the gallery's images (Ctrl+F).
+    Find,
     /// Open what the clipboard holds: files, a path, an image (Ctrl+V,
     /// Shift+Insert; see `win::watch_paste`).
     Paste,
@@ -168,6 +170,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::P if letter => Pause,
         Key::Period if letter => NextFrame,
         Key::Comma if letter => PrevFrame,
+        Key::F if m.ctrl && !m.shift && !m.alt => Find,
         Key::F if letter || (m.ctrl && m.shift && !m.alt) => FullScreen,
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
@@ -214,6 +217,8 @@ pub fn gallery_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
     }
     match key {
         Key::A if m.ctrl && !m.alt && !m.shift => (!repeat).then_some(Cmd::SelectAll),
+        // As in many programs' lists; 100% (the viewer's `/`) means nothing here.
+        Key::Slash if !m.ctrl && !m.alt => (!repeat).then_some(Cmd::Find),
         Key::PageUp if !m.ctrl && !m.alt => Some(Cmd::PageUp),
         Key::PageDown if !m.ctrl && !m.alt => Some(Cmd::PageDown),
         Key::F if m.ctrl && m.shift && !m.alt => Some(Cmd::WindowFullScreen),
@@ -347,6 +352,9 @@ mod tests {
         assert_eq!(command(Key::V, NONE, false), Some(Cmd::FlipVertical));
         assert_eq!(command(Key::V, CTRL, false), None);
         assert_eq!(command(Key::P, NONE, false), Some(Cmd::Pause));
+        assert_eq!(command(Key::Slash, NONE, false), Some(Cmd::Actual));
+        assert_eq!(gallery_command(Key::Slash, NONE, false), Some(Cmd::Find));
+        assert_eq!(command(Key::F, CTRL, false), Some(Cmd::Find));
         assert_eq!(command(Key::Period, NONE, true), Some(Cmd::NextFrame));
         assert_eq!(command(Key::Comma, NONE, true), Some(Cmd::PrevFrame));
         assert_eq!(command(Key::F, NONE, false), Some(Cmd::FullScreen));

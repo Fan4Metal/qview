@@ -309,6 +309,54 @@ pub fn find_gone(paths: Vec<PathBuf>, ctx: egui::Context) -> mpsc::Receiver<Vec<
     rx
 }
 
+/// Whether an image shown as `shown` (its name, or its path from the
+/// folder listed with the sub-folders, or its whole path among the
+/// favourites) passes the gallery's `filter`: every word of it, ignoring
+/// case, is in `shown`, or, with `*` or `?`, matches the file's name as a
+/// whole (`*.png`, `IMG_20??*`).
+pub fn matches(shown: &str, filter: &str) -> bool {
+    let shown = shown.to_lowercase();
+    let name = shown.rsplit(['\\', '/']).next().unwrap_or(&shown);
+    filter.split_whitespace().all(|word| {
+        let word = word.to_lowercase();
+        if word.contains(['*', '?']) {
+            let (pattern, name): (Vec<char>, Vec<char>) = (word.chars().collect(), name.chars().collect());
+            wildcard(&pattern, &name)
+        } else {
+            shown.contains(&word)
+        }
+    })
+}
+
+/// `name` matches `pattern`: `*` any run of characters, `?` one.
+fn wildcard(pattern: &[char], name: &[char]) -> bool {
+    let (mut p, mut n) = (0, 0);
+    // The last `*` seen, and where in `name` it was tried up to.
+    let mut star: Option<(usize, usize)> = None;
+    while n < name.len() {
+        match pattern.get(p) {
+            Some('*') => {
+                star = Some((p, n));
+                p += 1;
+            }
+            Some(&c) if c == '?' || c == name[n] => {
+                p += 1;
+                n += 1;
+            }
+            _ => match star {
+                // The `*` takes one more character.
+                Some((sp, sn)) => {
+                    star = Some((sp, sn + 1));
+                    p = sp + 1;
+                    n = sn + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[p..].iter().all(|&c| c == '*')
+}
+
 /// Where the images of each folder start in `files` (of one folder, or
 /// listed folder by folder by [`list_deep`] or [`list_files`]).
 pub fn starts(files: &[PathBuf]) -> Vec<usize> {
@@ -399,6 +447,25 @@ fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filters_by_words_and_wildcards() {
+        assert!(matches("IMG_2024_Beach.jpg", ""));
+        assert!(matches("IMG_2024_Beach.jpg", "beach"));
+        assert!(matches("IMG_2024_Beach.jpg", "2024  BEACH"));
+        assert!(!matches("IMG_2024_Beach.jpg", "2024 mountains"));
+        assert!(matches("IMG_2024_Beach.jpg", "*.jpg"));
+        assert!(!matches("IMG_2024_Beach.jpg", "*.png"));
+        assert!(matches("IMG_2024_Beach.jpg", "img_20??_*"));
+        assert!(!matches("IMG_2024_Beach.jpg", "img_20?_*"));
+        assert!(matches("a.b.c", "*.*.c"));
+        assert!(matches("x", "*"));
+        // A word matches the path from the folder; a wildcard, the name.
+        assert!(matches(r"Trip\IMG_1.jpg", "trip"));
+        assert!(!matches(r"Trip\IMG_1.jpg", "trip*"));
+        assert!(matches(r"Trip\IMG_1.jpg", "img*"));
+        assert!(matches("Отпуск.jpg", "ОТПУСК"));
+    }
 
     #[test]
     fn extensions() {

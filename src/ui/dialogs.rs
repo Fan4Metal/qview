@@ -86,6 +86,10 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                     tr!("Previous / next folder", "Предыдущая / следующая папка"),
                 ),
                 ("Alt+↑", tr!("Folder above", "Папка уровнем выше")),
+                (
+                    "/  Ctrl+F  Esc",
+                    tr!("Filter the images by name (*.png and the like too) / clear", "Фильтр изображений по имени (и маски вида *.png) / очистить"),
+                ),
                 ("Ctrl+Shift+F", tr!("Full screen for the gallery (with the bars)", "Галерея на полном экране (с панелями)")),
             ],
         ),

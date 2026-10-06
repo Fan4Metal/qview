@@ -292,6 +292,19 @@ pub struct App {
     favorites_gone: Option<mpsc::Receiver<Vec<PathBuf>>>,
     /// The favourites being copied to a folder.
     copying: Option<Copying>,
+    /// The listing as it came, before the gallery's filter: `files` is what
+    /// of it passes `name_filter`.
+    listed: Vec<PathBuf>,
+    /// The gallery's filter (Ctrl+F, `folder::matches`); empty: none. Kept
+    /// while the same folder is listed again, cleared for another.
+    pub name_filter: String,
+    /// Its field had the focus when last drawn. egui takes the focus away
+    /// on Esc before the frame begins, so by then the field no longer has
+    /// it: its Esc would close the gallery.
+    pub filter_focused: bool,
+    /// The field is wanted in this frame (`/`, Ctrl+F, the magnifier), before
+    /// it has the focus.
+    pub filter_open: bool,
     /// Copy Image or Paste under way on a thread (`clipboard`).
     clipboard: Option<mpsc::Receiver<Clipped>>,
     /// Made when the gallery is first opened.
@@ -509,6 +522,10 @@ impl App {
             confirm_clear_favorites: false,
             favorites_gone: None,
             copying: None,
+            listed: Vec::new(),
+            name_filter: String::new(),
+            filter_focused: false,
+            filter_open: false,
             clipboard: None,
             gallery: None,
             gallery_open: false,
@@ -712,6 +729,36 @@ impl App {
         }
     }
 
+    /// What of the listing passes the gallery's filter.
+    fn filtered(&self) -> Vec<PathBuf> {
+        if self.name_filter.trim().is_empty() {
+            return self.listed.clone();
+        }
+        self.listed.iter().filter(|p| folder::matches(&self.display_name(p), &self.name_filter)).cloned().collect()
+    }
+
+    /// The gallery's filter has changed: `files` is the listing filtered
+    /// anew (not listed again); the current image stays if it passes, else
+    /// the first that does is current, and with none passing it stays (the
+    /// filter cleared, it is there again).
+    pub fn filter_changed(&mut self) {
+        self.files = self.filtered();
+        self.starts = folder::starts(&self.files);
+        self.selection.retain_listed(&self.files);
+        self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
+        if self.index.is_none() && !self.files.is_empty() {
+            self.go(0);
+        }
+        if let Some(gallery) = &mut self.gallery {
+            gallery.scroll = Some(Scroll::Visible);
+        }
+    }
+
+    /// How many images the listing has, before the filter.
+    pub fn listed_count(&self) -> usize {
+        self.listed.len()
+    }
+
     /// Show the gallery of the folder of the current file, out of full
     /// screen (Ctrl+Shift+F there brings it back, bars kept).
     fn enter_gallery(&mut self, ctx: &egui::Context) {
@@ -743,6 +790,10 @@ impl App {
         if !same {
             self.selection.clear();
         }
+        if !self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir)) {
+            self.name_filter.clear();
+        }
+        self.listed.clear();
         self.files.clear();
         self.starts.clear();
         self.index = None;
@@ -980,6 +1031,11 @@ impl App {
         for (i, new) in places {
             self.files[i] = new.clone();
         }
+        for (old, new) in pairs {
+            if let Some(i) = folder::position(&self.listed, old) {
+                self.listed[i] = new.clone();
+            }
+        }
         for path in [self.current.as_mut(), self.shown.as_mut().map(|(p, _)| p), self.reloading.as_mut()].into_iter().flatten() {
             if let Some((_, new)) = pairs.iter().find(|(old, _)| old == path) {
                 *path = new.clone();
@@ -1043,15 +1099,16 @@ impl App {
         let gone = self.scan.take().map(|s| s.take_gone()).unwrap_or_default();
         self.forget_gone_favorites(&gone);
         match result {
-            Ok(files) => self.files = files,
+            Ok(files) => self.listed = files,
             Err(e) => {
                 self.notice(tr!(format!("Cannot list the folder: {e}"), format!("Не удалось прочитать папку: {e}")));
-                self.files = self.current.iter().cloned().collect();
+                self.listed = self.current.iter().cloned().collect();
             }
         }
+        self.files = self.filtered();
         // Nothing listed (the last favourites cleared or gone): nothing is
         // current, and the status bar is empty.
-        if self.files.is_empty()
+        if self.listed.is_empty()
             && let Some(current) = self.current.take()
         {
             // A file opened that is not there, in a folder with no images.
@@ -1070,6 +1127,11 @@ impl App {
             gallery.scroll = Some(Scroll::Centre);
         }
         if self.index.is_some() || self.files.is_empty() {
+            return;
+        }
+        // Listed, but not passing the filter: the first that does.
+        if self.current.as_deref().is_some_and(|c| folder::position(&self.listed, c).is_some()) {
+            self.go(0);
             return;
         }
         match self.current.clone() {
@@ -1355,6 +1417,9 @@ impl App {
     /// after the last one the one before.
     fn unlist(&mut self, path: &Path) {
         self.selection.remove(path);
+        if let Some(pos) = folder::position(&self.listed, path) {
+            self.listed.remove(pos);
+        }
         let was_current = self.current.as_deref().is_some_and(|c| folder::same_path(c, path));
         match folder::position(&self.files, path) {
             Some(pos) => {
@@ -1445,6 +1510,16 @@ impl App {
             Cmd::RotateLeft => self.view.turns = (self.view.turns + 3) % 4,
             Cmd::RotateRight => self.view.turns = (self.view.turns + 1) % 4,
             Cmd::CopyImage => self.copy_image(ctx),
+            Cmd::Find => {
+                if !self.gallery_open {
+                    self.enter_gallery(ctx);
+                }
+                ctx.memory_mut(|m| m.request_focus(egui::Id::new(crate::ui::gallery::FILTER_ID)));
+                self.filter_open = true;
+                // The `/` that asked for it would be typed into the field,
+                // which has the focus in this very frame.
+                ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/")));
+            }
             Cmd::Paste => self.paste(ctx),
             Cmd::FlipHorizontal => self.view.mirror(true),
             Cmd::FlipVertical => self.view.mirror(false),
@@ -2579,13 +2654,18 @@ impl eframe::App for App {
         if !modal_open && !egui::Popup::is_any_open(&ctx) {
             // Keys are the viewer's: no widget keeps the focus to take
             // Space or Enter as a click.
-            if let Some(id) = ctx.memory(|m| m.focused()) {
+            // But the gallery's filter, while it is typed in: the keys are
+            // its own then.
+            let typing = std::mem::take(&mut self.filter_focused)
+                || ctx.memory(|m| m.has_focus(egui::Id::new(crate::ui::gallery::FILTER_ID)));
+            if let Some(id) = ctx.memory(|m| m.focused()).filter(|_| !typing) {
                 ctx.memory_mut(|m| m.surrender_focus(id));
             }
-            if paste {
+            if paste && !typing {
                 self.run(&ctx, frame, Cmd::Paste);
             }
-            for cmd in crate::input::keys(&ctx, self.key_mode()) {
+            let cmds = if typing { Vec::new() } else { crate::input::keys(&ctx, self.key_mode()) };
+            for cmd in cmds {
                 self.run(&ctx, frame, cmd);
             }
             self.sync_shown();

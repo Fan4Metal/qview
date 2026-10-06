@@ -18,6 +18,11 @@ impl App {
             _ if self.current.is_none() && self.scan.is_none() => return fields,
             _ => "?/?".into(),
         });
+        if !self.name_filter.trim().is_empty() {
+            let (n, all) = (self.files.len(), self.listed_count());
+            let f = self.name_filter.trim();
+            fields.push(tr!(format!("Filter \"{f}\": {n} of {all}"), format!("Фильтр «{f}»: {n} из {all}")));
+        }
         let chosen = self.selection.len();
         if self.gallery_open && chosen > 1 {
             fields.push(tr!(format!("Selected: {chosen}"), format!("Выбрано: {chosen}")));
