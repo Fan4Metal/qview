@@ -1250,6 +1250,7 @@ impl App {
                         self.view.next_image();
                     } else if self.reloading.as_ref() == Some(current) {
                         self.view.turns = 0;
+                        self.view.flip = false;
                         self.view.offset = Vec2::ZERO;
                     }
                     if self.reloading.as_ref() == Some(current) {
@@ -1417,6 +1418,8 @@ impl App {
             Cmd::Cover => self.view.choose(Zoom::Cover, size, viewport, ppp),
             Cmd::RotateLeft => self.view.turns = (self.view.turns + 3) % 4,
             Cmd::RotateRight => self.view.turns = (self.view.turns + 1) % 4,
+            Cmd::FlipHorizontal => self.view.mirror(true),
+            Cmd::FlipVertical => self.view.mirror(false),
             Cmd::FullScreen | Cmd::WindowFullScreen => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!Self::is_fullscreen(ctx))),
             Cmd::Escape if Self::is_fullscreen(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false)),
             // Back to the gallery, as with G; Esc there closes.
@@ -1597,6 +1600,8 @@ impl App {
             | Cmd::Cover
             | Cmd::RotateLeft
             | Cmd::RotateRight
+            | Cmd::FlipHorizontal
+            | Cmd::FlipVertical
             | Cmd::Crop
             | Cmd::Save
             | Cmd::SaveAs => {}
@@ -1845,6 +1850,12 @@ impl App {
                 }
                 return false;
             }
+            Cmd::FlipHorizontal | Cmd::FlipVertical => {
+                if let (Some(crop), Some((_, picture))) = (&mut self.crop, &self.shown) {
+                    crop.mirror(self.view.rotated(picture.size()), cmd == Cmd::FlipHorizontal);
+                }
+                return false;
+            }
             // Panning, never browsing.
             Cmd::Arrow(arrow) => {
                 let ppp = ctx.pixels_per_point();
@@ -1889,10 +1900,10 @@ impl App {
             .filter(|c| !crate::crop::is_whole(c.rect, turned))
             .map(|c| crate::crop::pixels(c.rect, turned));
         let dst = if !as_new && edit::can_overwrite(&path) {
-            if self.view.turns == 0 && crop.is_none() {
+            if !self.view.changed() && crop.is_none() {
                 self.notice(tr!(
-                    "Nothing to save: the image is neither turned nor cropped".into(),
-                    "Нечего сохранять: изображение не повёрнуто и не обрезано".into()
+                    "Nothing to save: the image is neither turned, mirrored nor cropped".into(),
+                    "Нечего сохранять: изображение не повёрнуто, не отражено и не обрезано".into()
                 ));
                 return;
             }
@@ -1902,13 +1913,16 @@ impl App {
                 "_crop"
             } else if self.view.turns != 0 {
                 "_rotate"
+            } else if self.view.flip {
+                "_flip"
             } else {
                 ""
             };
             let Some(dst) = Self::pick_save_path(frame, &path, suffix) else { return };
             dst
         };
-        let job = edit::Job { src: path, dst, size: [picture.meta.width, picture.meta.height], turns: self.view.turns, crop };
+        let size = [picture.meta.width, picture.meta.height];
+        let job = edit::Job { src: path, dst, size, turns: self.view.turns, flip: self.view.flip, crop };
         self.start_save(ctx, vec![job], false);
     }
 
@@ -1948,10 +1962,10 @@ impl App {
         }
         let Some(path) = self.current.clone().filter(|p| p.is_file()) else { return };
         // The view's turn counts only for the image it shows.
-        let turns = if self.editable().is_some() { self.view.turns } else { 0 };
+        let (turns, flip) = if self.editable().is_some() { (self.view.turns, self.view.flip) } else { (0, false) };
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let name = edit::suggested_name(&path, format.extensions()[0], "", |n| dir.join(n).exists());
-        let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, crop: None };
+        let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, flip, crop: None };
         self.start_save(ctx, vec![job], true);
     }
 
@@ -1970,7 +1984,7 @@ impl App {
                 });
                 let dst = dir.join(name);
                 planned.insert(dst.to_string_lossy().to_lowercase());
-                edit::Job { src, dst, size: [0, 0], turns: 0, crop: None }
+                edit::Job { src, dst, size: [0, 0], turns: 0, flip: false, crop: None }
             })
             .collect();
         let n = jobs.len();
@@ -2195,7 +2209,7 @@ impl App {
             view.next_image();
             let place = view.place(size, rect, ppp);
             self.paint_checker(&painter, place, ppp);
-            view::paint(&painter, texture, place, 0);
+            view::paint(&painter, texture, place, 0, false);
         } else if let Some((_, picture)) = self.shown.clone() {
             let size = picture.size();
             if response.dragged_by(PointerButton::Primary) && self.crop.is_none() {
@@ -2203,7 +2217,7 @@ impl App {
             }
             let place = self.view.place(size, rect, ppp);
             self.paint_checker(&painter, place, ppp);
-            view::paint(&painter, picture.texture.id(), place, self.view.turns);
+            view::paint(&painter, picture.texture.id(), place, self.view.turns, self.view.flip);
             if let Some(crop) = &mut self.crop {
                 crate::ui::crop::frame(crop, &response, &painter, place, self.view.rotated(size));
             } else if self.view.pannable(size, rect, ppp).contains(&true) && response.hovered() {

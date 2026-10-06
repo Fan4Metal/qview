@@ -27,7 +27,7 @@ impl App {
             file: self.current.is_some(),
             image: self.shown.is_some(),
             edit: self.editable().is_some() && !self.saving(),
-            edited: self.editable().is_some() && !self.saving() && (self.view.turns != 0 || self.crop.is_some()),
+            edited: self.editable().is_some() && !self.saving() && (self.view.changed() || self.crop.is_some()),
             prev: self.index.is_some_and(|i| i > 0),
             next: self.index.is_some_and(|i| i + 1 < n),
             any: n > 0,
@@ -137,6 +137,8 @@ impl App {
     fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {
         self.item(ui, tr!("Rotate Left", "Повернуть влево").into(), "[", Cmd::RotateLeft, e.image);
         self.item(ui, tr!("Rotate Right", "Повернуть вправо").into(), "]", Cmd::RotateRight, e.image);
+        self.item(ui, tr!("Flip Horizontally", "Отразить по горизонтали").into(), "H", Cmd::FlipHorizontal, e.image);
+        self.item(ui, tr!("Flip Vertically", "Отразить по вертикали").into(), "V", Cmd::FlipVertical, e.image);
         let cropping = self.crop.is_some();
         if ui.add_enabled(e.edit, Button::new(tr!("Crop", "Обрезать")).shortcut_text("C").selected(cropping)).clicked() {
             self.clicked.push(Cmd::Crop);

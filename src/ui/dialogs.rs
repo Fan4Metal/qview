@@ -29,12 +29,13 @@ fn shortcuts() -> Vec<(&'static str, &'static str)> {
             "[  ]  Ctrl+Alt+←  Ctrl+Alt+→",
             tr!("Rotate left / right (the file changes on saving)", "Повернуть влево / вправо (файл меняется при сохранении)"),
         ),
+        ("H  V", tr!("Flip horizontally / vertically", "Отразить по горизонтали / по вертикали")),
         ("C", tr!("Crop: drag the frame, its edges or corners", "Обрезка: перетаскивайте рамку, её края или углы")),
         (
             tr!("Crop: Enter  Esc", "Обрезка: Enter  Esc"),
             tr!("Save the cropped image / cancel", "Сохранить обрезанное / отменить"),
         ),
-        ("Ctrl+S", tr!("Save the turned or cropped image", "Сохранить повёрнутое или обрезанное")),
+        ("Ctrl+S", tr!("Save the turned, flipped or cropped image", "Сохранить повёрнутое, отражённое или обрезанное")),
         ("Ctrl+Shift+S", tr!("Save as another file or format", "Сохранить в другой файл или формат")),
         ("Ctrl+E", tr!("Open in the editor chosen last", "Открыть в последнем выбранном редакторе")),
         (

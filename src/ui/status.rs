@@ -50,12 +50,8 @@ impl App {
                         zoom
                     });
                     // A turn is the view's until it is saved.
-                    if self.view.turns != 0 && self.crop.is_none() && !m.animated {
-                        let degrees = self.view.turns as u32 * 90;
-                        fields.push(tr!(
-                            format!("Turned {degrees}°, Ctrl+S saves"),
-                            format!("Повёрнуто на {degrees}°, Ctrl+S — сохранить")
-                        ));
+                    if self.view.changed() && self.crop.is_none() && !m.animated {
+                        fields.push(turned(self.view.turns, self.view.flip));
                     }
                 }
             }
@@ -105,4 +101,18 @@ fn separator(ui: &mut Ui) {
     let height = ui.text_style_height(&egui::TextStyle::Body);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, height), egui::Sense::hover());
     ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0, SEPARATOR));
+}
+
+/// How the view turns and mirrors the image, and that Ctrl+S saves it.
+fn turned(turns: u8, flip: bool) -> String {
+    let degrees = turns as u32 * 90;
+    match (turns, flip) {
+        (0, true) => tr!("Mirrored left to right, Ctrl+S saves", "Отражено слева направо, Ctrl+S — сохранить").into(),
+        (2, true) => tr!("Mirrored top to bottom, Ctrl+S saves", "Отражено сверху вниз, Ctrl+S — сохранить").into(),
+        (_, true) => tr!(
+            format!("Mirrored, turned {degrees}°, Ctrl+S saves"),
+            format!("Отражено и повёрнуто на {degrees}°, Ctrl+S — сохранить")
+        ),
+        _ => tr!(format!("Turned {degrees}°, Ctrl+S saves"), format!("Повёрнуто на {degrees}°, Ctrl+S — сохранить")),
+    }
 }

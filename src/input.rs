@@ -43,6 +43,9 @@ pub enum Cmd {
     Actual,
     RotateLeft,
     RotateRight,
+    /// Mirror the image as shown left to right (H), or top to bottom (V).
+    FlipHorizontal,
+    FlipVertical,
     FullScreen,
     /// Full screen without leaving the gallery (Ctrl+Shift+F there; F
     /// shows the image in full screen).
@@ -148,6 +151,8 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::Slash if plain => Actual,
         Key::OpenBracket if plain => RotateLeft,
         Key::CloseBracket if plain => RotateRight,
+        Key::H if letter => FlipHorizontal,
+        Key::V if letter => FlipVertical,
         Key::F if letter || (m.ctrl && m.shift && !m.alt) => FullScreen,
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
@@ -322,6 +327,9 @@ mod tests {
         assert_eq!(command(Key::Num4, NONE, false), Some(Cmd::Cover));
         assert_eq!(command(Key::Num1, CTRL, false), None);
         assert_eq!(command(Key::OpenBracket, NONE, false), Some(Cmd::RotateLeft));
+        assert_eq!(command(Key::H, NONE, false), Some(Cmd::FlipHorizontal));
+        assert_eq!(command(Key::V, NONE, false), Some(Cmd::FlipVertical));
+        assert_eq!(command(Key::V, CTRL, false), None);
         assert_eq!(command(Key::F, NONE, false), Some(Cmd::FullScreen));
         assert_eq!(command(Key::F, CTRL | SHIFT, false), Some(Cmd::FullScreen));
         assert_eq!(command(Key::F, SHIFT, false), None);

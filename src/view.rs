@@ -54,6 +54,9 @@ pub struct View {
     /// Clockwise quarter turns, 0..=3: the view's only, until Ctrl+S
     /// saves them into the file (see `edit`).
     pub turns: u8,
+    /// Mirrored left to right before it is turned; with `turns` any of the
+    /// eight orientations. The view's only too.
+    pub flip: bool,
     /// Centre of the image relative to the centre of the viewport, in
     /// points.
     pub offset: Vec2,
@@ -64,7 +67,7 @@ pub struct View {
 
 impl Default for View {
     fn default() -> Self {
-        Self { zoom: Zoom::Fit, mode: Zoom::Fit, turns: 0, offset: Vec2::ZERO, keep: false }
+        Self { zoom: Zoom::Fit, mode: Zoom::Fit, turns: 0, flip: false, offset: Vec2::ZERO, keep: false }
     }
 }
 
@@ -116,6 +119,7 @@ impl View {
     /// of a series show the same part at the same size).
     pub fn next_image(&mut self) {
         self.turns = 0;
+        self.flip = false;
         if self.keep {
             return;
         }
@@ -136,6 +140,20 @@ impl View {
                 self.offset = Vec2::ZERO;
             }
         }
+    }
+
+    /// Mirror the image as it is shown: left to right if `horizontal`,
+    /// else top to bottom. On screen a mirror turns the other way, so the
+    /// turns change too.
+    pub fn mirror(&mut self, horizontal: bool) {
+        let half = if horizontal { 0 } else { 2 };
+        self.turns = (half + 4 - self.turns % 4) % 4;
+        self.flip = !self.flip;
+    }
+
+    /// Turned or mirrored: something for Ctrl+S to save.
+    pub fn changed(&self) -> bool {
+        self.turns != 0 || self.flip
     }
 
     /// `size` (image pixels) turned by the view's rotation.
@@ -211,20 +229,26 @@ impl View {
     }
 }
 
-/// Paint texture `texture` into `rect` turned by `turns` clockwise quarter
-/// turns. The corners are fixed and the texture coordinates rotate, which
-/// is exact (no trigonometry).
-pub fn paint(painter: &Painter, texture: TextureId, rect: Rect, turns: u8) {
-    const UV: [Pos2; 4] = [pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)];
+/// Paint texture `texture` into `rect` mirrored left to right if `flip`,
+/// then turned by `turns` clockwise quarter turns. The corners are fixed
+/// and the texture coordinates move, which is exact (no trigonometry).
+pub fn paint(painter: &Painter, texture: TextureId, rect: Rect, turns: u8, flip: bool) {
     let corners = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
-    let turns = (turns % 4) as usize;
     let mut mesh = Mesh::with_texture(texture);
     for (i, pos) in corners.into_iter().enumerate() {
-        mesh.vertices.push(egui::epaint::Vertex { pos, uv: UV[(i + 4 - turns) % 4], color: Color32::WHITE });
+        mesh.vertices.push(egui::epaint::Vertex { pos, uv: corner_uv(i, turns, flip), color: Color32::WHITE });
     }
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);
     painter.add(Shape::mesh(mesh));
+}
+
+/// The texture coordinates shown at corner `i` (clockwise from the top
+/// left) of an image mirrored if `flip`, then turned `turns`.
+fn corner_uv(i: usize, turns: u8, flip: bool) -> Pos2 {
+    const UV: [Pos2; 4] = [pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)];
+    let uv = UV[(i + 4 - (turns % 4) as usize) % 4];
+    if flip { pos2(1.0 - uv.x, uv.y) } else { uv }
 }
 
 /// Squares of the checkerboard behind transparency, in points.
@@ -394,9 +418,35 @@ mod tests {
         assert_eq!(v.offset, vec2(-300.0, 0.0));
     }
 
+    /// What a view shows at each corner, as the texture coordinates there.
+    fn corners(v: &View) -> [Pos2; 4] {
+        std::array::from_fn(|i| corner_uv(i, v.turns, v.flip))
+    }
+
+    #[test]
+    fn mirrors_as_shown() {
+        for turns in 0..4 {
+            for flip in [false, true] {
+                let v = View { turns, flip, ..View::default() };
+                let [lt, rt, rb, lb] = corners(&v);
+                // Left to right: the corners of each row change places.
+                let mut h = v;
+                h.mirror(true);
+                assert_eq!(corners(&h), [rt, lt, lb, rb], "{turns} {flip}");
+                // Top to bottom: those of each column.
+                let mut w = v;
+                w.mirror(false);
+                assert_eq!(corners(&w), [lb, rb, rt, lt], "{turns} {flip}");
+                h.mirror(true);
+                assert_eq!(h, v);
+                assert_eq!(h.changed(), turns != 0 || flip);
+            }
+        }
+    }
+
     #[test]
     fn next_image_resets_all_but_fixed_zooms() {
-        let mut v = View { zoom: Zoom::Scale(2.0), turns: 3, offset: vec2(5.0, 5.0), ..View::default() };
+        let mut v = View { zoom: Zoom::Scale(2.0), turns: 3, flip: true, offset: vec2(5.0, 5.0), ..View::default() };
         v.next_image();
         assert_eq!(v, View::default());
         let mut v = View { zoom: Zoom::Actual, turns: 1, offset: vec2(5.0, 5.0), ..View::default() };

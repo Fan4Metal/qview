@@ -105,6 +105,18 @@ impl Crop {
         self.drag = None;
     }
 
+    /// The image of `size` (as shown) mirrored left to right if
+    /// `horizontal`, else top to bottom: the frame goes with it.
+    pub fn mirror(&mut self, size: Vec2, horizontal: bool) {
+        let r = self.rect;
+        self.rect = if horizontal {
+            Rect::from_x_y_ranges(size.x - r.max.x..=size.x - r.min.x, r.y_range())
+        } else {
+            Rect::from_x_y_ranges(r.x_range(), size.y - r.max.y..=size.y - r.min.y)
+        };
+        self.drag = None;
+    }
+
     /// Keep `aspect` from now on: the largest frame of those proportions
     /// around the frame's centre.
     pub fn set_aspect(&mut self, aspect: Aspect, size: Vec2) {
