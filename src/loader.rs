@@ -226,7 +226,11 @@ pub fn decode(path: &Path, max_side: usize) -> Result<(Pixels, Meta), String> {
 
 /// Read and decode `path`, turned upright by its EXIF orientation: with
 /// the `image` crate, or with Windows' codecs (`wic`) what it cannot read.
+/// An image in an archive (`archive`) only with the `image` crate.
 pub fn read(path: &Path) -> Result<(DynamicImage, Meta), String> {
+    if crate::archive::inside(path) {
+        return read_image(path);
+    }
     let first = match (!crate::wic::takes(path)).then(|| read_image(path)) {
         Some(Ok(read)) => return Ok(read),
         Some(Err(e)) => Some(e),
@@ -267,13 +271,13 @@ pub fn read_wic(path: &Path, bgra: bool) -> Result<(DynamicImage, Meta), String>
     Ok((img, meta))
 }
 
-/// Read and decode `path` with the `image` crate, upright.
+/// Read and decode `path` (a file, or an image in an archive) with the
+/// `image` crate, upright.
 fn read_image(path: &Path) -> Result<(DynamicImage, Meta), String> {
-    use std::os::windows::fs::MetadataExt;
     // One read of the whole file is faster than buffered reads through
     // the decoder.
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let modified = std::fs::metadata(path).map_or(0, |m| m.last_write_time());
+    let bytes = crate::archive::read(path).map_err(|e| e.to_string())?;
+    let modified = crate::archive::metadata(path).map_or(0, |(_, m)| m);
     let mut reader = ImageReader::new(Cursor::new(&bytes[..])).with_guessed_format().map_err(|e| e.to_string())?;
     if reader.format().is_none()
         && let Ok(format) = ImageFormat::from_path(path)

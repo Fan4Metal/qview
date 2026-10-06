@@ -305,6 +305,8 @@ pub struct App {
     /// The field is wanted in this frame (`/`, Ctrl+F, the magnifier), before
     /// it has the focus.
     pub filter_open: bool,
+    /// `dir` is a ZIP archive (`archive`), listed as a folder.
+    pub archive: bool,
     /// Copy Image or Paste under way on a thread (`clipboard`).
     clipboard: Option<mpsc::Receiver<Clipped>>,
     /// Made when the gallery is first opened.
@@ -363,6 +365,22 @@ struct Copying {
     done: mpsc::Receiver<Result<(), String>>,
     to: PathBuf,
     count: usize,
+}
+
+/// The commands that change the files (or the favourites), refused for the
+/// images of an archive. Save goes to Save As there (`edit::can_overwrite`).
+fn changes_files(cmd: Cmd) -> bool {
+    matches!(
+        cmd,
+        Cmd::Delete
+            | Cmd::Rename
+            | Cmd::Copy
+            | Cmd::ConvertTo(_)
+            | Cmd::Edit
+            | Cmd::EditWith(_)
+            | Cmd::EditWithOther
+            | Cmd::Favorite
+    )
 }
 
 /// What a clipboard thread did.
@@ -526,6 +544,7 @@ impl App {
             name_filter: String::new(),
             filter_focused: false,
             filter_open: false,
+            archive: false,
             clipboard: None,
             gallery: None,
             gallery_open: false,
@@ -584,7 +603,16 @@ impl App {
         if self.gallery_open {
             self.leave_gallery();
         }
-        let dir = path.parent().map(Path::to_path_buf);
+        // An archive: its first image, as a comic book reader opens it.
+        if crate::archive::is_archive_file(&path) {
+            self.open_folder(ctx, path, false);
+            return;
+        }
+        // An image in an archive is listed with the archive's others.
+        let dir = match crate::archive::split(&path) {
+            Some((archive, _)) => Some(archive),
+            None => path.parent().map(Path::to_path_buf),
+        };
         let listed = self.scan.is_none()
             && !self.deep
             && matches!((&self.dir, &dir), (Some(a), Some(b)) if folder::same_path(a, b));
@@ -635,11 +663,11 @@ impl App {
     /// Show `place` again (Back, Forward): listed as it was, its image
     /// current and where it was on screen.
     fn return_to(&mut self, ctx: &egui::Context, place: Place) {
-        let keep = place.current.filter(|p| p.is_file());
+        let keep = place.current.filter(|p| crate::archive::is_file(p));
         self.set_current(keep.clone());
         self.start_scan(ctx, place.dir.clone(), place.deep, keep);
         if let Some(gallery) = &mut self.gallery {
-            gallery.tree.reveal(&place.dir);
+            gallery.tree.reveal(&crate::archive::tree_folder(&place.dir));
             gallery.scroll = Some(place.below.map_or(Scroll::Centre, Scroll::Keep));
         }
     }
@@ -652,18 +680,18 @@ impl App {
     /// The current image's own folder can be gone to: the favourites or
     /// the sub-folders are listed.
     pub fn can_go_to_folder(&self) -> bool {
-        self.mixed() && self.current.is_some()
+        self.mixed() && !self.archive && self.current.is_some()
     }
 
     /// List the current image's folder alone, as opening it would, the
     /// image staying current; Back returns.
     fn go_to_folder(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.current.clone().filter(|_| self.mixed()) else { return };
+        let Some(path) = self.current.clone().filter(|_| self.can_go_to_folder()) else { return };
         let Some(dir) = path.parent().map(Path::to_path_buf) else { return };
         self.leave_for(&dir);
         self.start_scan(ctx, dir.clone(), false, Some(path));
         if let Some(gallery) = &mut self.gallery {
-            gallery.tree.reveal(&dir);
+            gallery.tree.reveal(&crate::archive::tree_folder(&dir));
             gallery.scroll = Some(Scroll::Centre);
         }
     }
@@ -714,7 +742,12 @@ impl App {
     /// `files` come from several folders: the sub-folders of `dir`, or the
     /// favourites.
     pub fn mixed(&self) -> bool {
-        self.deep || self.in_favorites()
+        self.deep || self.in_favorites() || self.archive
+    }
+
+    /// The images listed are those of a ZIP archive: read-only.
+    pub fn in_archive(&self) -> bool {
+        self.archive
     }
 
     /// The name of `path` for display: with the sub-folders listed, its
@@ -723,7 +756,7 @@ impl App {
         if self.in_favorites() {
             return path.display().to_string();
         }
-        match self.dir.as_deref().filter(|_| self.deep).and_then(|d| path.strip_prefix(d).ok()) {
+        match self.dir.as_deref().filter(|_| self.deep || self.archive).and_then(|d| path.strip_prefix(d).ok()) {
             Some(relative) => relative.to_string_lossy().into_owned(),
             None => file_name(path),
         }
@@ -767,7 +800,7 @@ impl App {
         }
         let gallery = self.gallery.get_or_insert_with(|| Gallery::new(ctx));
         if let Some(dir) = &self.dir {
-            gallery.tree.reveal(dir);
+            gallery.tree.reveal(&crate::archive::tree_folder(dir));
         }
         gallery.scroll = Some(Scroll::Centre);
         self.gallery_open = true;
@@ -797,8 +830,10 @@ impl App {
         self.files.clear();
         self.starts.clear();
         self.index = None;
+        self.archive = crate::archive::is_archive_file(&dir);
         self.dir = Some(dir.clone());
-        self.deep = deep;
+        // An archive's folders are listed with it, by folder or not.
+        self.deep = deep && !self.archive;
         self.scan = Some(self.scan_dir(dir, keep, ctx));
     }
 
@@ -806,6 +841,8 @@ impl App {
     fn scan_dir(&self, dir: PathBuf, keep: Option<PathBuf>, ctx: &egui::Context) -> Scan {
         if favorites::is_dir(&dir) {
             folder::scan_files(self.favorites.paths(), self.favorites_sort, self.by_folder, ctx.clone())
+        } else if crate::archive::is_archive_file(&dir) {
+            folder::scan_archive(dir, self.sort, self.by_folder, ctx.clone())
         } else {
             folder::scan(dir, self.depth(), keep, self.sort, ctx.clone())
         }
@@ -1108,11 +1145,15 @@ impl App {
         self.files = self.filtered();
         // Nothing listed (the last favourites cleared or gone): nothing is
         // current, and the status bar is empty.
+        // Opened, an archive shows its first image: none to show.
+        if self.archive && self.listed.is_empty() && !self.gallery_open {
+            self.notice(tr!("No images in this archive".into(), "В этом архиве нет изображений".into()));
+        }
         if self.listed.is_empty()
             && let Some(current) = self.current.take()
         {
             // A file opened that is not there, in a folder with no images.
-            if !self.in_favorites() && !current.is_file() {
+            if !self.in_favorites() && !self.archive && !crate::archive::is_file(&current) {
                 let name = file_name(&current);
                 self.notice(tr!(format!("File not found: {name}"), format!("Файл не найден: {name}")));
             }
@@ -1476,6 +1517,10 @@ impl App {
         if self.gallery_open && self.run_in_gallery(ctx, cmd) {
             return;
         }
+        if self.archive && changes_files(cmd) {
+            self.notice(tr!("Images in an archive cannot be changed; Save As makes a copy".into(), "Изображения в архиве не изменяются; копию можно сделать через «Сохранить как»".into()));
+            return;
+        }
         let ppp = ctx.pixels_per_point();
         let viewport = self.viewport;
         let size = self.shown.as_ref().map(|(_, p)| p.size());
@@ -1595,7 +1640,9 @@ impl App {
             Cmd::Open => self.pick_file(ctx, frame),
             Cmd::ShowInExplorer => {
                 if let Some(path) = &self.current {
-                    win::show_in_explorer(path);
+                    // An image in an archive: the archive.
+                    let path = crate::archive::split(path).map_or_else(|| path.clone(), |(archive, _)| archive);
+                    win::show_in_explorer(&path);
                 }
             }
             Cmd::Refresh => {
@@ -1855,7 +1902,7 @@ impl App {
         if self.clipboard.is_some() {
             return;
         }
-        let Some(path) = self.current.clone().filter(|p| p.is_file()) else { return };
+        let Some(path) = self.current.clone().filter(|p| crate::archive::is_file(p)) else { return };
         // The view's turn counts only for the image it shows.
         let shown = self.editable();
         let (turns, flip) = if shown.is_some() { (self.view.turns, self.view.flip) } else { (0, false) };
@@ -1934,10 +1981,15 @@ impl App {
 
     fn pick_file(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let image_extensions: Vec<&str> =
-            folder::EXTENSIONS.iter().copied().chain(crate::wic::extensions().iter().map(String::as_str)).collect();
+            folder::EXTENSIONS
+                .iter()
+                .copied()
+                .chain(crate::wic::extensions().iter().map(String::as_str))
+                .chain(crate::archive::EXTENSIONS.iter().copied())
+                .collect();
         let mut dialog = rfd::FileDialog::new()
             .set_title(tr!("Open image", "Открыть изображение"))
-            .add_filter(tr!("Images", "Изображения"), &image_extensions)
+            .add_filter(tr!("Images and comic books", "Изображения и комиксы"), &image_extensions)
             .add_filter(tr!("All files", "Все файлы"), &["*"])
             .set_parent(frame);
         let dir = match &self.dir {
@@ -2116,7 +2168,7 @@ impl App {
     /// The current image, or those chosen in the gallery, can be converted
     /// (File → Convert To), decoded or not.
     pub fn can_convert(&self) -> bool {
-        self.current.is_some() && self.crop.is_none() && self.saving.is_none()
+        self.current.is_some() && self.crop.is_none() && self.saving.is_none() && !self.archive
     }
 
     /// Save the current image in `format` beside its file, under its name
@@ -2193,13 +2245,16 @@ impl App {
     /// first if it can be saved in it, otherwise JPEG; the name suggested
     /// has `suffix` and is not taken (see `edit::suggested_name`).
     fn pick_save_path(frame: &eframe::Frame, path: &Path, suffix: &str) -> Option<PathBuf> {
-        let own = edit::Format::of(path).filter(|_| edit::can_overwrite(path));
+        // An image in an archive keeps its format, which is only not saved
+        // over.
+        let own = edit::Format::of(path).filter(|_| edit::can_overwrite(path) || crate::archive::inside(path));
         let first = own.unwrap_or(edit::Format::Jpeg);
         let ext = match own {
             Some(_) => path.extension().unwrap_or_default().to_string_lossy().into_owned(),
             None => "jpg".to_string(),
         };
-        let dir = path.parent().unwrap_or(Path::new(""));
+        // Of an image in an archive, beside the archive.
+        let dir = crate::archive::folder_of(path).unwrap_or_default();
         let name = edit::suggested_name(path, &ext, suffix, |name| dir.join(name).exists());
         let mut dialog = rfd::FileDialog::new()
             .set_title(tr!("Save As", "Сохранить как"))
@@ -2208,8 +2263,8 @@ impl App {
         for format in std::iter::once(first).chain(edit::Format::ALL.into_iter().filter(|&f| f != first)) {
             dialog = dialog.add_filter(format.name(), format.extensions());
         }
-        if let Some(dir) = path.parent() {
-            dialog = dialog.set_directory(dir);
+        if !dir.as_os_str().is_empty() {
+            dialog = dialog.set_directory(&dir);
         }
         dialog.save_file()
     }

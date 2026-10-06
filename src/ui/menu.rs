@@ -233,6 +233,7 @@ impl App {
     /// Add the current image, or those chosen, to the favourites, or
     /// remove them when they all are.
     pub(super) fn favorite_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let enabled = enabled && !self.in_archive();
         let targets = self.targets();
         let text = if !targets.is_empty() && targets.iter().all(|p| self.favorites.contains(p)) {
             tr!("Remove from Favorites", "Убрать из избранного")
@@ -246,6 +247,7 @@ impl App {
     /// Windows offers for the type, the one in use ticked, and any other;
     /// the one picked becomes the editor.
     pub(super) fn editor_items(&mut self, ui: &mut Ui, enabled: bool) {
+        let enabled = enabled && !self.in_archive();
         let text = match &self.editor {
             Some(e) => tr!(format!("Open in {}", e.name), format!("Открыть в {}", e.name)),
             None => tr!("Open in Editor", "Открыть в редакторе").into(),
@@ -282,7 +284,7 @@ impl App {
             Some(n) => tr!(format!("Copy {n} Files"), format!("Копировать файлы ({n})")),
             None => tr!("Copy", "Копировать").into(),
         };
-        self.item(ui, text, "Ctrl+C", Cmd::Copy, enabled);
+        self.item(ui, text, "Ctrl+C", Cmd::Copy, enabled && !self.in_archive());
     }
 
     pub(super) fn copy_image_item(&mut self, ui: &mut Ui, enabled: bool) {
@@ -294,7 +296,7 @@ impl App {
             Some(n) => tr!(format!("Rename {n} Files…"), format!("Переименовать файлы ({n})…")),
             None => tr!("Rename…", "Переименовать…").into(),
         };
-        self.item(ui, text, "F2", Cmd::Rename, enabled);
+        self.item(ui, text, "F2", Cmd::Rename, enabled && !self.in_archive());
     }
 
     pub(super) fn delete_item(&mut self, ui: &mut Ui, enabled: bool) {
@@ -302,7 +304,7 @@ impl App {
             Some(n) => tr!(format!("Delete {n} Files…"), format!("Удалить файлы ({n})…")),
             None => tr!("Delete…", "Удалить…").into(),
         };
-        self.item(ui, text, "Delete", Cmd::Delete, enabled);
+        self.item(ui, text, "Delete", Cmd::Delete, enabled && !self.in_archive());
     }
 
     /// The current image's folder, from the favourites or the sub-folders.

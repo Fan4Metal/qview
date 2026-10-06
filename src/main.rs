@@ -4,6 +4,7 @@
 mod i18n;
 mod anim;
 mod app;
+mod archive;
 mod assoc;
 mod clipboard;
 mod crop;

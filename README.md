@@ -31,6 +31,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - The EXIF orientation of photos is applied.
 - The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
 - Deletion moves the file to the Recycle Bin after a confirmation.
+- Comic books in CBZ and other ZIP archives are viewed without unpacking (see [Comic books and ZIP archives](#comic-books-and-zip-archives)).
 - File → Copy Image (`Ctrl+Shift+C`) puts the image on the clipboard as it is shown, rotated, flipped and, while cropping, cropped, at the full size of the file, for pasting into other programs; an image with transparency is also put there as PNG. File → Paste (`Ctrl+V`) opens what the clipboard holds: a file copied in Explorer, a path copied as text, or an image, such as a screenshot, which is saved as a PNG file named `Clipboard <date> <time>.png` in the `qview` folder of the temporary folder and can then be cropped and saved elsewhere with Save As.
 - Images can be rotated, flipped and cropped and saved over the file or as another file; a JPEG that is only rotated or flipped keeps its compressed data (see [Rotating and cropping](#rotating-and-cropping)).
 - The filtering of images not shown at 100% is chosen in View → Filtering: bilinear (the default), bicubic, which is sharper both when enlarging and when reducing, or pixelated, which shows every pixel of an enlarged image as a sharp square of the same size at any zoom and suits pixel art and screenshots.
@@ -141,6 +142,10 @@ The Favorites menu, and in the favorites the context menus of the grid, copy all
 
 The favorites are kept in `favorites.txt` next to the settings (`%APPDATA%\qview\data`), saved after every change: a UTF-8 text file with one full path per line, in the order the images were marked, which other programs and scripts can read as well. Renaming or deleting a file in qview updates the list. A favorite whose folder no longer contains it (deleted, renamed or moved in another program) is removed from the list when the favorites are shown, with a notice in the status bar; the favorites of a folder that cannot be reached, such as one on a disconnected drive, are kept.
 
+## Comic books and ZIP archives
+
+A CBZ comic book or any other ZIP archive opened in qview (with `Ctrl+O`, from the command line, by dragging it onto the window, by pasting it with `Ctrl+V` or, once the CBZ type is registered, by a double click in Explorer) is shown like a folder of its images, without being unpacked: its first page appears at once, and the pages are browsed, zoomed and shown in the gallery (`G`) as usual. The pages are in the order of their names within the archive, so the chapters of a comic kept in folders stay apart; with "By folder" each folder of the archive is a section of the gallery. The images that the program's own decoders read (JPEG, PNG, GIF, WebP, BMP, TIFF and the others listed above) are shown; HEIC and camera RAW files inside an archive are not, since Windows' codecs need a file on disk. The images of an archive cannot be changed: deletion, renaming, saving over, conversion, opening in an editor and the favorites are unavailable there, while rotating, cropping and File → Save As save a copy beside the archive, and `Ctrl+Shift+C` copies a page to the clipboard. The Up button returns to the folder of the archive. RAR (CBR) and 7-Zip (CB7) archives are not supported.
+
 ## Update check and privacy
 
 The update check is optional and off by default. With **Check for updates at start-up (once a day)** enabled in Help → About qview, the program asks the GitHub Releases API (`api.github.com`) for the latest release at most once a day; **Check now** in the same window asks at once. The request carries nothing but the program version in its `User-Agent` header, and nothing is downloaded or installed: when a newer release exists, a button with its version appears at the right end of the toolbar and opens the release page in the browser. Otherwise the program does not access the network.
@@ -157,10 +162,10 @@ Only one window of qview is open at a time: when qview is already running, a fil
 
 ## File associations
 
-File → File Associations… registers qview with Windows for the current user (no administrator rights are needed): each supported format gets its own file type with an icon (HEIC/HEIF, AVIF, camera RAW and JPEG XR included), qview appears in "Open with" and in Settings → Default apps. Each icon is a page with a band in the format's colour showing the extension.
+File → File Associations… registers qview with Windows for the current user (no administrator rights are needed): each supported format gets its own file type with an icon (HEIC/HEIF, AVIF, camera RAW, JPEG XR and CBZ comic books included), qview appears in "Open with" and in Settings → Default apps. Each icon is a page with a band in the format's colour showing the extension.
 
 <p align="center">
-  <img src="images/file_types.png" width="520" alt="The file type icons: JPG, PNG, GIF, BMP, TIF, WEBP, ICO, TGA, QOI, PNM, HEIC, AVIF, RAW and JXR">
+  <img src="images/file_types.png" width="520" alt="The file type icons: JPG, PNG, GIF, BMP, TIF, WEBP, ICO, TGA, QOI, PNM, HEIC, AVIF, RAW, JXR and CBZ">
 </p>
 
 Windows lets only the user choose the default program, so registration offers qview but does not take over the file types by itself; only an extension no other program handles (QOI, for example) gets qview as its default program. Files that were opened with qview through "Open with" before the registration get the icon and the name of their type too. The "Choose as Default…" button opens Settings, where qview is selected under "Set defaults by app"; Windows also offers qview the next time an image is opened. The dialog shows which types qview opens by default, and "Unregister" removes everything the registration wrote. The same can be done from the command line, for example by an installer:

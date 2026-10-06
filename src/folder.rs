@@ -275,6 +275,12 @@ pub fn list_files(
         }
         found.store(i + 1, Relaxed);
     }
+    Ok(sorted(files, order, by_folder))
+}
+
+/// `files` in `order`; `by_folder`: folder by folder, the folders in
+/// Explorer's name order of their paths, `order` within each.
+fn sorted(mut files: Vec<Entry>, order: Order, by_folder: bool) -> Vec<PathBuf> {
     if by_folder {
         let folder = |e: &Entry| crate::win::wide(e.path.parent().unwrap_or(&e.path));
         let mut keyed: Vec<(Vec<u16>, Entry)> = files.into_iter().map(|e| (folder(&e), e)).collect();
@@ -283,7 +289,30 @@ pub fn list_files(
     } else {
         files.sort_by(|a, b| compare(a, b, order));
     }
-    Ok(files.into_iter().map(|e| e.path).collect())
+    files.into_iter().map(|e| e.path).collect()
+}
+
+/// The images of `archive` (see `archive::list`) in `order`; `by_folder`:
+/// its folders one after another, as [`list_files`] does. Named by their
+/// paths within it, so that a comic's chapters (`ch1.jpg`,
+/// `ch2.jpg`) stay apart in name order.
+pub fn list_archive(archive: &Path, order: Order, by_folder: bool) -> std::io::Result<Vec<PathBuf>> {
+    let files = crate::archive::list(archive)?
+        .into_iter()
+        .map(|i| Entry {
+            name: crate::win::wide(i.path.strip_prefix(archive).unwrap_or(&i.path)),
+            modified: i.modified,
+            size: i.size,
+            added: 0,
+            path: i.path,
+        })
+        .collect();
+    Ok(sorted(files, order, by_folder))
+}
+
+/// [`list_archive`] on a thread, as [`scan`] lists a folder.
+pub fn scan_archive(archive: PathBuf, order: Order, by_folder: bool, ctx: egui::Context) -> Scan {
+    spawn(ctx, move |_, _| list_archive(&archive, order, by_folder))
 }
 
 /// Whether `path`, which `metadata` failed on with `e`, is gone from its

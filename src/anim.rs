@@ -244,7 +244,7 @@ fn frames(bytes: &[u8], format: ImageFormat) -> image::ImageResult<(image::Frame
 /// `LAST`), loop after loop, until the player is gone or the file's loops
 /// are played.
 fn play(path: &Path, max_side: usize, from: usize, tx: &mpsc::SyncSender<Frame>, ctx: &egui::Context) -> Result<(), String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = crate::archive::read(path).map_err(|e| e.to_string())?;
     let format = image::guess_format(&bytes).map_err(|e| e.to_string())?;
     let mut loops_played = 0u32;
     let mut skip = match from {

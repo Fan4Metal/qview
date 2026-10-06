@@ -567,6 +567,32 @@ pub fn ms_since_process_start() -> Option<f64> {
 }
 
 
+/// A local date and time (as ZIP keeps them) as a FILETIME, in UTC.
+pub fn local_filetime(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{SystemTimeToFileTime, TzSpecificLocalTimeToSystemTime};
+    let local = SYSTEMTIME {
+        wYear: year,
+        wMonth: month as u16,
+        wDayOfWeek: 0,
+        wDay: day as u16,
+        wHour: hour as u16,
+        wMinute: minute as u16,
+        wSecond: second as u16,
+        wMilliseconds: 0,
+    };
+    let mut utc = SYSTEMTIME::default();
+    let mut ft = FILETIME::default();
+    unsafe {
+        if TzSpecificLocalTimeToSystemTime(std::ptr::null(), &local, &mut utc) == 0
+            || SystemTimeToFileTime(&utc, &mut ft) == 0
+        {
+            return None;
+        }
+    }
+    Some(((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64)
+}
+
 /// Set by [`watch_paste`]'s hook when Ctrl+V or Shift+Insert is pressed.
 static PASTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

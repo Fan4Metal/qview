@@ -327,7 +327,7 @@ pub fn extensions() -> &'static [String] {
             log::warn!("cannot list the WIC codecs: {e}");
             Vec::new()
         });
-        let registered = FILE_TYPES.iter().filter(|t| t.wic).flat_map(|t| t.extensions);
+        let registered = FILE_TYPES.iter().filter(|t| t.kind == crate::filetypes::Kind::Wic).flat_map(|t| t.extensions);
         list.extend(registered.map(|e| e.to_string()));
         list.retain(|e| !crate::folder::EXTENSIONS.contains(&e.as_str()));
         list.sort();

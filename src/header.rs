@@ -32,6 +32,11 @@ impl Size {
 /// HEIF when its DLL is there (`heif`), and through Windows' codecs (`wic`)
 /// for the formats they take.
 pub fn read(path: &Path) -> Option<Size> {
+    // An image in an archive: from its bytes, by `image` alone.
+    if crate::archive::inside(path) {
+        let bytes = crate::archive::read(path).ok()?;
+        return from_reader(std::io::Cursor::new(bytes));
+    }
     if !crate::wic::takes(path)
         && let Some(size) = from_header(path)
     {
@@ -47,7 +52,11 @@ pub fn read(path: &Path) -> Option<Size> {
 }
 
 fn from_header(path: &Path) -> Option<Size> {
-    let mut file = BufReader::with_capacity(16 * 1024, File::open(path).ok()?);
+    from_reader(File::open(path).ok()?)
+}
+
+fn from_reader<R: Read + Seek>(file: R) -> Option<Size> {
+    let mut file = BufReader::with_capacity(16 * 1024, file);
     if file.fill_buf().ok()?.starts_with(&[0xff, 0xd8]) {
         return jpeg(&mut file);
     }
@@ -64,7 +73,7 @@ fn turns(o: Orientation) -> bool {
 
 /// The JPEG segments up to the frame header: the EXIF orientation from
 /// APP1 (which comes first) and the size from SOFn.
-fn jpeg(r: &mut BufReader<File>) -> Option<Size> {
+fn jpeg<R: Read + Seek>(r: &mut BufReader<R>) -> Option<Size> {
     fn read_u16(r: &mut impl Read) -> Option<u16> {
         let mut b = [0u8; 2];
         r.read_exact(&mut b).ok()?;

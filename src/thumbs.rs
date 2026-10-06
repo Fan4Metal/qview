@@ -159,7 +159,8 @@ fn worker(shared: &Shared, tx: &mpsc::Sender<Made>) {
 pub fn make(path: &Path, side: u32) -> Result<Thumbnail, String> {
     use std::os::windows::fs::MetadataExt;
     let started = Instant::now();
-    let shell = shell_thumbnail(path, side);
+    // Windows' thumbnail cache knows nothing of the images in an archive.
+    let shell = if crate::archive::inside(path) { Err("in an archive".into()) } else { shell_thumbnail(path, side) };
     let thumbnail = match shell {
         Ok((w, h, bgra)) => {
             let file = std::fs::metadata(path).ok();

@@ -64,8 +64,12 @@ impl Format {
 }
 
 /// `path` can be saved over in its own format: one of `Format`, and for a
-/// WebP a lossless one (a lossy one would come back several times larger).
+/// WebP a lossless one (a lossy one would come back several times larger);
+/// never an image in an archive.
 pub fn can_overwrite(path: &Path) -> bool {
+    if crate::archive::inside(path) {
+        return false;
+    }
     match Format::of(path) {
         Some(Format::WebP) => std::fs::read(path).is_ok_and(|b| webp_lossless(&b)),
         Some(_) => true,
@@ -154,7 +158,7 @@ pub fn save(job: &Job) -> Result<Saved, String> {
         tr!("This format cannot be saved; JPEG, PNG, WebP, TIFF and BMP can", "Этот формат не сохраняется; можно JPEG, PNG, WebP, TIFF и BMP")
             .to_string()
     })?;
-    let bytes = std::fs::read(&job.src).map_err(|e| e.to_string())?;
+    let bytes = crate::archive::read(&job.src).map_err(|e| e.to_string())?;
     let lossless = (job.crop.is_none() && format == Format::Jpeg && bytes.starts_with(&[0xff, 0xd8]))
         .then(|| turn_jpeg(&bytes, job.turns, job.flip))
         .flatten();
@@ -354,7 +358,7 @@ fn encode_anew(job: &Job, bytes: &[u8], format: Format) -> Result<Vec<u8>, Strin
 /// `job.src` decoded, mirrored, turned and cropped: what would be saved,
 /// without its metadata (Copy Image). An animation gives its first frame.
 pub fn render(job: &Job) -> Result<DynamicImage, String> {
-    let bytes = std::fs::read(&job.src).map_err(|e| e.to_string())?;
+    let bytes = crate::archive::read(&job.src).map_err(|e| e.to_string())?;
     transform(job, decode(&job.src, &bytes)?.img)
 }
 

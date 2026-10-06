@@ -149,7 +149,7 @@ impl App {
                     // The favourites have no sub-folders; the choice stays
                     // for the folders chosen next.
                     let sub_folders = egui::Checkbox::new(&mut deep, tr!("Sub-folders", "Вложенные папки"));
-                    ui.add_enabled(!in_favorites, sub_folders).on_hover_text(tr!(
+                    ui.add_enabled(!in_favorites && !self.in_archive(), sub_folders).on_hover_text(tr!(
                         "The images of all sub-folders too",
                         "Также изображения всех вложенных папок"
                     ));
@@ -257,6 +257,8 @@ impl App {
                 })
             } else if self.dir.is_none() {
                 Some(tr!("Choose a folder on the left", "Выберите папку слева").to_string())
+            } else if self.in_archive() {
+                Some(tr!("No images in this archive", "В этом архиве нет изображений").into())
             } else if !self.name_filter.trim().is_empty() && self.listed_count() > 0 {
                 Some(tr!("No images match the filter", "Нет изображений, подходящих под фильтр").into())
             } else if in_favorites {
@@ -364,6 +366,8 @@ impl App {
         let files = &self.files;
         let index = self.index;
         let (dir, deep) = (self.dir.as_deref(), self.deep);
+        // An archive's folders are not opened on their own.
+        let archive = self.archive;
         let favorites = &self.favorites;
         let selection = &self.selection;
         let band = selection.band.as_ref().map(|b| b.start).zip(ctx.pointer_latest_pos());
@@ -389,7 +393,7 @@ impl App {
                     // A sub-folder's header opens it; the folder shown has
                     // nothing to open.
                     let parent = files[s.first].parent();
-                    if let Some(parent) = parent.filter(|p| dir.is_none_or(|d| !crate::folder::same_path(p, d))) {
+                    if let Some(parent) = parent.filter(|p| !archive && dir.is_none_or(|d| !crate::folder::same_path(p, d))) {
                         let response = ui
                             .interact(rect, ui.id().with(("header", k)), Sense::CLICK)
                             .on_hover_text(tr!("Double click: open the folder", "Двойной щелчок: открыть папку"));

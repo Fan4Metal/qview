@@ -1,6 +1,6 @@
-//! The image file types qview registers in Windows: one ProgID per format,
-//! its extensions, its name in Explorer's Type column and the colours of
-//! its icon. Dependency-free: `build.rs` includes this file (with
+//! The file types qview registers in Windows (images, and comic book
+//! archives): one ProgID per format, its extensions, its name in
+//! Explorer's Type column and the colours of its icon. Dependency-free: `build.rs` includes this file (with
 //! `type_icon.rs`) to draw the icons embedded in the executable.
 
 // build.rs uses the table only for the icons.
@@ -20,8 +20,18 @@ pub struct FileType {
     /// 16-colour palette.
     pub band: [u8; 3],
     pub ink: [u8; 3],
-    /// Decoded by Windows' codecs (`wic`), not by the `image` crate.
-    pub wic: bool,
+    pub kind: Kind,
+}
+
+/// What a type's files are and what reads them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Images the `image` crate decodes (`folder::EXTENSIONS`).
+    Image,
+    /// Images Windows' codecs decode (`wic`).
+    Wic,
+    /// Archives of images opened as folders (`archive`).
+    Archive,
 }
 
 /// Camera RAW formats, the most common first (the first is the one whose
@@ -42,7 +52,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // olive, yellow letters
         band: [0x5c, 0x64, 0x10],
         ink: [0xf0, 0xe8, 0x60],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "png",
@@ -53,7 +63,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // maroon, pink letters
         band: [0x80, 0x04, 0x06],
         ink: [0xfc, 0xd9, 0xe4],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "gif",
@@ -64,7 +74,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // green
         band: [0x04, 0x86, 0x04],
         ink: [0xff, 0xff, 0xff],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "bmp",
@@ -75,7 +85,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // blue
         band: [0x04, 0x04, 0xe0],
         ink: [0xff, 0xff, 0xff],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "tiff",
@@ -86,7 +96,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // navy
         band: [0x00, 0x00, 0x80],
         ink: [0xff, 0xff, 0xff],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "webp",
@@ -97,7 +107,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // teal
         band: [0x00, 0x80, 0x80],
         ink: [0xff, 0xff, 0xff],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "ico",
@@ -108,7 +118,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // purple
         band: [0x80, 0x00, 0x80],
         ink: [0xff, 0xff, 0xff],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "tga",
@@ -119,7 +129,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // grey
         band: [0x50, 0x50, 0x50],
         ink: [0xff, 0xff, 0xff],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "qoi",
@@ -130,7 +140,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // orange
         band: [0xc0, 0x60, 0x00],
         ink: [0xff, 0xff, 0xff],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "pnm",
@@ -141,7 +151,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // light grey
         band: [0xd8, 0xd8, 0xd8],
         ink: [0x30, 0x30, 0x30],
-        wic: false,
+        kind: Kind::Image,
     },
     FileType {
         id: "heif",
@@ -152,7 +162,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // black
         band: [0x20, 0x20, 0x20],
         ink: [0xff, 0xff, 0xff],
-        wic: true,
+        kind: Kind::Wic,
     },
     FileType {
         id: "avif",
@@ -163,7 +173,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // fuchsia
         band: [0xc0, 0x00, 0xc0],
         ink: [0xff, 0xff, 0xff],
-        wic: true,
+        kind: Kind::Wic,
     },
     FileType {
         id: "raw",
@@ -174,7 +184,7 @@ pub const FILE_TYPES: &[FileType] = &[
         // yellow, black letters
         band: [0xe8, 0xc8, 0x00],
         ink: [0x20, 0x20, 0x20],
-        wic: true,
+        kind: Kind::Wic,
     },
     FileType {
         id: "jxr",
@@ -185,7 +195,18 @@ pub const FILE_TYPES: &[FileType] = &[
         // aqua, dark letters
         band: [0x00, 0xc0, 0xe0],
         ink: [0x10, 0x20, 0x40],
-        wic: true,
+        kind: Kind::Wic,
+    },
+    FileType {
+        id: "cbz",
+        label: "CBZ",
+        extensions: &["cbz"],
+        name_en: "Comic Book Archive",
+        name_ru: "Архив комикса",
+        // red
+        band: [0xd8, 0x18, 0x18],
+        ink: [0xff, 0xff, 0xff],
+        kind: Kind::Archive,
     },
 ];
 

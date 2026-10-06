@@ -27,6 +27,8 @@
 use std::path::Path;
 
 use crate::filetypes::{FILE_TYPES, icon_id};
+#[cfg(test)]
+use crate::filetypes::Kind;
 
 /// Where the keys go, under HKEY_CURRENT_USER. Tests use a scratch key.
 struct Roots {
@@ -484,13 +486,13 @@ mod tests {
 
     #[test]
     fn every_listed_extension_is_registered() {
-        let own = FILE_TYPES.iter().filter(|t| !t.wic);
+        let own = FILE_TYPES.iter().filter(|t| t.kind == Kind::Image);
         let mut registered: Vec<&str> = own.flat_map(|t| t.extensions.iter().copied()).collect();
         let mut listed = crate::folder::EXTENSIONS.to_vec();
         registered.sort_unstable();
         listed.sort_unstable();
         assert_eq!(registered, listed);
-        for ext in FILE_TYPES.iter().filter(|t| t.wic).flat_map(|t| t.extensions.iter()) {
+        for ext in FILE_TYPES.iter().filter(|t| t.kind == Kind::Wic).flat_map(|t| t.extensions.iter()) {
             assert!(!listed.contains(ext), "{ext}");
             assert!(crate::wic::takes(Path::new(&format!("a.{ext}"))), "{ext}");
         }
