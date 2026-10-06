@@ -106,6 +106,8 @@ pub enum Cmd {
     Refresh,
     ToggleToolbar,
     ToggleStatusBar,
+    /// Show or hide the information panel (I).
+    Info,
     /// The next images keep the zoom and the panning, or no longer do.
     KeepZoom,
     /// Sort the folder by this (View → Sort), in the same direction.
@@ -180,6 +182,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::F if letter || (m.ctrl && m.shift && !m.alt) => FullScreen,
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
+        Key::I if letter => Info,
         Key::L if letter => KeepZoom,
         Key::S if m.ctrl && m.shift && !m.alt => SaveAs,
         Key::S if m.ctrl && !m.alt => Save,
@@ -359,6 +362,7 @@ mod tests {
         assert_eq!(command(Key::V, CTRL, false), None);
         assert_eq!(command(Key::P, NONE, false), Some(Cmd::Pause));
         assert_eq!(command(Key::P, CTRL, false), Some(Cmd::Print));
+        assert_eq!(command(Key::I, NONE, false), Some(Cmd::Info));
         assert_eq!(command(Key::Slash, NONE, false), Some(Cmd::Actual));
         assert_eq!(gallery_command(Key::Slash, NONE, false), Some(Cmd::Find));
         assert_eq!(command(Key::F, CTRL, false), Some(Cmd::Find));

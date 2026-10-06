@@ -283,12 +283,46 @@ pub fn copy_to(files: &[PathBuf], to: &Path, owner: Option<isize>) -> Result<(),
     }
 }
 
+/// A local date and time (as EXIF gives it) as a FILETIME, through this
+/// computer's time zone.
+pub fn local_to_filetime(t: crate::info::DateTime) -> Option<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Time::{SystemTimeToFileTime, TzSpecificLocalTimeToSystemTime};
+    let local = system_time(t);
+    let mut utc = windows_sys::Win32::Foundation::SYSTEMTIME::default();
+    let mut ft = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    unsafe {
+        if TzSpecificLocalTimeToSystemTime(std::ptr::null(), &local, &mut utc) == 0 || SystemTimeToFileTime(&utc, &mut ft) == 0 {
+            return None;
+        }
+    }
+    Some((ft.dwHighDateTime as u64) << 32 | ft.dwLowDateTime as u64)
+}
+
+fn system_time(t: crate::info::DateTime) -> windows_sys::Win32::Foundation::SYSTEMTIME {
+    windows_sys::Win32::Foundation::SYSTEMTIME {
+        wYear: t.year,
+        wMonth: t.month as u16,
+        wDayOfWeek: 0,
+        wDay: t.day as u16,
+        wHour: t.hour as u16,
+        wMinute: t.minute as u16,
+        wSecond: t.second.min(59) as u16,
+        wMilliseconds: 0,
+    }
+}
+
+/// A local date and time (as EXIF gives it) in the user's short date and
+/// long time formats, as [`local_date_time`] shows a FILETIME.
+pub fn date_time(t: crate::info::DateTime) -> Option<String> {
+    format_date_time(&system_time(t))
+}
+
 /// A FILETIME (100 ns ticks since 1601, UTC) as a local date and time in
 /// the user's short date and long time formats, as Explorer shows it:
 /// `16.04.2012 15:01:26`.
 pub fn local_date_time(filetime: u64) -> Option<String> {
     use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
-    use windows_sys::Win32::Globalization::{DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx};
     use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
     let ft = FILETIME {
         dwLowDateTime: filetime as u32,
@@ -296,25 +330,33 @@ pub fn local_date_time(filetime: u64) -> Option<String> {
     };
     let mut utc = SYSTEMTIME::default();
     let mut local = SYSTEMTIME::default();
-    let mut date = [0u16; 128];
-    let mut time = [0u16; 128];
     unsafe {
         if FileTimeToSystemTime(&ft, &mut utc) == 0
             || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0
         {
             return None;
         }
+    }
+    format_date_time(&local)
+}
+
+/// `local` in the user's short date and long time formats.
+fn format_date_time(local: &windows_sys::Win32::Foundation::SYSTEMTIME) -> Option<String> {
+    use windows_sys::Win32::Globalization::{DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx};
+    let mut date = [0u16; 128];
+    let mut time = [0u16; 128];
+    unsafe {
         // A null locale name is LOCALE_NAME_USER_DEFAULT.
         let d = GetDateFormatEx(
             std::ptr::null(),
             DATE_SHORTDATE,
-            &local,
+            local,
             std::ptr::null(),
             date.as_mut_ptr(),
             date.len() as i32,
             std::ptr::null(),
         );
-        let t = GetTimeFormatEx(std::ptr::null(), 0, &local, std::ptr::null(), time.as_mut_ptr(), time.len() as i32);
+        let t = GetTimeFormatEx(std::ptr::null(), 0, local, std::ptr::null(), time.as_mut_ptr(), time.len() as i32);
         if d <= 0 || t <= 0 {
             return None;
         }

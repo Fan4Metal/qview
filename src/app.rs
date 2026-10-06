@@ -95,6 +95,8 @@ const FILTER_KEY: &str = "filter";
 const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
 const TREE_WIDTH_KEY: &str = "tree_width";
+const INFO_KEY: &str = "info_panel";
+const INFO_WIDTH_KEY: &str = "info_width";
 const THUMB_FILL_KEY: &str = "thumb_fill";
 const THUMB_ASPECT_KEY: &str = "thumb_aspect";
 /// `thumb_aspect` in the settings when it is Auto.
@@ -307,6 +309,11 @@ pub struct App {
     pub filter_open: bool,
     /// `dir` is a ZIP archive (`archive`), listed as a folder.
     pub archive: bool,
+    /// The information panel (I) is shown, and its width in points.
+    pub show_info: bool,
+    pub info_width: f32,
+    /// What it shows of the current image, read on a thread.
+    pub info: Option<InfoSlot>,
     /// Copy Image or Paste under way on a thread (`clipboard`).
     clipboard: Option<mpsc::Receiver<Clipped>>,
     /// Set as Wallpaper, or the files for Print, under way on a thread.
@@ -390,6 +397,14 @@ enum Clipped {
     Copied(Result<(), String>),
     /// The file to open.
     Pasted(Result<PathBuf, String>),
+}
+
+/// The information panel's data of one file (`info::read`).
+pub struct InfoSlot {
+    pub path: PathBuf,
+    /// None while it is read.
+    pub info: Option<std::sync::Arc<crate::info::Info>>,
+    rx: Option<mpsc::Receiver<crate::info::Info>>,
 }
 
 /// What a thread handing an image to Windows did.
@@ -563,6 +578,9 @@ impl App {
                 .unwrap_or(gallery::DEFAULT_SIZE)
                 .clamp(gallery::MIN_SIZE, gallery::MAX_SIZE),
             tree_width: number(TREE_WIDTH_KEY).unwrap_or(240.0).clamp(140.0, 640.0),
+            show_info: cc.storage.and_then(|s| s.get_string(INFO_KEY)).as_deref() == Some("true"),
+            info_width: number(INFO_WIDTH_KEY).unwrap_or(280.0).clamp(200.0, 600.0),
+            info: None,
             thumb_fill: cc.storage.and_then(|s| s.get_string(THUMB_FILL_KEY)).as_deref() == Some("true"),
             thumb_aspect: match cc.storage.and_then(|s| s.get_string(THUMB_ASPECT_KEY)).as_deref() {
                 Some(AUTO) => None,
@@ -1025,6 +1043,39 @@ impl App {
         self.loader.forget(paths);
         if let Some(gallery) = &mut self.gallery {
             gallery.forget(paths);
+        }
+        if self.info.as_ref().is_some_and(|i| paths.contains(&i.path)) {
+            self.info = None;
+        }
+    }
+
+    /// Read the current image's information for the panel, on a thread,
+    /// when it is shown; take it once read.
+    fn update_info(&mut self, ctx: &egui::Context) {
+        if !self.show_info {
+            return;
+        }
+        let Some(path) = self.current.clone() else {
+            self.info = None;
+            return;
+        };
+        if self.info.as_ref().is_none_or(|i| i.path != path) {
+            let (tx, rx) = mpsc::channel();
+            let (ctx, file) = (ctx.clone(), path.clone());
+            std::thread::spawn(move || {
+                // The header may be read by Windows' codecs.
+                let _com = win::com_init();
+                if tx.send(crate::info::read(&file)).is_ok() {
+                    ctx.request_repaint();
+                }
+            });
+            self.info = Some(InfoSlot { path, info: None, rx: Some(rx) });
+        }
+        if let Some(slot) = &mut self.info
+            && let Some(Ok(info)) = slot.rx.as_ref().map(mpsc::Receiver::try_recv)
+        {
+            slot.info = Some(std::sync::Arc::new(info));
+            slot.rx = None;
         }
     }
 
@@ -1672,6 +1723,7 @@ impl App {
             }
             Cmd::ToggleToolbar => self.show_toolbar = !self.show_toolbar,
             Cmd::ToggleStatusBar => self.show_status_bar = !self.show_status_bar,
+            Cmd::Info => self.show_info = !self.show_info,
             Cmd::SortBy(key) => self.sort_by(ctx, Order { key, ..self.order() }),
             Cmd::SortDescending => self.sort_by(ctx, Order { descending: !self.order().descending, ..self.order() }),
             Cmd::KeepZoom => {
@@ -2183,6 +2235,7 @@ impl App {
             | Cmd::WindowFullScreen
             | Cmd::ToggleToolbar
             | Cmd::ToggleStatusBar
+            | Cmd::Info
             | Cmd::Shortcuts
             | Cmd::About
             | Cmd::CopyImage
@@ -2754,6 +2807,7 @@ impl eframe::App for App {
             if !Self::is_fullscreen(&ctx) {
                 area.min.y += 24.0 + if self.show_toolbar { 32.0 } else { 0.0 };
                 area.max.y -= if self.show_status_bar { 24.0 } else { 0.0 };
+                area.max.x -= if self.show_info { self.info_width } else { 0.0 };
             }
             self.viewport = area;
         }
@@ -2828,6 +2882,10 @@ impl eframe::App for App {
             if self.show_status_bar {
                 self.status_bar(root_ui);
             }
+            if self.show_info {
+                self.update_info(&ctx);
+                self.info_panel(root_ui);
+            }
         }
         // In full screen too: it has the frame's size and buttons.
         if self.crop.is_some() {
@@ -2882,6 +2940,8 @@ impl eframe::App for App {
         storage.set_string(ZOOM_KEY, self.view.mode.name().unwrap_or("fit").to_string());
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
+        storage.set_string(INFO_KEY, self.show_info.to_string());
+        storage.set_string(INFO_WIDTH_KEY, self.info_width.round().to_string());
         storage.set_string(THUMB_FILL_KEY, self.thumb_fill.to_string());
         let aspect = self.thumb_aspect.map_or(AUTO, gallery::aspect_name);
         storage.set_string(THUMB_ASPECT_KEY, aspect.to_string());

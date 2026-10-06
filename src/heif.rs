@@ -66,6 +66,11 @@ struct Lib {
     image_height: unsafe extern "C" fn(HeifImage, c_int) -> c_int,
     plane: unsafe extern "C" fn(HeifImage, c_int, *mut usize) -> *const u8,
     image_release: unsafe extern "C" fn(HeifImage),
+    metadata_ids: unsafe extern "C" fn(Handle, *const c_char, *mut u32, c_int) -> c_int,
+    metadata_size: unsafe extern "C" fn(Handle, u32) -> usize,
+    metadata: unsafe extern "C" fn(Handle, u32, *mut c_void) -> Error,
+    icc_size: unsafe extern "C" fn(Handle) -> usize,
+    icc: unsafe extern "C" fn(Handle, *mut c_void) -> Error,
 }
 
 /// Where heif.dll is looked for: next to the program, and for the tests
@@ -133,6 +138,11 @@ fn load(path: &Path) -> Option<Lib> {
         image_height: get!("heif_image_get_height"),
         plane: get!("heif_image_get_plane_readonly2"),
         image_release: get!("heif_image_release"),
+        metadata_ids: get!("heif_image_handle_get_list_of_metadata_block_IDs"),
+        metadata_size: get!("heif_image_handle_get_metadata_size"),
+        metadata: get!("heif_image_handle_get_metadata"),
+        icc_size: get!("heif_image_handle_get_raw_color_profile_size"),
+        icc: get!("heif_image_handle_get_raw_color_profile"),
     };
     // Never matched by heif_deinit: the library stays for the process.
     check(unsafe { init(std::ptr::null()) }).ok()?;
@@ -274,6 +284,47 @@ pub fn size(path: &Path) -> Option<(u32, u32)> {
         return None;
     }
     let lib = lib()?;
+    with_primary(lib, path, |primary| {
+        let width = unsafe { (lib.handle_width)(primary.handle) };
+        let height = unsafe { (lib.handle_height)(primary.handle) };
+        (width > 0 && height > 0).then_some((width as u32, height as u32))
+    })
+}
+
+/// The EXIF (its TIFF data, without the offset in front of it) and the ICC
+/// profile of the primary image of a HEIF or AVIF file (`info`), reading
+/// only the boxes they are in. None if heif.dll is not there or cannot
+/// read the file.
+pub fn metadata(path: &Path) -> Option<crate::info::Raw> {
+    const MAX: usize = 16 << 20;
+    let lib = lib()?;
+    with_primary(lib, path, |primary| {
+        let handle = primary.handle;
+        let mut ids = [0u32; 4];
+        let n = unsafe { (lib.metadata_ids)(handle, c"Exif".as_ptr(), ids.as_mut_ptr(), ids.len() as c_int) };
+        let exif = ids[..n.clamp(0, 4) as usize].iter().find_map(|&id| {
+            let size = unsafe { (lib.metadata_size)(handle, id) };
+            if !(8..MAX).contains(&size) {
+                return None;
+            }
+            let mut data = vec![0u8; size];
+            check(unsafe { (lib.metadata)(handle, id, data.as_mut_ptr().cast()) }).ok()?;
+            // The offset of the TIFF header from the end of this number.
+            let offset = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+            data.get(4usize.checked_add(offset)?..).filter(|t| t.len() >= 8).map(<[u8]>::to_vec)
+        });
+        let size = unsafe { (lib.icc_size)(handle) };
+        let icc = (1..MAX).contains(&size).then(|| {
+            let mut data = vec![0u8; size];
+            check(unsafe { (lib.icc)(handle, data.as_mut_ptr().cast()) }).ok().map(|()| data)
+        });
+        Some((exif, icc.flatten()))
+    })
+}
+
+/// `f` of the primary image of `path`, which libheif reads through a
+/// buffered reader: only the boxes it needs.
+fn with_primary<T>(lib: &'static Lib, path: &Path, f: impl FnOnce(&Primary) -> Option<T>) -> Option<T> {
     let file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len() as i64;
     // libheif reads box by box, a few bytes at a time.
@@ -283,9 +334,7 @@ pub fn size(path: &Path) -> Option<(u32, u32)> {
         (lib.read_from_reader)(context, &reader, (&raw mut state).cast(), std::ptr::null())
     })
     .ok()?;
-    let width = unsafe { (lib.handle_width)(primary.handle) };
-    let height = unsafe { (lib.handle_height)(primary.handle) };
-    (width > 0 && height > 0).then_some((width as u32, height as u32))
+    f(&primary)
 }
 
 /// The reader's state: the file and its length.

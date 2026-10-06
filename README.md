@@ -24,12 +24,13 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 
 - Start-up of about 0.2 s to the first image: decoding begins before the window is created and runs on background threads.
 - Instant browsing: the neighbours of the current image are decoded in advance.
-- Images are listed in the same order as in Explorer (numbers are compared as numbers); View → Sort orders them by date modified or size instead, ascending or descending.
+- Images are listed in the same order as in Explorer (numbers are compared as numbers); View → Sort orders them by date modified, date taken or size instead, ascending or descending. The date taken is read from the EXIF data of each image when this order is chosen; an image without it is placed by its date modified.
 - The gallery shows the folder tree and the images of a folder as thumbnails (see [Gallery](#gallery)).
 - Images from any folders can be marked as favorites with `S` and then viewed and copied together (see [Favorites](#favorites)).
 - Downscaled images are smoothed with mipmaps; 100% shows one image pixel per screen pixel at any Windows display scaling.
 - The EXIF orientation of photos is applied.
 - The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
+- The information panel (`I`, View → Information) at the right of the window, in the viewer and in the gallery, shows the current file (name, folder, exact size, dates of modification and creation), its image (dimensions with megapixels, format and colour depth, the name of the colour profile) and what its EXIF data says: camera, lens, date taken, exposure, aperture, ISO, focal length with its 35 mm equivalent, exposure compensation, flash, software, the title, authors, comment and tags written by Windows Explorer, copyright, and the location with altitude, which Show on Map opens on OpenStreetMap in the browser. EXIF is read from JPEG, PNG, WebP, TIFF, HEIC and AVIF files and from camera RAW files built on TIFF (CR2, NEF, ARW, DNG, ORF, RW2, PEF). The values can be selected and copied. The panel's visibility and width are kept between runs.
 - Deletion moves the file to the Recycle Bin after a confirmation.
 - Comic books in CBZ and other ZIP archives are viewed without unpacking (see [Comic books and ZIP archives](#comic-books-and-zip-archives)).
 - File → Copy Image (`Ctrl+Shift+C`) puts the image on the clipboard as it is shown, rotated, flipped and, while cropping, cropped, at the full size of the file, for pasting into other programs; an image with transparency is also put there as PNG. File → Paste (`Ctrl+V`) opens what the clipboard holds: a file copied in Explorer, a path copied as text, or an image, such as a screenshot, which is saved as a PNG file named `Clipboard <date> <time>.png` in the `qview` folder of the temporary folder and can then be cropped and saved elsewhere with Save As.
@@ -88,6 +89,7 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Open a file | `Ctrl+O`, or dropping a file onto the window |
 | Reload the image and the folder | `F5` |
 | Show or hide the toolbar / status bar | `T` / `B` |
+| Show or hide the information panel | `I` |
 | List of shortcuts | `F1` |
 
 The arrow keys scroll an image that is larger than the window in that direction; otherwise they browse. Letter keys also work with the Russian keyboard layout.

@@ -122,6 +122,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![
                 (tr!("F  Ctrl+Shift+F  Middle click", "F  Ctrl+Shift+F  Средняя кнопка"), tr!("Full screen", "Полный экран")),
                 ("T  B", tr!("Show or hide the toolbar / status bar", "Панель инструментов / строка состояния")),
+                ("I", tr!("Show or hide the information panel (EXIF)", "Панель сведений (EXIF)")),
                 ("F1", tr!("This list", "Этот список")),
                 (
                     "Esc",

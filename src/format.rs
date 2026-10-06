@@ -40,9 +40,186 @@ pub fn zoom(scale: f32) -> String {
     if p >= 1.0 { format!("{}%", p.round()) } else { format!("{p:.1}%") }
 }
 
+/// `v` with up to `digits` decimals, trailing zeros dropped: `2.8`, `8`;
+/// with a decimal comma in Russian.
+pub fn decimal_in(lang: Lang, v: f64, digits: usize) -> String {
+    let s = format!("{v:.digits$}");
+    let s = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s };
+    let s = if s == "-0" { "0".into() } else { s };
+    match lang {
+        Lang::En => s,
+        Lang::Ru => s.replace('.', ","),
+    }
+}
+
+/// A whole number with its thousands apart: `3,356,123`, in Russian
+/// `3 356 123` (with no-break spaces).
+pub fn thousands_in(lang: Lang, n: u64) -> String {
+    let digits = n.to_string();
+    let sep = match lang {
+        Lang::En => ',',
+        Lang::Ru => '\u{a0}',
+    };
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(sep);
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A file's size and its exact number of bytes: `3.2 MB (3,356,123 bytes)`.
+pub fn exact_size(bytes: u64) -> String {
+    exact_size_in(lang(), bytes)
+}
+
+pub fn exact_size_in(lang: Lang, bytes: u64) -> String {
+    let short = file_size_in(lang, bytes);
+    if bytes < 1024 {
+        return short;
+    }
+    let n = thousands_in(lang, bytes);
+    match lang {
+        Lang::En => format!("{short} ({n} bytes)"),
+        Lang::Ru => format!("{short} ({n} байт)"),
+    }
+}
+
+/// Width and height with the megapixels: `4000 × 3000 (12.0 MP)`.
+pub fn dimensions(width: u32, height: u32) -> String {
+    dimensions_in(lang(), width, height)
+}
+
+pub fn dimensions_in(lang: Lang, width: u32, height: u32) -> String {
+    let mp = width as f64 * height as f64 / 1e6;
+    if mp < 0.1 {
+        return format!("{width} × {height}");
+    }
+    let mp = decimal_in(lang, mp, 1);
+    match lang {
+        Lang::En => format!("{width} × {height} ({mp} MP)"),
+        Lang::Ru => format!("{width} × {height} ({mp} Мп)"),
+    }
+}
+
+/// An exposure time as cameras show it: `1/250 s` up to a quarter of a
+/// second, `0.5 s`, `2 s` from there.
+pub fn exposure(seconds: f64) -> String {
+    exposure_in(lang(), seconds)
+}
+
+pub fn exposure_in(lang: Lang, seconds: f64) -> String {
+    let unit = match lang {
+        Lang::En => "s",
+        Lang::Ru => "с",
+    };
+    if seconds > 0.0 && seconds <= 0.25 + 1e-9 {
+        format!("1/{} {unit}", decimal_in(lang, 1.0 / seconds, 0))
+    } else {
+        format!("{} {unit}", decimal_in(lang, seconds, 1))
+    }
+}
+
+/// `f/2.8`, `f/8`.
+pub fn aperture(f: f64) -> String {
+    format!("f/{}", decimal_in(lang(), f, 1))
+}
+
+/// `50 mm`, with the 35 mm equivalent when it differs: `4.2 mm (26 mm
+/// equiv.)`.
+pub fn focal(mm: Option<f64>, mm_35: Option<u32>) -> Option<String> {
+    focal_in(lang(), mm, mm_35)
+}
+
+pub fn focal_in(lang: Lang, mm: Option<f64>, mm_35: Option<u32>) -> Option<String> {
+    let unit = match lang {
+        Lang::En => "mm",
+        Lang::Ru => "мм",
+    };
+    match (mm, mm_35) {
+        (Some(mm), Some(e)) if (mm - e as f64).abs() >= 0.5 => Some(match lang {
+            Lang::En => format!("{} {unit} ({e} {unit} equiv.)", decimal_in(lang, mm, 1)),
+            Lang::Ru => format!("{} {unit} (экв. {e} {unit})", decimal_in(lang, mm, 1)),
+        }),
+        (Some(mm), _) => Some(format!("{} {unit}", decimal_in(lang, mm, 1))),
+        (None, Some(e)) => Some(match lang {
+            Lang::En => format!("{e} {unit} equiv."),
+            Lang::Ru => format!("экв. {e} {unit}"),
+        }),
+        (None, None) => None,
+    }
+}
+
+/// Exposure compensation: `+0.7 EV`, `−1.3 EV`.
+pub fn bias(ev: f64) -> String {
+    bias_in(lang(), ev)
+}
+
+pub fn bias_in(lang: Lang, ev: f64) -> String {
+    let v = decimal_in(lang, ev.abs(), 1);
+    let sign = if v == "0" {
+        ""
+    } else if ev < 0.0 {
+        "\u{2212}"
+    } else {
+        "+"
+    };
+    format!("{sign}{v} EV")
+}
+
+/// Metres: `150 m`, `−20 m`.
+pub fn metres(m: f64) -> String {
+    let v = decimal_in(lang(), m.abs(), 0);
+    let sign = if m < 0.0 && v != "0" { "\u{2212}" } else { "" };
+    tr!(format!("{sign}{v} m"), format!("{sign}{v} м"))
+}
+
+/// A camera's name from the EXIF Make and Model: the model alone when it
+/// names the maker already (`Canon EOS R6`, `NIKON D850` for "NIKON
+/// CORPORATION"), else both (`Apple iPhone 13`).
+pub fn camera(make: Option<&str>, model: Option<&str>) -> Option<String> {
+    match (make, model) {
+        (Some(make), Some(model)) => {
+            let first = make.split_whitespace().next().unwrap_or(make).to_lowercase();
+            if model.to_lowercase().starts_with(&first) { Some(model.into()) } else { Some(format!("{make} {model}")) }
+        }
+        (make, model) => make.or(model).map(str::to_string),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_values() {
+        assert_eq!(decimal_in(Lang::En, 2.8, 1), "2.8");
+        assert_eq!(decimal_in(Lang::En, 8.0, 1), "8");
+        assert_eq!(decimal_in(Lang::Ru, 2.8, 1), "2,8");
+        assert_eq!(thousands_in(Lang::En, 3_356_123), "3,356,123");
+        assert_eq!(thousands_in(Lang::Ru, 999), "999");
+        assert_eq!(exact_size_in(Lang::En, 3_356_123), "3.2 MB (3,356,123 bytes)");
+        assert_eq!(exact_size_in(Lang::En, 100), "100 bytes");
+        assert_eq!(dimensions_in(Lang::En, 4000, 3000), "4000 × 3000 (12 MP)");
+        assert_eq!(dimensions_in(Lang::Ru, 6000, 4000), "6000 × 4000 (24 Мп)");
+        assert_eq!(dimensions_in(Lang::En, 16, 16), "16 × 16");
+        assert_eq!(exposure_in(Lang::En, 1.0 / 250.0), "1/250 s");
+        assert_eq!(exposure_in(Lang::En, 0.25), "1/4 s");
+        assert_eq!(exposure_in(Lang::En, 0.5), "0.5 s");
+        assert_eq!(exposure_in(Lang::Ru, 30.0), "30 с");
+        assert_eq!(focal_in(Lang::En, Some(4.26), Some(26)), Some("4.3 mm (26 mm equiv.)".into()));
+        assert_eq!(focal_in(Lang::En, Some(50.0), Some(50)), Some("50 mm".into()));
+        assert_eq!(focal_in(Lang::Ru, Some(50.0), None), Some("50 мм".into()));
+        assert_eq!(bias_in(Lang::En, -2.0 / 3.0), "\u{2212}0.7 EV");
+        assert_eq!(bias_in(Lang::En, 1.0 / 3.0), "+0.3 EV");
+        assert_eq!(bias_in(Lang::En, 0.0), "0 EV");
+        assert_eq!(camera(Some("Canon"), Some("Canon EOS R6")).as_deref(), Some("Canon EOS R6"));
+        assert_eq!(camera(Some("NIKON CORPORATION"), Some("NIKON D850")).as_deref(), Some("NIKON D850"));
+        assert_eq!(camera(Some("Apple"), Some("iPhone 13")).as_deref(), Some("Apple iPhone 13"));
+        assert_eq!(camera(None, Some("X100V")).as_deref(), Some("X100V"));
+    }
 
     #[test]
     fn sizes() {

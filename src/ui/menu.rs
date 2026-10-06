@@ -107,6 +107,7 @@ impl App {
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
         self.check_item(ui, tr!("Toolbar", "Панель инструментов").into(), "T", Cmd::ToggleToolbar, self.show_toolbar);
         self.check_item(ui, tr!("Status Bar", "Строка состояния").into(), "B", Cmd::ToggleStatusBar, self.show_status_bar);
+        self.check_item(ui, tr!("Information", "Сведения").into(), "I", Cmd::Info, self.show_info);
         ui.menu_button(tr!("Background", "Фон"), |ui| self.background_menu(ui));
         ui.separator();
         self.item(ui, tr!("Refresh", "Обновить").into(), "F5", Cmd::Refresh, e.file);
@@ -185,6 +186,7 @@ impl App {
             let name = match key {
                 SortKey::Name => tr!("By Name", "По имени"),
                 SortKey::Modified => tr!("By Date Modified", "По дате изменения"),
+                SortKey::Taken => tr!("By Date Taken", "По дате съёмки"),
                 SortKey::Size => tr!("By Size", "По размеру"),
                 SortKey::Added if favorites => tr!("By Date Added", "По дате добавления"),
                 SortKey::Added => continue,

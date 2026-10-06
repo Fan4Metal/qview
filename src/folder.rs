@@ -66,6 +66,9 @@ pub enum SortKey {
     Name,
     /// The last write time, Explorer's "Date modified".
     Modified,
+    /// When the photo was taken, from its EXIF (`info::taken`); the date
+    /// modified for an image that does not say.
+    Taken,
     Size,
     /// When it was marked as a favourite: its place in the favourites
     /// (only they are sorted so; a folder's files are all equal by it).
@@ -73,13 +76,14 @@ pub enum SortKey {
 }
 
 impl SortKey {
-    pub const ALL: [SortKey; 4] = [SortKey::Name, SortKey::Modified, SortKey::Size, SortKey::Added];
+    pub const ALL: [SortKey; 5] = [SortKey::Name, SortKey::Modified, SortKey::Taken, SortKey::Size, SortKey::Added];
 
     /// Name in the settings.
     pub fn name(self) -> &'static str {
         match self {
             SortKey::Name => "name",
             SortKey::Modified => "modified",
+            SortKey::Taken => "taken",
             SortKey::Size => "size",
             SortKey::Added => "added",
         }
@@ -105,6 +109,9 @@ struct Entry {
     name: Vec<u16>,
     /// FILETIME, 0 if unknown.
     modified: u64,
+    /// FILETIME of the date taken, read only to sort by it (`read_taken`);
+    /// the date modified until then.
+    taken: u64,
     size: u64,
     /// Its place among the favourites, 0 in a folder.
     added: usize,
@@ -114,7 +121,41 @@ impl Entry {
     fn new(path: PathBuf, meta: Option<&std::fs::Metadata>) -> Self {
         use std::os::windows::fs::MetadataExt;
         let name = crate::win::wide(path.file_name().unwrap_or_default());
-        Self { name, modified: meta.map_or(0, |m| m.last_write_time()), size: meta.map_or(0, |m| m.len()), added: 0, path }
+        let modified = meta.map_or(0, |m| m.last_write_time());
+        Self { name, modified, taken: modified, size: meta.map_or(0, |m| m.len()), added: 0, path }
+    }
+}
+
+/// The dates `files` were taken (`info::taken`), read when they are sorted
+/// by them, on several threads (a file's header each); those that do not
+/// say keep their date modified. Stops when `cancel` is set.
+fn read_taken(files: &mut [Entry], order: Order, cancel: &AtomicBool) {
+    use std::sync::atomic::AtomicU64;
+    if order.key != SortKey::Taken {
+        return;
+    }
+    let next = AtomicUsize::new(0);
+    let taken: Vec<AtomicU64> = files.iter().map(|e| AtomicU64::new(e.taken)).collect();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)).min(files.len());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                // libheif and the `image` crate read the headers; Windows'
+                // codecs are not asked.
+                loop {
+                    let i = next.fetch_add(1, Relaxed);
+                    if i >= files.len() || cancel.load(Relaxed) {
+                        break;
+                    }
+                    if let Some(t) = crate::info::taken(&files[i].path) {
+                        taken[i].store(t, Relaxed);
+                    }
+                }
+            });
+        }
+    });
+    for (e, t) in files.iter_mut().zip(taken) {
+        e.taken = t.into_inner();
     }
 }
 
@@ -128,6 +169,7 @@ fn compare(a: &Entry, b: &Entry, order: Order) -> Ordering {
     let key = match order.key {
         SortKey::Name => by_name(a, b),
         SortKey::Modified => a.modified.cmp(&b.modified),
+        SortKey::Taken => a.taken.cmp(&b.taken),
         SortKey::Size => a.size.cmp(&b.size),
         SortKey::Added => a.added.cmp(&b.added),
     };
@@ -189,6 +231,7 @@ pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Ve
     {
         files.push(Entry::new(keep.to_path_buf(), std::fs::metadata(keep).ok().as_ref()));
     }
+    read_taken(&mut files, order, &AtomicBool::new(false));
     files.sort_by(|a, b| compare(a, b, order));
     Ok(files.into_iter().map(|e| e.path).collect())
 }
@@ -228,6 +271,7 @@ pub fn list_deep(
         }
         let (mut own, subfolders) = read(dir, true)?;
         if let Some(order) = order {
+            read_taken(&mut own, order, cancel);
             own.sort_by(|a, b| compare(a, b, order));
         }
         files.extend(own);
@@ -243,6 +287,10 @@ pub fn list_deep(
     let mut files = Vec::new();
     walk(dir, by_folder.then_some(order), &mut files, found, cancel)?;
     if !by_folder {
+        read_taken(&mut files, order, cancel);
+        if cancel.load(Relaxed) {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
         files.sort_by(|a, b| compare(a, b, order));
     }
     Ok(files.into_iter().map(|e| e.path).collect())
@@ -275,6 +323,7 @@ pub fn list_files(
         }
         found.store(i + 1, Relaxed);
     }
+    read_taken(&mut files, order, cancel);
     Ok(sorted(files, order, by_folder))
 }
 
@@ -302,6 +351,7 @@ pub fn list_archive(archive: &Path, order: Order, by_folder: bool) -> std::io::R
         .map(|i| Entry {
             name: crate::win::wide(i.path.strip_prefix(archive).unwrap_or(&i.path)),
             modified: i.modified,
+            taken: i.modified,
             size: i.size,
             added: 0,
             path: i.path,
@@ -660,6 +710,40 @@ mod tests {
         for key in SortKey::ALL {
             assert_eq!(SortKey::from_name(key.name()), Some(key));
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sorts_by_date_taken() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("qview_folder_taken_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A JPEG's start with an EXIF whose first IFD holds DateTime.
+        let jpeg = |date: &str| {
+            let mut tiff = b"II*     2           ".to_vec();
+            tiff.extend(date.as_bytes());
+            tiff.push(0);
+            let mut out = vec![0xff, 0xd8, 0xff, 0xe1];
+            out.extend(((tiff.len() + 8) as u16).to_be_bytes());
+            out.extend(b"Exif  ");
+            out.extend(tiff);
+            out.extend([0xff, 0xd9]);
+            out
+        };
+        // b has no date taken: its date modified, 2023, counts.
+        let files = [("a.jpg", jpeg("2020:06:01 12:00:00")), ("b.jpg", vec![0; 10]), ("c.jpg", jpeg("2010:01:01 08:00:00"))];
+        for (name, bytes) in files {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)).unwrap();
+        }
+        let names = |descending| -> Vec<String> {
+            let order = Order { key: SortKey::Taken, descending };
+            list(&dir, None, order).unwrap().iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect()
+        };
+        assert_eq!(names(false), ["c.jpg", "a.jpg", "b.jpg"]);
+        assert_eq!(names(true), ["b.jpg", "a.jpg", "c.jpg"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -21,6 +21,7 @@ mod header;
 mod heif;
 mod history;
 mod icon;
+mod info;
 mod input;
 mod instance;
 mod loader;
