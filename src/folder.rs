@@ -270,9 +270,7 @@ pub fn list_files(
         }
         match std::fs::metadata(&path) {
             Ok(meta) if meta.is_file() => files.push(Entry { added: i, ..Entry::new(path, Some(&meta)) }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && path.parent().is_some_and(Path::is_dir) => {
-                gone.push(path)
-            }
+            Err(e) if is_gone(&path, &e) => gone.push(path),
             _ => {}
         }
         found.store(i + 1, Relaxed);
@@ -286,6 +284,29 @@ pub fn list_files(
         files.sort_by(|a, b| compare(a, b, order));
     }
     Ok(files.into_iter().map(|e| e.path).collect())
+}
+
+/// Whether `path`, which `metadata` failed on with `e`, is gone from its
+/// folder: the folder is there without it. A folder that cannot be reached
+/// (a drive unplugged) says nothing.
+fn is_gone(path: &Path, e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::NotFound && path.parent().is_some_and(Path::is_dir)
+}
+
+/// The paths of `paths` gone from their folder (see [`list_files`]),
+/// checked on a thread; `ctx` is repainted when they are known.
+pub fn find_gone(paths: Vec<PathBuf>, ctx: egui::Context) -> mpsc::Receiver<Vec<PathBuf>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("gone".into())
+        .spawn(move || {
+            let gone = paths.into_iter().filter(|p| std::fs::metadata(p).is_err_and(|e| is_gone(p, &e))).collect();
+            if tx.send(gone).is_ok() {
+                ctx.request_repaint();
+            }
+        })
+        .expect("spawn gone thread");
+    rx
 }
 
 /// Where the images of each folder start in `files` (of one folder, or

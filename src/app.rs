@@ -274,6 +274,9 @@ pub struct App {
     pub favorites: Favorites,
     /// Clearing the favourites waits for the user's yes.
     pub confirm_clear_favorites: bool,
+    /// The favourites gone from their folders, looked for at start-up, so
+    /// that their count is right before they are listed.
+    favorites_gone: Option<mpsc::Receiver<Vec<PathBuf>>>,
     /// The favourites being copied to a folder.
     copying: Option<Copying>,
     /// Made when the gallery is first opened.
@@ -473,6 +476,7 @@ impl App {
             history: History::default(),
             favorites: Favorites::load(eframe::storage_dir(crate::APP_ID).map(|d| d.join(favorites::FILE))),
             confirm_clear_favorites: false,
+            favorites_gone: None,
             copying: None,
             gallery: None,
             gallery_open: false,
@@ -512,6 +516,9 @@ impl App {
             app.open(ctx, path);
         }
         app.updates.start_if_due(ctx);
+        if app.favorites.len() > 0 {
+            app.favorites_gone = Some(folder::find_gone(app.favorites.paths(), ctx.clone()));
+        }
         app
     }
 
@@ -1001,16 +1008,7 @@ impl App {
         // Favourites whose folder no longer has them are no longer
         // favourites; those of a drive that is not there stay.
         let gone = self.scan.take().map(|s| s.take_gone()).unwrap_or_default();
-        if !gone.is_empty() {
-            let n = gone.len();
-            match self.favorites.remove_if(|p| gone.iter().any(|g| folder::same_path(g, p))) {
-                Ok(_) => self.notice(tr!(
-                    format!("Not found, removed from the favorites: {n}"),
-                    format!("Не найдено и убрано из избранного: {n}")
-                )),
-                Err(e) => self.notice(e),
-            }
-        }
+        self.forget_gone_favorites(&gone);
         match result {
             Ok(files) => self.files = files,
             Err(e) => {
@@ -1263,6 +1261,30 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// Unmark `gone`, favourites no longer in their folders, with a notice.
+    fn forget_gone_favorites(&mut self, gone: &[PathBuf]) {
+        if gone.is_empty() {
+            return;
+        }
+        match self.favorites.remove_if(|p| gone.iter().any(|g| folder::same_path(g, p))) {
+            Ok(0) => {}
+            Ok(n) => self.notice(tr!(
+                format!("Not found, removed from the favorites: {n}"),
+                format!("Не найдено и убрано из избранного: {n}")
+            )),
+            Err(e) => self.notice(e),
+        }
+    }
+
+    /// The favourites found gone at start-up.
+    fn poll_favorites_gone(&mut self) {
+        let Some(Ok(gone)) = self.favorites_gone.as_ref().map(mpsc::Receiver::try_recv) else { return };
+        self.favorites_gone = None;
+        // One may have come back (or been marked again) meanwhile.
+        let gone: Vec<PathBuf> = gone.into_iter().filter(|p| !p.exists()).collect();
+        self.forget_gone_favorites(&gone);
     }
 
     fn poll_delete(&mut self, ctx: &egui::Context) {
@@ -2352,6 +2374,7 @@ impl eframe::App for App {
             ctx.request_repaint();
         }
         self.poll_scan();
+        self.poll_favorites_gone();
         self.poll_decoded(&ctx, frame);
         if let Some(gallery) = &mut self.gallery {
             gallery.poll(&self.gl, frame, &ctx);
