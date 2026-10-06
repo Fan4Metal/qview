@@ -37,7 +37,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - The interface is in Russian when Windows is in Russian, and in English otherwise; another language is chosen in Help → About qview.
 - No network access beyond the optional update check (see [Update check and privacy](#update-check-and-privacy)).
 
-Supported formats: JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM), and HEIC/HEIF, read by the [libheif](https://github.com/strukturag/libheif) and [libde265](https://github.com/strukturag/libde265) libraries supplied with the program, so that no extensions from the Microsoft Store are needed for them. In addition, every format for which Windows has a codec (Windows Imaging Component) is opened through it: AVIF (with the AV1 Video Extension from the Microsoft Store), camera RAW files such as CR2, CR3, NEF, ARW and DNG (with the Raw Image Extension, included in Windows 11), JPEG XR, DDS and the formats of other installed codecs; HEIF files that libheif cannot read are passed to them as well. AVIF files are always listed; when the extension they need is missing, the image area names it. Windows' codecs also take over the files of the formats above that qview's own decoders cannot read. Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated.
+Supported formats: JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM), and HEIC/HEIF, read by the [libheif](https://github.com/strukturag/libheif) and [libde265](https://github.com/strukturag/libde265) libraries supplied with the program, so that no extensions from the Microsoft Store are needed for them. In addition, every format for which Windows has a codec (Windows Imaging Component) is opened through it: AVIF (with the AV1 Video Extension from the Microsoft Store), camera RAW files such as CR2, CR3, NEF, ARW and DNG (with the Raw Image Extension, included in Windows 11), JPEG XR, DDS and the formats of other installed codecs; HEIF files that libheif cannot read are passed to them as well. AVIF files are always listed; when the extension they need is missing, the image area names it. Windows' codecs also take over the files of the formats above that qview's own decoders cannot read. Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated. `P` (View → Pause Animation) pauses an animation and plays it on, and plays again one whose loops are over; `.` and `,` show the next and the previous frame, pausing the animation, and the status bar then shows the frame's number.
 
 ## Installation
 
@@ -63,6 +63,8 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Scroll a zoomed image | arrow keys, dragging with the left button |
 | Rotate left / right | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
 | Flip horizontally / vertically | `H` / `V` |
+| Pause or play an animation | `P` |
+| Previous / next frame of an animation | `,` / `.` |
 | Crop | `C` (`Enter` saves, `Esc` cancels) |
 | Save the rotated, flipped or cropped image | `Ctrl+S` |
 | Save as another file or format | `Ctrl+Shift+S` |

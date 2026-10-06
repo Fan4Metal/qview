@@ -96,6 +96,8 @@ impl App {
         ui.separator();
         self.rotate_items(ui, &e);
         ui.separator();
+        self.animation_items(ui);
+        ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
         self.check_item(ui, tr!("Toolbar", "Панель инструментов").into(), "T", Cmd::ToggleToolbar, self.show_toolbar);
         self.check_item(ui, tr!("Status Bar", "Строка состояния").into(), "B", Cmd::ToggleStatusBar, self.show_status_bar);
@@ -140,6 +142,19 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Pause and the frame steps, for the animation on screen.
+    fn animation_items(&mut self, ui: &mut Ui) {
+        let playing = self.player.is_some();
+        let paused = self.player.as_ref().is_some_and(|p| p.paused());
+        let text = tr!("Pause Animation", "Приостановить анимацию");
+        if ui.add_enabled(playing, Button::new(text).shortcut_text("P").selected(paused)).clicked() {
+            self.clicked.push(Cmd::Pause);
+            ui.close();
+        }
+        self.item(ui, tr!("Next Frame", "Следующий кадр").into(), ".", Cmd::NextFrame, playing);
+        self.item(ui, tr!("Previous Frame", "Предыдущий кадр").into(), ",", Cmd::PrevFrame, playing);
     }
 
     fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {
@@ -314,6 +329,10 @@ impl App {
         self.rotate_items(ui, &e);
         if e.edited {
             self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, true);
+        }
+        if self.player.is_some() {
+            ui.separator();
+            self.animation_items(ui);
         }
         ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);

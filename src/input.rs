@@ -46,6 +46,12 @@ pub enum Cmd {
     /// Mirror the image as shown left to right (H), or top to bottom (V).
     FlipHorizontal,
     FlipVertical,
+    /// Pause an animation, or play it on (P).
+    Pause,
+    /// Show the next frame of an animation (`.`) or the previous one
+    /// (`,`), paused.
+    NextFrame,
+    PrevFrame,
     FullScreen,
     /// Full screen without leaving the gallery (Ctrl+Shift+F there; F
     /// shows the image in full screen).
@@ -153,6 +159,9 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::CloseBracket if plain => RotateRight,
         Key::H if letter => FlipHorizontal,
         Key::V if letter => FlipVertical,
+        Key::P if letter => Pause,
+        Key::Period if letter => NextFrame,
+        Key::Comma if letter => PrevFrame,
         Key::F if letter || (m.ctrl && m.shift && !m.alt) => FullScreen,
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
@@ -174,7 +183,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::F1 => Shortcuts,
         _ => return None,
     };
-    let repeats = matches!(cmd, Next | Prev | First | Last | Arrow(_) | ZoomIn | ZoomOut | PageUp | PageDown);
+    let repeats = matches!(cmd, Next | Prev | First | Last | Arrow(_) | ZoomIn | ZoomOut | PageUp | PageDown | NextFrame | PrevFrame);
     (!repeat || repeats).then_some(cmd)
 }
 
@@ -330,6 +339,9 @@ mod tests {
         assert_eq!(command(Key::H, NONE, false), Some(Cmd::FlipHorizontal));
         assert_eq!(command(Key::V, NONE, false), Some(Cmd::FlipVertical));
         assert_eq!(command(Key::V, CTRL, false), None);
+        assert_eq!(command(Key::P, NONE, false), Some(Cmd::Pause));
+        assert_eq!(command(Key::Period, NONE, true), Some(Cmd::NextFrame));
+        assert_eq!(command(Key::Comma, NONE, true), Some(Cmd::PrevFrame));
         assert_eq!(command(Key::F, NONE, false), Some(Cmd::FullScreen));
         assert_eq!(command(Key::F, CTRL | SHIFT, false), Some(Cmd::FullScreen));
         assert_eq!(command(Key::F, SHIFT, false), None);

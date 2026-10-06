@@ -9,95 +9,120 @@ use crate::i18n::LangChoice;
 /// Width of the language list in About, enough for its longest entry.
 const LANG_WIDTH: f32 = 220.0;
 
-/// The key bindings as the Shortcuts dialog lists them.
-fn shortcuts() -> Vec<(&'static str, &'static str)> {
+/// The key bindings as the Shortcuts dialog lists them, in sections.
+fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
-        ("→  Page Down  Space  Ctrl+→", tr!("Next image", "Следующее изображение")),
-        ("←  Page Up  Backspace  Ctrl+←", tr!("Previous image", "Предыдущее изображение")),
-        (tr!("Wheel", "Колесо мыши"), tr!("Previous / next image", "Предыдущее / следующее")),
-        ("Home  End", tr!("First / last image", "Первое / последнее")),
-        ("+  =  -", tr!("Zoom in / out", "Увеличить / уменьшить")),
-        (tr!("Ctrl+Wheel", "Ctrl+колесо"), tr!("Zoom at the pointer", "Масштаб у курсора")),
-        ("1  Num /", tr!("Actual size (100%)", "Реальный размер (100%)")),
-        ("2  Num *", tr!("Fit image to window", "Вписать в окно")),
-        ("3", tr!("Fill the window (enlarge too)", "Заполнить окно (и с увеличением)")),
-        ("4", tr!("Fill the entire window (crops)", "Заполнить окно целиком (с обрезкой)")),
-        ("L", tr!("Keep zoom and position for the next images", "Сохранять масштаб и положение для следующих")),
-        ("←  →  ↑  ↓", tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
-        (tr!("Drag", "Перетаскивание"), tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения")),
         (
-            "[  ]  Ctrl+Alt+←  Ctrl+Alt+→",
-            tr!("Rotate left / right (the file changes on saving)", "Повернуть влево / вправо (файл меняется при сохранении)"),
-        ),
-        ("H  V", tr!("Flip horizontally / vertically", "Отразить по горизонтали / по вертикали")),
-        ("C", tr!("Crop: drag the frame, its edges or corners", "Обрезка: перетаскивайте рамку, её края или углы")),
-        (
-            tr!("Crop: Enter  Esc", "Обрезка: Enter  Esc"),
-            tr!("Save the cropped image / cancel", "Сохранить обрезанное / отменить"),
-        ),
-        ("Ctrl+S", tr!("Save the turned, flipped or cropped image", "Сохранить повёрнутое, отражённое или обрезанное")),
-        ("Ctrl+Shift+S", tr!("Save as another file or format", "Сохранить в другой файл или формат")),
-        ("Ctrl+E", tr!("Open in the editor chosen last", "Открыть в последнем выбранном редакторе")),
-        (
-            tr!("F  Ctrl+Shift+F  Middle click", "F  Ctrl+Shift+F  Средняя кнопка"),
-            tr!("Full screen", "Полный экран"),
-        ),
-        (tr!("Gallery: F", "Галерея: F"), tr!("Show the selected image in full screen", "Показать выбранное на полном экране")),
-        (
-            tr!("Gallery: Ctrl+Shift+F", "Галерея: Ctrl+Shift+F"),
-            tr!("Full screen for the gallery (with the bars)", "Галерея на полном экране (с панелями)"),
+            tr!("Browsing", "Просмотр"),
+            vec![
+                ("→  Page Down  Space  Ctrl+→", tr!("Next image", "Следующее изображение")),
+                ("←  Page Up  Backspace  Ctrl+←", tr!("Previous image", "Предыдущее изображение")),
+                (tr!("Wheel", "Колесо мыши"), tr!("Previous / next image", "Предыдущее / следующее")),
+                ("Home  End", tr!("First / last image", "Первое / последнее")),
+                (tr!("G  Enter  Double click", "G  Enter  Двойной щелчок"), tr!("Open the gallery", "Открыть галерею")),
+            ],
         ),
         (
-            tr!("G  Enter  Double click", "G  Enter  Двойной щелчок"),
-            tr!("Gallery: open, or show the selected image", "Галерея: открыть или показать выбранное"),
+            tr!("Zoom", "Масштаб"),
+            vec![
+                ("+  =  -", tr!("Zoom in / out", "Увеличить / уменьшить")),
+                (tr!("Ctrl+Wheel", "Ctrl+колесо"), tr!("Zoom at the pointer", "Масштаб у курсора")),
+                ("1  Num /", tr!("Actual size (100%)", "Реальный размер (100%)")),
+                ("2  Num *", tr!("Fit image to window", "Вписать в окно")),
+                ("3", tr!("Fill the window (enlarge too)", "Заполнить окно (и с увеличением)")),
+                ("4", tr!("Fill the entire window (crops)", "Заполнить окно целиком (с обрезкой)")),
+                ("L", tr!("Keep zoom and position for the next images", "Сохранять масштаб и положение для следующих")),
+                (
+                    tr!("←  →  ↑  ↓  Drag", "←  →  ↑  ↓  Перетаскивание"),
+                    tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения"),
+                ),
+            ],
         ),
         (
-            tr!("Gallery: click  arrows  Page Up/Down  Home  End", "Галерея: щелчок  стрелки  Page Up/Down  Home  End"),
-            tr!("Select an image", "Выбрать изображение"),
+            tr!("Rotating and cropping", "Поворот и обрезка"),
+            vec![
+                (
+                    "[  ]  Ctrl+Alt+←  Ctrl+Alt+→",
+                    tr!("Rotate left / right (the file changes on saving)", "Повернуть влево / вправо (файл меняется при сохранении)"),
+                ),
+                ("H  V", tr!("Flip horizontally / vertically", "Отразить по горизонтали / по вертикали")),
+                ("C", tr!("Crop: drag the frame, its edges or corners", "Обрезка: перетаскивайте рамку, её края или углы")),
+                ("Enter  Esc", tr!("While cropping: save / cancel", "При обрезке: сохранить / отменить")),
+                ("Ctrl+S", tr!("Save the turned, flipped or cropped image", "Сохранить повёрнутое, отражённое или обрезанное")),
+                ("Ctrl+Shift+S", tr!("Save as another file or format", "Сохранить в другой файл или формат")),
+                ("Ctrl+E", tr!("Open in the editor chosen last", "Открыть в последнем выбранном редакторе")),
+            ],
         ),
         (
-            tr!("Gallery: +  -  Ctrl+Wheel", "Галерея: +  -  Ctrl+колесо"),
-            tr!("Thumbnail size", "Размер миниатюр"),
-        ),
-        (tr!("Gallery: double click", "Галерея: двойной щелчок"), tr!("Show the image", "Показать изображение")),
-        (
-            tr!("Gallery: Alt+←  Backspace  Alt+→  Mouse side buttons", "Галерея: Alt+←  Backspace  Alt+→  Боковые кнопки мыши"),
-            tr!("Previous / next folder", "Предыдущая / следующая папка"),
-        ),
-        (tr!("Gallery: Alt+↑", "Галерея: Alt+↑"), tr!("Folder above", "Папка уровнем выше")),
-        ("T  B", tr!("Show or hide the toolbar / status bar", "Панель инструментов / строка состояния")),
-        ("S", tr!("Add to / remove from the favorites", "Добавить в избранное / убрать из него")),
-        ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
-        ("F2", tr!("Rename the file", "Переименовать файл")),
-        ("Ctrl+Z", tr!("Undo the last rename or save", "Отменить последнее переименование или сохранение")),
-        (
-            tr!("Gallery: Ctrl+click  Shift+click  drag", "Галерея: Ctrl+щелчок  Shift+щелчок  перетаскивание"),
-            tr!("Choose several images", "Выбрать несколько изображений"),
+            tr!("Animation", "Анимация"),
+            vec![
+                ("P", tr!("Pause / play", "Приостановить / продолжить")),
+                (",  .", tr!("Previous / next frame", "Предыдущий / следующий кадр")),
+            ],
         ),
         (
-            tr!(
-                "Gallery: Shift+arrows/Page Up/Page Down/Home/End  Ctrl+A  Esc",
-                "Галерея: Shift+стрелки/Page Up/Page Down/Home/End  Ctrl+A  Esc"
-            ),
-            tr!("Choose on the way / all / none", "Выбрать по пути / все / снять выбор"),
+            tr!("Gallery", "Галерея"),
+            vec![
+                (
+                    tr!("Click  arrows  Page Up/Down  Home  End", "Щелчок  стрелки  Page Up/Down  Home  End"),
+                    tr!("Select an image", "Выбрать изображение"),
+                ),
+                (
+                    tr!("G  Enter  Double click", "G  Enter  Двойной щелчок"),
+                    tr!("Show the selected image", "Показать выбранное изображение"),
+                ),
+                ("F", tr!("Show the selected image in full screen", "Показать выбранное на полном экране")),
+                (
+                    tr!("Ctrl+click  Shift+click  Drag", "Ctrl+щелчок  Shift+щелчок  Перетаскивание"),
+                    tr!("Choose several images", "Выбрать несколько изображений"),
+                ),
+                (
+                    tr!("Shift+arrows/Page Up/Page Down/Home/End  Ctrl+A  Esc", "Shift+стрелки/Page Up/Page Down/Home/End  Ctrl+A  Esc"),
+                    tr!("Choose on the way / all / none", "Выбрать по пути / все / снять выбор"),
+                ),
+                (tr!("+  -  Ctrl+Wheel", "+  -  Ctrl+колесо"), tr!("Thumbnail size", "Размер миниатюр")),
+                (
+                    tr!("Alt+←  Backspace  Alt+→  Mouse side buttons", "Alt+←  Backspace  Alt+→  Боковые кнопки мыши"),
+                    tr!("Previous / next folder", "Предыдущая / следующая папка"),
+                ),
+                ("Alt+↑", tr!("Folder above", "Папка уровнем выше")),
+                ("Ctrl+Shift+F", tr!("Full screen for the gallery (with the bars)", "Галерея на полном экране (с панелями)")),
+            ],
         ),
-        ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
-        ("Ctrl+O", tr!("Open a file", "Открыть файл")),
         (
-            "F5",
-            tr!(
-                "Reload the image and the folder; in the gallery, the folder tree too",
-                "Перечитать изображение и папку; в галерее и дерево папок"
-            ),
+            tr!("Files", "Файлы"),
+            vec![
+                ("S", tr!("Add to / remove from the favorites", "Добавить в избранное / убрать из него")),
+                ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
+                ("F2", tr!("Rename the file", "Переименовать файл")),
+                ("Ctrl+Z", tr!("Undo the last rename or save", "Отменить последнее переименование или сохранение")),
+                ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
+                ("Ctrl+O", tr!("Open a file", "Открыть файл")),
+                (
+                    "F5",
+                    tr!(
+                        "Reload the image and the folder; in the gallery, the folder tree too",
+                        "Перечитать изображение и папку; в галерее и дерево папок"
+                    ),
+                ),
+            ],
         ),
         (
-            "Esc",
-            tr!(
-                "Leave full screen; then the gallery, from it close",
-                "Выйти из полного экрана; затем галерея, из неё закрыть"
-            ),
+            tr!("Window", "Окно"),
+            vec![
+                (tr!("F  Ctrl+Shift+F  Middle click", "F  Ctrl+Shift+F  Средняя кнопка"), tr!("Full screen", "Полный экран")),
+                ("T  B", tr!("Show or hide the toolbar / status bar", "Панель инструментов / строка состояния")),
+                ("F1", tr!("This list", "Этот список")),
+                (
+                    "Esc",
+                    tr!(
+                        "Leave full screen; then the gallery, from it close",
+                        "Выйти из полного экрана; затем галерея, из неё закрыть"
+                    ),
+                ),
+                ("Ctrl+W  Alt+F4", tr!("Close", "Закрыть")),
+            ],
         ),
-        ("Ctrl+W  Alt+F4", tr!("Close", "Закрыть")),
     ]
 }
 
@@ -112,12 +137,29 @@ impl App {
         let fresh = std::mem::take(&mut self.dialog_fresh);
         let closed = match self.dialog {
             Some(Dialog::Shortcuts) => info_modal(ctx, "shortcuts", tr!("Keyboard Shortcuts", "Сочетания клавиш"), fresh, |ui| {
-                egui::Grid::new("shortcut_grid").num_columns(2).spacing([24.0, 5.0]).striped(true).show(ui, |ui| {
-                    for (keys, action) in shortcuts() {
-                        ui.label(RichText::new(keys).monospace());
-                        ui.label(action);
-                        ui.end_row();
-                    }
+                // Longer than a small window: scrolled within all of it but
+                // the title and the modal's margins.
+                let height = (ctx.content_rect().height() - 120.0).max(200.0);
+                // A modal's content gets the height of its previous frame,
+                // so the list would never grow past its first size: when it
+                // scrolls, it takes `height` all the same.
+                egui::ScrollArea::vertical().max_height(height).min_scrolled_height(height).show(ui, |ui| {
+                    // One grid, so that the columns line up across sections.
+                    egui::Grid::new("shortcut_grid").num_columns(2).spacing([24.0, 5.0]).show(ui, |ui| {
+                        for (i, (title, keys)) in shortcuts().into_iter().enumerate() {
+                            if i > 0 {
+                                ui.add_space(6.0);
+                                ui.end_row();
+                            }
+                            ui.label(RichText::new(title).strong());
+                            ui.end_row();
+                            for (keys, action) in keys {
+                                ui.label(RichText::new(keys).monospace());
+                                ui.label(action);
+                                ui.end_row();
+                            }
+                        }
+                    });
                 });
             }),
             Some(Dialog::About) => self.about(ctx, fresh),

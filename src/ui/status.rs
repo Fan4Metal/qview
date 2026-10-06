@@ -39,7 +39,17 @@ impl App {
             (Some((path, picture)), _, _) if path == current => {
                 let m = &picture.meta;
                 fields.push(format::file_size(m.file_size));
-                let animated = if m.animated { tr!(", animated", ", анимация") } else { "" };
+                let animated = match self.player.as_ref().filter(|p| p.paused() && p.path == *path) {
+                    Some(p) => {
+                        let frame = p.index + 1;
+                        match p.count {
+                            Some(n) => tr!(format!(", paused on frame {frame} of {n}"), format!(", пауза на кадре {frame} из {n}")),
+                            None => tr!(format!(", paused on frame {frame}"), format!(", пауза на кадре {frame}")),
+                        }
+                    }
+                    None if m.animated => tr!(", animated", ", анимация").into(),
+                    None => String::new(),
+                };
                 fields.push(format!("{}x{}x{}b {}{animated}", m.width, m.height, m.bits, m.format));
                 modified(&mut fields, m.modified);
                 if !self.gallery_open {

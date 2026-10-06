@@ -340,7 +340,7 @@ pub struct App {
     /// While the window is cloaked: when to show it (see `App::uncloak`).
     cloak: Option<Cloak>,
     /// The animation of the image on screen, while it plays.
-    player: Option<crate::anim::Player>,
+    pub player: Option<crate::anim::Player>,
 }
 
 /// Files being copied by the shell on a thread (see `win::copy_to`).
@@ -1435,6 +1435,16 @@ impl App {
             Cmd::RotateRight => self.view.turns = (self.view.turns + 1) % 4,
             Cmd::FlipHorizontal => self.view.mirror(true),
             Cmd::FlipVertical => self.view.mirror(false),
+            Cmd::Pause => {
+                if let Some(player) = &mut self.player {
+                    player.toggle_pause(Instant::now());
+                }
+            }
+            Cmd::NextFrame | Cmd::PrevFrame => {
+                if let Some(player) = &mut self.player {
+                    player.step(cmd == Cmd::NextFrame);
+                }
+            }
             Cmd::FullScreen | Cmd::WindowFullScreen => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!Self::is_fullscreen(ctx))),
             Cmd::Escape if Self::is_fullscreen(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false)),
             // Back to the gallery, as with G; Esc there closes.
