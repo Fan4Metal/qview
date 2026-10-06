@@ -9,9 +9,9 @@
 use egui::{Color32, Mesh, Painter, Pos2, Rect, Shape, TextureId, Vec2, pos2, vec2};
 
 /// Zoom levels of Zoom In and Zoom Out.
-pub const STEPS: [f32; 21] = [
+pub const STEPS: [f32; 25] = [
     0.05, 0.10, 0.15, 0.20, 0.25, 0.33, 0.50, 0.66, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0,
-    12.0, 16.0,
+    12.0, 16.0, 24.0, 32.0, 48.0, 64.0,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -344,8 +344,9 @@ mod tests {
         assert_eq!(step_up(0.4), 0.5);
         assert_eq!(step_down(0.4), 0.33);
         // Past either end the scale stays.
-        assert_eq!(step_up(16.0), 16.0);
-        assert_eq!(step_up(20.0), 20.0);
+        assert_eq!(step_up(16.0), 24.0);
+        assert_eq!(step_up(64.0), 64.0);
+        assert_eq!(step_up(80.0), 80.0);
         assert_eq!(step_down(0.03), 0.03);
     }
 
