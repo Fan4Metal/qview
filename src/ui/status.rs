@@ -13,6 +13,14 @@ impl App {
     /// The status bar's fields, left to right.
     fn status_fields(&self, ppp: f32) -> Vec<String> {
         let mut fields = Vec::new();
+        // The cursor on a sub-folder's cell in the gallery.
+        if self.gallery_open
+            && let Some(dir) = self.focused_folder()
+        {
+            let name = crate::app::file_name(&dir);
+            fields.push(tr!(format!("Folder: {name}, Enter opens it"), format!("Папка: {name}, Enter — открыть")));
+            return fields;
+        }
         fields.push(match self.index {
             Some(i) if self.scan.is_none() => format!("{}/{}", i + 1, self.files.len()),
             _ if self.current.is_none() && self.scan.is_none() => return fields,

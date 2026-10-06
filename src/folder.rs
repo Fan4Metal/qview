@@ -223,8 +223,15 @@ fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<PathBuf>)
 /// Image files of `dir`, in `order`. `keep` (the file being shown) is
 /// listed even when its extension is not one of [`EXTENSIONS`], so that it
 /// keeps its place among the others.
+#[cfg(test)]
 pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Vec<PathBuf>> {
-    let (mut files, _) = read(dir, false)?;
+    list_with_folders(dir, keep, order, false).map(|(files, _)| files)
+}
+
+/// [`list`], and with `folders` the sub-folders of `dir` that Explorer
+/// shows, in its name order (the gallery's folder cells).
+pub fn list_with_folders(dir: &Path, keep: Option<&Path>, order: Order, folders: bool) -> std::io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let (mut files, subfolders) = read(dir, folders)?;
     if let Some(keep) = keep
         && !files.iter().any(|e| same_path(&e.path, keep))
         && keep.is_file()
@@ -233,7 +240,7 @@ pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Ve
     }
     read_taken(&mut files, order, &AtomicBool::new(false));
     files.sort_by(|a, b| compare(a, b, order));
-    Ok(files.into_iter().map(|e| e.path).collect())
+    Ok((files.into_iter().map(|e| e.path).collect(), subfolders))
 }
 
 /// What a listing holds.
@@ -452,6 +459,9 @@ pub struct Scan {
     /// Of a listing of files ([`scan_files`]): those found gone, set
     /// before the listing is sent.
     gone: Arc<Mutex<Vec<PathBuf>>>,
+    /// Of a folder listed alone: its sub-folders, set before the listing
+    /// is sent.
+    folders: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl Scan {
@@ -464,6 +474,12 @@ impl Scan {
     /// (see [`list_files`]), once the listing is ready.
     pub fn take_gone(&self) -> Vec<PathBuf> {
         std::mem::take(&mut *self.gone.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// The sub-folders of a folder listed alone, once the listing is
+    /// ready.
+    pub fn take_folders(&self) -> Vec<PathBuf> {
+        std::mem::take(&mut *self.folders.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Images found so far when the sub-folders are listed too.
@@ -482,11 +498,18 @@ impl Drop for Scan {
 /// as deep as `depth`, and repaint `ctx` when done. Dropping the [`Scan`]
 /// discards the result.
 pub fn scan(dir: PathBuf, depth: Depth, keep: Option<PathBuf>, order: Order, ctx: egui::Context) -> Scan {
-    spawn(ctx, move |found, cancel| match depth {
-        Depth::Folder => list(&dir, keep.as_deref(), order),
+    let folders = Arc::new(Mutex::new(Vec::new()));
+    let out = folders.clone();
+    let mut scan = spawn(ctx, move |found, cancel| match depth {
+        Depth::Folder => list_with_folders(&dir, keep.as_deref(), order, true).map(|(files, subfolders)| {
+            *out.lock().unwrap_or_else(|e| e.into_inner()) = subfolders;
+            files
+        }),
         Depth::ByFolder => list_deep(&dir, order, true, found, cancel),
         Depth::Flat => list_deep(&dir, order, false, found, cancel),
-    })
+    });
+    scan.folders = folders;
+    scan
 }
 
 /// [`list_files`] on a thread, as [`scan`] lists a folder.
@@ -520,7 +543,7 @@ fn spawn(
             }
         })
         .expect("spawn folder thread");
-    Scan { rx, found, cancel, gone: Arc::default() }
+    Scan { rx, found, cancel, gone: Arc::default(), folders: Arc::default() }
 }
 
 #[cfg(test)]

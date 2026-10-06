@@ -41,7 +41,7 @@ impl App {
         }
     }
 
-    fn check_item(&mut self, ui: &mut Ui, text: String, shortcut: &str, cmd: Cmd, on: bool) {
+    pub(super) fn check_item(&mut self, ui: &mut Ui, text: String, shortcut: &str, cmd: Cmd, on: bool) {
         if ui.add(Button::new(text).shortcut_text(shortcut).selected(on)).clicked() {
             self.clicked.push(cmd);
             ui.close();

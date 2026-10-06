@@ -9,7 +9,7 @@
 //! recently seen dropped first, so going back to a folder is instant. The
 //! drawing is in `ui::gallery`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -83,6 +83,24 @@ pub struct Thumb {
     used: u64,
 }
 
+/// What a sub-folder's cell shows: the first images of the folder (in
+/// the order of the listing) and how many it has.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Preview {
+    pub images: Vec<PathBuf>,
+    pub count: usize,
+}
+
+/// Images a sub-folder's cell shows, in two rows of two.
+pub const PREVIEW_IMAGES: usize = 4;
+
+/// The frame of a sub-folder's cell for images' frames of `frame`: as
+/// wide, and 4:3 whatever the images' proportions, so that the folders
+/// look alike in any folder and a portrait folder does not make them tall.
+pub fn folder_frame(frame: Vec2) -> Vec2 {
+    egui::vec2(frame.x, (frame.x * 0.75).round())
+}
+
 /// Where to scroll the grid to on the next frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Scroll {
@@ -122,6 +140,12 @@ pub struct Gallery {
     /// The Auto proportions of the folders seen (see `auto_aspect`).
     auto: HashMap<PathBuf, f32>,
     finding: Option<Finding>,
+    /// What the sub-folders' cells show (see `preview`), and those being
+    /// listed on a thread.
+    previews: HashMap<PathBuf, Preview>,
+    previewing: HashSet<PathBuf>,
+    preview_tx: mpsc::Sender<(PathBuf, Preview)>,
+    preview_rx: mpsc::Receiver<(PathBuf, Preview)>,
     ctx: egui::Context,
 }
 
@@ -142,6 +166,7 @@ impl Drop for Finding {
 impl Gallery {
     pub fn new(ctx: &egui::Context) -> Self {
         let workers = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(2, 4));
+        let (preview_tx, preview_rx) = mpsc::channel();
         Self {
             tree: Tree::new(ctx.clone()),
             thumbs: Thumbs::new(workers, ctx.clone()),
@@ -158,7 +183,46 @@ impl Gallery {
             shown_aspect: 1.0,
             auto: HashMap::new(),
             finding: None,
+            previews: HashMap::new(),
+            previewing: HashSet::new(),
+            preview_tx,
+            preview_rx,
             ctx: ctx.clone(),
+        }
+    }
+
+    /// What the cell of sub-folder `dir` shows, once listed.
+    pub fn preview(&self, dir: &Path) -> Option<&Preview> {
+        self.previews.get(dir)
+    }
+
+    /// List the folders of `dirs` not listed yet for their cells, one
+    /// after another on a thread, in `order` (by name for the date taken,
+    /// which would read every file).
+    pub fn want_previews(&mut self, dirs: Vec<PathBuf>, order: crate::folder::Order) {
+        let dirs: Vec<PathBuf> = dirs.into_iter().filter(|d| !self.previews.contains_key(d) && !self.previewing.contains(d)).collect();
+        if dirs.is_empty() {
+            return;
+        }
+        self.previewing.extend(dirs.iter().cloned());
+        let order = match order.key {
+            crate::folder::SortKey::Taken | crate::folder::SortKey::Added => crate::folder::Order::default(),
+            _ => order,
+        };
+        let (tx, ctx) = (self.preview_tx.clone(), self.ctx.clone());
+        let spawned = std::thread::Builder::new().name("folder previews".into()).spawn(move || {
+            for dir in dirs {
+                let preview = crate::folder::list_with_folders(&dir, None, order, false)
+                    .map(|(files, _)| Preview { count: files.len(), images: files.into_iter().take(PREVIEW_IMAGES).collect() })
+                    .unwrap_or_default();
+                if tx.send((dir, preview)).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("cannot start a thread for the folder previews: {e}");
         }
     }
 
@@ -220,6 +284,10 @@ impl Gallery {
     /// at most; the rest wait for the next frames.
     pub fn poll(&mut self, gl: &Arc<glow::Context>, frame: &mut eframe::Frame, ctx: &egui::Context) {
         self.frame += 1;
+        for (dir, preview) in self.preview_rx.try_iter() {
+            self.previewing.remove(&dir);
+            self.previews.insert(dir, preview);
+        }
         self.made.extend(std::iter::from_fn(|| self.thumbs.poll()));
         let started = Instant::now();
         let mut uploaded = 0;
@@ -317,6 +385,7 @@ impl Gallery {
         // The images may have changed too.
         self.auto.clear();
         self.finding = None;
+        self.previews.clear();
         for p in paths {
             if let Some(t) = self.cache.remove(p) {
                 self.pixels -= texture_pixels(&t);
@@ -470,17 +539,31 @@ pub fn grid(width: f32, frame: Vec2, count: usize) -> Grid {
     Grid { columns, rows: count.div_ceil(columns), cell: egui::vec2(width / columns as f32, frame.y + 2.0 * PAD + LABEL) }
 }
 
-/// Where the cells go: rows of the [`grid`], in sections that each start
-/// a row under a header `header` points high: one per folder when the
-/// images of the sub-folders are shown by folder, otherwise one with no
-/// header.
+/// A cell of the grid: a sub-folder of the folder shown (above its
+/// images), or an image, by index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cell {
+    Folder(usize),
+    Image(usize),
+}
+
+/// Where the cells go: the sub-folders' cells first (`folders` of them, in
+/// rows of their own), then the images in rows of the [`grid`], in
+/// sections that each start a row under a header `header` points high: one
+/// per folder when the images of the sub-folders are shown by folder,
+/// otherwise one with no header.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layout {
     pub columns: usize,
     pub cell: Vec2,
+    /// A sub-folder's cell: as wide, 4:3 (see [`folder_frame`]).
+    pub folder_cell: Vec2,
     pub header: f32,
     pub sections: Vec<Section>,
     count: usize,
+    pub folders: usize,
+    /// Height of the header above the sub-folders' rows (0: none).
+    pub folders_header: f32,
     /// Height of the whole grid.
     pub height: f32,
 }
@@ -496,13 +579,16 @@ pub struct Section {
 }
 
 impl Layout {
-    /// `count` cells in a list `width` points wide; `starts` are the first
-    /// cells of the sections, ascending (empty: one section).
-    pub fn new(width: f32, frame: Vec2, count: usize, starts: &[usize], header: f32) -> Self {
+    /// `folders` cells of sub-folders under a header `folders_header`
+    /// points high, then `count` cells of images, in a list `width` points
+    /// wide; `starts` are the first images of the sections, ascending
+    /// (empty: one section).
+    pub fn new(width: f32, frame: Vec2, folders: usize, count: usize, starts: &[usize], header: f32, folders_header: f32) -> Self {
         let g = grid(width, frame, count);
+        let folder_cell = egui::vec2(g.cell.x, folder_frame(frame).y + 2.0 * PAD + LABEL);
         let starts = if starts.is_empty() { &[0][..] } else { starts };
         let mut sections = Vec::with_capacity(starts.len());
-        let (mut row, mut y) = (0, 0.0);
+        let (mut row, mut y) = (0, folders_header + folders.div_ceil(g.columns) as f32 * folder_cell.y);
         for (k, &first) in starts.iter().enumerate() {
             let end = starts.get(k + 1).copied().unwrap_or(count).min(count);
             if first >= end {
@@ -513,7 +599,34 @@ impl Layout {
             row += rows;
             y += header + rows as f32 * g.cell.y;
         }
-        Self { columns: g.columns, cell: g.cell, header, sections, count, height: y }
+        Self { columns: g.columns, cell: g.cell, folder_cell, header, sections, count, folders, folders_header, height: y }
+    }
+
+    /// Top left of the cell of sub-folder `j` from the top left of the grid.
+    pub fn folder_pos(&self, j: usize) -> Vec2 {
+        let columns = self.columns.max(1);
+        egui::vec2((j % columns) as f32 * self.cell.x, self.folders_header + (j / columns) as f32 * self.folder_cell.y)
+    }
+
+    /// The sub-folders' cells of the rows between `top` and `bottom`.
+    pub fn visible_folders(&self, top: f32, bottom: f32) -> std::ops::Range<usize> {
+        let row = |y: f32| ((y - self.folders_header) / self.folder_cell.y).max(0.0);
+        let start = (row(top).floor() as usize * self.columns).min(self.folders);
+        let end = (row(bottom).ceil() as usize * self.columns).min(self.folders);
+        start..end.max(start)
+    }
+
+    /// Top left of `c` from the top left of the grid.
+    pub fn pos(&self, c: Cell) -> Vec2 {
+        match c {
+            Cell::Folder(j) => self.folder_pos(j),
+            Cell::Image(i) => self.cell_pos(i),
+        }
+    }
+
+    /// Rows of sub-folders' cells.
+    fn folder_rows(&self) -> usize {
+        self.folders.div_ceil(self.columns.max(1))
     }
 
     /// Cells in section `k`.
@@ -552,22 +665,65 @@ impl Layout {
         (s.first + rows * self.columns).min(s.first + self.len(k))
     }
 
-    /// Rows of cells.
+    /// Rows of images' cells.
     fn rows(&self) -> usize {
         self.sections.last().map_or(0, |s| s.row + self.len(self.sections.len() - 1).div_ceil(self.columns))
     }
 
-    /// The cell `rows` rows below `i` (above for negative), in the same
-    /// column, stopping at the first and last rows; in a row too short for
-    /// that column, its last cell. The headers are not rows.
-    pub fn move_rows(&self, i: usize, rows: isize) -> usize {
-        let k = self.section_of(i);
-        let Some(s) = self.sections.get(k) else { return 0 };
-        let local = i.saturating_sub(s.first);
-        let row = ((s.row + local / self.columns) as isize + rows).clamp(0, self.rows() as isize - 1) as usize;
+    /// The row of `c` among all rows (the sub-folders' first) and its
+    /// column.
+    fn row_and_column(&self, c: Cell) -> (usize, usize) {
+        match c {
+            Cell::Folder(j) => (j / self.columns, j % self.columns),
+            Cell::Image(i) => {
+                let Some(s) = self.sections.get(self.section_of(i)) else { return (self.folder_rows(), 0) };
+                let local = i.saturating_sub(s.first);
+                (self.folder_rows() + s.row + local / self.columns, local % self.columns)
+            }
+        }
+    }
+
+    /// The cell `rows` rows below `c` (above for negative), in the same
+    /// column, from the sub-folders into the images and back, stopping at
+    /// the first and last rows; in a row too short for that column, its
+    /// last cell. The headers are not rows.
+    pub fn move_rows(&self, c: Cell, rows: isize) -> Cell {
+        let (folder_rows, total) = (self.folder_rows(), self.folder_rows() + self.rows());
+        if total == 0 || self.columns == 0 {
+            return c;
+        }
+        let (row, column) = self.row_and_column(c);
+        let row = (row as isize + rows).clamp(0, total as isize - 1) as usize;
+        if row < folder_rows {
+            return Cell::Folder((row * self.columns + column).min(self.folders - 1));
+        }
+        let row = row - folder_rows;
         let t = self.sections.partition_point(|x| x.row <= row) - 1;
         let s = &self.sections[t];
-        (s.first + (row - s.row) * self.columns + local % self.columns).min(s.first + self.len(t) - 1)
+        Cell::Image((s.first + (row - s.row) * self.columns + column).min(s.first + self.len(t) - 1))
+    }
+
+    /// The cell before `c` (`forward`: after), in reading order: the
+    /// sub-folders, then the images; `c` itself at either end.
+    pub fn step(&self, c: Cell, forward: bool) -> Cell {
+        match (c, forward) {
+            (Cell::Folder(j), false) => Cell::Folder(j.saturating_sub(1)),
+            (Cell::Folder(j), true) if j + 1 < self.folders => Cell::Folder(j + 1),
+            (Cell::Folder(_), true) if self.count > 0 => Cell::Image(0),
+            (Cell::Image(0), false) if self.folders > 0 => Cell::Folder(self.folders - 1),
+            (Cell::Image(i), false) => Cell::Image(i.saturating_sub(1)),
+            (Cell::Image(i), true) => Cell::Image((i + 1).min(self.count.saturating_sub(1))),
+            (c, _) => c,
+        }
+    }
+
+    /// The first cell, and the last.
+    pub fn first(&self) -> Option<Cell> {
+        if self.folders > 0 { Some(Cell::Folder(0)) } else { (self.count > 0).then_some(Cell::Image(0)) }
+    }
+
+    pub fn last(&self) -> Option<Cell> {
+        if self.count > 0 { Some(Cell::Image(self.count - 1)) } else { self.folders.checked_sub(1).map(Cell::Folder) }
     }
 
     /// The cells `band` touches, in the grid's coordinates (a frame dragged
@@ -601,7 +757,7 @@ mod tests {
     fn a_band_takes_the_cells_it_touches() {
         // 10 cells of 100x50 in rows of 4: 0-3, 4-7, 8-9.
         let frame = egui::vec2(100.0 - 2.0 * PAD, 50.0 - 2.0 * PAD - LABEL);
-        let l = Layout::new(400.0, frame, 10, &[], 0.0);
+        let l = Layout::new(400.0, frame, 0, 10, &[], 0.0, 0.0);
         assert_eq!((l.columns, l.cell), (4, egui::vec2(100.0, 50.0)));
         let band = |x0: f32, y0: f32, x1: f32, y1: f32| l.cells_in(Rect::from_min_max(pos2(x0, y0), pos2(x1, y1)));
         assert_eq!(band(150.0, 20.0, 250.0, 60.0), [1, 2, 5, 6]);
@@ -614,9 +770,12 @@ mod tests {
     fn rows_keep_the_column() {
         // 10 cells in rows of 4: 0-3, 4-7, 8-9.
         let frame = egui::vec2(100.0 - 2.0 * PAD, 50.0);
-        let l = Layout::new(400.0, frame, 10, &[], 0.0);
+        let l = Layout::new(400.0, frame, 0, 10, &[], 0.0, 0.0);
         assert_eq!(l.columns, 4);
-        let move_rows = |i, rows| l.move_rows(i, rows);
+        let move_rows = |i, rows| match l.move_rows(Cell::Image(i), rows) {
+            Cell::Image(i) => i,
+            c => panic!("{c:?}"),
+        };
         assert_eq!(move_rows(1, 1), 5);
         assert_eq!(move_rows(5, -1), 1);
         assert_eq!(move_rows(1, -1), 1);
@@ -627,7 +786,67 @@ mod tests {
         assert_eq!(move_rows(5, 10), 9);
         assert_eq!(move_rows(4, 10), 8);
         assert_eq!(move_rows(9, -10), 1);
-        assert_eq!(Layout::default().move_rows(3, 1), 0);
+        assert_eq!(Layout::default().move_rows(Cell::Image(3), 1), Cell::Image(3));
+    }
+
+    #[test]
+    fn folders_come_first() {
+        // 5 folders and 6 images in rows of 4, 50 points high: folders
+        // 0-3, 4; images 0-3, 4-5.
+        let frame = egui::vec2(100.0 - 2.0 * PAD, 50.0 - 2.0 * PAD - LABEL);
+        let l = Layout::new(400.0, frame, 5, 6, &[], 0.0, 0.0);
+        // The folders' cells are 4:3 whatever the images' frames: 88 x 66,
+        // 96 points a row.
+        let fh = l.folder_cell.y;
+        assert_eq!(fh, 96.0);
+        assert_eq!(l.folder_pos(4), egui::vec2(0.0, fh));
+        assert_eq!(l.cell_pos(0), egui::vec2(0.0, 2.0 * fh));
+        assert_eq!(l.cell_pos(5), egui::vec2(100.0, 2.0 * fh + 50.0));
+        assert_eq!(l.height, 2.0 * fh + 100.0);
+        assert_eq!(l.visible_folders(0.0, 40.0), 0..4);
+        assert_eq!(l.visible_folders(fh + 10.0, 2.0 * fh - 10.0), 4..5);
+        assert_eq!(l.visible_folders(2.0 * fh + 10.0, 300.0), 5..5);
+        assert_eq!(l.visible(0.0, 2.0 * fh - 10.0), 0..0);
+        assert_eq!(l.visible(fh + 10.0, 2.0 * fh + 40.0), 0..4);
+        // A frame over the folders takes no images.
+        assert_eq!(l.cells_in(Rect::from_min_max(pos2(0.0, 0.0), pos2(390.0, 2.0 * fh - 10.0))), Vec::<usize>::new());
+        // Down from the folders into the images, keeping the column; a row
+        // too short ends at its last cell.
+        assert_eq!(l.move_rows(Cell::Folder(1), 1), Cell::Folder(4));
+        assert_eq!(l.move_rows(Cell::Folder(1), 2), Cell::Image(1));
+        assert_eq!(l.move_rows(Cell::Folder(4), 1), Cell::Image(0));
+        assert_eq!(l.move_rows(Cell::Folder(0), 1), Cell::Folder(4));
+        assert_eq!(l.move_rows(Cell::Image(2), -1), Cell::Folder(4));
+        assert_eq!(l.move_rows(Cell::Image(5), -2), Cell::Folder(4));
+        assert_eq!(l.move_rows(Cell::Image(5), -10), Cell::Folder(1));
+        assert_eq!(l.move_rows(Cell::Folder(2), 10), Cell::Image(5));
+        // Left and right go through them in order.
+        assert_eq!(l.step(Cell::Folder(4), true), Cell::Image(0));
+        assert_eq!(l.step(Cell::Image(0), false), Cell::Folder(4));
+        assert_eq!(l.step(Cell::Folder(0), false), Cell::Folder(0));
+        assert_eq!(l.step(Cell::Image(5), true), Cell::Image(5));
+        assert_eq!((l.first(), l.last()), (Some(Cell::Folder(0)), Some(Cell::Image(5))));
+        // Folders alone.
+        let l = Layout::new(400.0, frame, 3, 0, &[], 0.0, 0.0);
+        assert_eq!(l.move_rows(Cell::Folder(1), 1), Cell::Folder(1));
+        assert_eq!(l.step(Cell::Folder(2), true), Cell::Folder(2));
+        assert_eq!(l.last(), Some(Cell::Folder(2)));
+        assert_eq!(l.height, fh);
+        // Under a header 30 points high, the images under one of their own.
+        let l = Layout::new(400.0, frame, 5, 6, &[], 30.0, 30.0);
+        assert_eq!(l.folder_pos(0), egui::vec2(0.0, 30.0));
+        assert_eq!(l.folder_pos(4), egui::vec2(0.0, 30.0 + fh));
+        assert_eq!(l.sections[0].y, 30.0 + 2.0 * fh);
+        assert_eq!(l.cell_pos(0), egui::vec2(0.0, 60.0 + 2.0 * fh));
+        assert_eq!(l.height, 60.0 + 2.0 * fh + 100.0);
+        assert_eq!(l.visible_folders(0.0, 40.0), 0..4);
+        assert_eq!(l.visible_folders(40.0 + fh, 20.0 + 2.0 * fh), 4..5);
+        assert_eq!(l.visible(40.0 + 2.0 * fh, 100.0 + 2.0 * fh), 0..4);
+        assert_eq!(l.move_rows(Cell::Folder(4), 1), Cell::Image(0));
+        // Folded: the header alone above the images.
+        let l = Layout::new(400.0, frame, 0, 6, &[], 30.0, 30.0);
+        assert_eq!(l.cell_pos(0), egui::vec2(0.0, 60.0));
+        assert_eq!(l.first(), Some(Cell::Image(0)));
     }
 
     #[test]
@@ -635,7 +854,7 @@ mod tests {
         // Rows of 4 cells 80 points high; folders of 6, 2 and 5 cells:
         // 0-3, 4-5 | 6-7 | 8-11, 12.
         let frame = egui::vec2(100.0 - 2.0 * PAD, 80.0 - 2.0 * PAD - LABEL);
-        let l = Layout::new(400.0, frame, 13, &[0, 6, 8], 30.0);
+        let l = Layout::new(400.0, frame, 0, 13, &[0, 6, 8], 30.0, 0.0);
         assert_eq!(l.cell, egui::vec2(100.0, 80.0));
         assert_eq!(l.sections.iter().map(|s| s.y).collect::<Vec<_>>(), [0.0, 190.0, 300.0]);
         assert_eq!(l.height, 300.0 + 30.0 + 160.0);
@@ -646,20 +865,21 @@ mod tests {
         assert_eq!(l.cell_pos(12), egui::vec2(0.0, 410.0));
         // Down from the second column: the next folder's second cell; a
         // row too short for the column ends at its last cell.
-        assert_eq!(l.move_rows(1, 1), 5);
-        assert_eq!(l.move_rows(5, 1), 7);
-        assert_eq!(l.move_rows(3, 1), 5);
-        assert_eq!(l.move_rows(7, 1), 9);
-        assert_eq!(l.move_rows(11, -1), 7);
-        assert_eq!(l.move_rows(9, 10), 12);
-        assert_eq!(l.move_rows(12, -10), 0);
+        let move_rows = |i, rows| l.move_rows(Cell::Image(i), rows);
+        assert_eq!(move_rows(1, 1), Cell::Image(5));
+        assert_eq!(move_rows(5, 1), Cell::Image(7));
+        assert_eq!(move_rows(3, 1), Cell::Image(5));
+        assert_eq!(move_rows(7, 1), Cell::Image(9));
+        assert_eq!(move_rows(11, -1), Cell::Image(7));
+        assert_eq!(move_rows(9, 10), Cell::Image(12));
+        assert_eq!(move_rows(12, -10), Cell::Image(0));
         // On screen: from the middle of the first row to a header.
         assert_eq!(l.visible(50.0, 200.0), 0..6);
         assert_eq!(l.visible(120.0, 230.0), 4..8);
         assert_eq!(l.visible(195.0, 215.0), 6..6);
         assert_eq!(l.visible(400.0, 1000.0), 8..13);
         // Empty sections are left out.
-        assert_eq!(Layout::new(400.0, frame, 5, &[0, 0, 5], 30.0).sections.len(), 1);
+        assert_eq!(Layout::new(400.0, frame, 0, 5, &[0, 0, 5], 30.0, 0.0).sections.len(), 1);
     }
 
     #[test]

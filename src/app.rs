@@ -24,7 +24,7 @@ use crate::editors::Editor;
 use crate::edit;
 use crate::favorites::{self, Favorites};
 use crate::folder::{self, Order, Scan, SortKey};
-use crate::gallery::{self, Gallery, Scroll};
+use crate::gallery::{self, Cell, Gallery, Scroll};
 use crate::history::{History, Place};
 use crate::i18n::LangChoice;
 use crate::input::{Arrow, Cmd, Mode, Move, Wheel};
@@ -96,6 +96,7 @@ const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
 const TREE_WIDTH_KEY: &str = "tree_width";
 const INFO_KEY: &str = "info_panel";
+const FOLDERS_KEY: &str = "folders_folded";
 const INFO_WIDTH_KEY: &str = "info_width";
 const THUMB_FILL_KEY: &str = "thumb_fill";
 const THUMB_ASPECT_KEY: &str = "thumb_aspect";
@@ -297,6 +298,18 @@ pub struct App {
     /// The listing as it came, before the gallery's filter: `files` is what
     /// of it passes `name_filter`.
     listed: Vec<PathBuf>,
+    /// The sub-folders of `dir` listed alone, as the gallery shows them
+    /// above its images (not those of the favourites, an archive or a
+    /// listing with the sub-folders); `folders` is what of them passes the
+    /// filter.
+    listed_folders: Vec<PathBuf>,
+    pub folders: Vec<PathBuf>,
+    /// The gallery's section of the sub-folders is folded to its header
+    /// (a click on it).
+    pub folders_folded: bool,
+    /// The cell of `folders[k]` has the gallery's cursor instead of the
+    /// current image: Enter opens it, the file commands do nothing.
+    pub folder_focus: Option<usize>,
     /// The gallery's filter (Ctrl+F, `folder::matches`); empty: none. Kept
     /// while the same folder is listed again, cleared for another.
     pub name_filter: String,
@@ -571,6 +584,10 @@ impl App {
             archive: false,
             clipboard: None,
             handing: None,
+            listed_folders: Vec::new(),
+            folders: Vec::new(),
+            folders_folded: cc.storage.and_then(|s| s.get_string(FOLDERS_KEY)).as_deref() == Some("true"),
+            folder_focus: None,
             gallery: None,
             gallery_open: false,
             image_clicked: false,
@@ -798,12 +815,33 @@ impl App {
         self.listed.iter().filter(|p| folder::matches(&self.display_name(p), &self.name_filter)).cloned().collect()
     }
 
+    /// The sub-folders whose names pass the gallery's filter.
+    fn filtered_folders(&self) -> Vec<PathBuf> {
+        let filter = self.name_filter.trim();
+        self.listed_folders.iter().filter(|p| filter.is_empty() || folder::matches(&file_name(p), filter)).cloned().collect()
+    }
+
+    /// The sub-folder whose cell has the gallery's cursor.
+    pub fn focused_folder(&self) -> Option<PathBuf> {
+        self.folder_focus.and_then(|k| self.folders.get(k).cloned())
+    }
+
+    /// Open a sub-folder from its cell or its header, as the tree would.
+    pub fn open_subfolder(&mut self, ctx: &egui::Context, dir: PathBuf) {
+        if let Some(gallery) = &mut self.gallery {
+            gallery.tree.reveal(&dir);
+        }
+        self.open_folder(ctx, dir, self.deep);
+    }
+
     /// The gallery's filter has changed: `files` is the listing filtered
     /// anew (not listed again); the current image stays if it passes, else
     /// the first that does is current, and with none passing it stays (the
     /// filter cleared, it is there again).
     pub fn filter_changed(&mut self) {
         self.files = self.filtered();
+        self.folders = self.filtered_folders();
+        self.folder_focus = None;
         self.starts = folder::starts(&self.files);
         self.selection.retain_listed(&self.files);
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
@@ -838,6 +876,7 @@ impl App {
     pub fn leave_gallery(&mut self) {
         self.gallery_open = false;
         self.selection.clear();
+        self.folder_focus = None;
         self.image_clicked = false;
         if let Some(gallery) = &mut self.gallery {
             gallery.want(Vec::new());
@@ -857,6 +896,9 @@ impl App {
         self.listed.clear();
         self.files.clear();
         self.starts.clear();
+        self.listed_folders.clear();
+        self.folders.clear();
+        self.folder_focus = None;
         self.index = None;
         self.archive = crate::archive::is_archive_file(&dir);
         self.dir = Some(dir.clone());
@@ -1194,7 +1236,10 @@ impl App {
         let Some(result) = self.scan.as_ref().and_then(Scan::poll) else { return };
         // Favourites whose folder no longer has them are no longer
         // favourites; those of a drive that is not there stay.
-        let gone = self.scan.take().map(|s| s.take_gone()).unwrap_or_default();
+        let scan = self.scan.take();
+        let gone = scan.as_ref().map(Scan::take_gone).unwrap_or_default();
+        self.listed_folders = scan.as_ref().map(Scan::take_folders).unwrap_or_default();
+        drop(scan);
         self.forget_gone_favorites(&gone);
         match result {
             Ok(files) => self.listed = files,
@@ -1204,6 +1249,8 @@ impl App {
             }
         }
         self.files = self.filtered();
+        self.folders = self.filtered_folders();
+        self.folder_focus = self.folder_focus.filter(|&k| k < self.folders.len());
         // Nothing listed (the last favourites cleared or gone): nothing is
         // current, and the status bar is empty.
         // Opened, an archive shows its first image: none to show.
@@ -1228,6 +1275,10 @@ impl App {
         {
             gallery.scroll = Some(Scroll::Centre);
         }
+        // Only sub-folders: the cursor on the first, for Enter.
+        if self.files.is_empty() && !self.folders.is_empty() && !self.folders_folded && self.folder_focus.is_none() {
+            self.folder_focus = Some(0);
+        }
         if self.index.is_some() || self.files.is_empty() {
             return;
         }
@@ -1237,7 +1288,17 @@ impl App {
             return;
         }
         match self.current.clone() {
-            None => self.go(0),
+            None => {
+                self.go(0);
+                // A folder opened: from its top, its sub-folders first,
+                // not scrolled down to its first image.
+                if !self.folders.is_empty()
+                    && let Some(gallery) = &mut self.gallery
+                {
+                    gallery.scroll = None;
+                    gallery.scrolled_to = self.current.clone();
+                }
+            }
             // The file is gone (deleted or renamed, or it never existed):
             // without a place in the folder nothing could be browsed. The
             // next image takes its place, as after a deletion.
@@ -1773,6 +1834,41 @@ impl App {
         if self.gallery.is_none() {
             return false;
         }
+        // A sub-folder's cell has the cursor: Enter opens it, Esc returns
+        // to the current image, and the commands of the files have no file.
+        if let Some(dir) = self.focused_folder() {
+            match cmd {
+                Cmd::Gallery => {
+                    self.open_subfolder(ctx, dir);
+                    return true;
+                }
+                Cmd::Escape => {
+                    self.folder_focus = None;
+                    if let Some(gallery) = &mut self.gallery {
+                        gallery.scroll = Some(Scroll::Visible);
+                    }
+                    return true;
+                }
+                Cmd::ShowInExplorer => {
+                    win::show_in_explorer(&dir);
+                    return true;
+                }
+                Cmd::Delete
+                | Cmd::Rename
+                | Cmd::Copy
+                | Cmd::CopyImage
+                | Cmd::ConvertTo(_)
+                | Cmd::Edit
+                | Cmd::EditWith(_)
+                | Cmd::EditWithOther
+                | Cmd::Favorite
+                | Cmd::Print
+                | Cmd::Wallpaper
+                | Cmd::SelectTo(_) => return true,
+                Cmd::FullScreen | Cmd::SelectAll => self.folder_focus = None,
+                _ => {}
+            }
+        }
         // Moving alone chooses nothing; with Shift, the images on the way.
         let to = match cmd {
             Cmd::Arrow(arrow) => Some(Move::Arrow(arrow)),
@@ -1783,15 +1879,16 @@ impl App {
             _ => None,
         };
         if let Some(to) = to {
-            if let Some(i) = self.grid_target(to) {
+            if let Some(target) = self.grid_target(to) {
                 self.selection.clear();
-                self.go(i);
+                self.move_to(target);
             }
             return true;
         }
         match cmd {
+            // Among the images only.
             Cmd::SelectTo(to) => {
-                if let Some(i) = self.grid_target(to) {
+                if let Some(Cell::Image(i)) = self.grid_target(to) {
                     self.select_to(i);
                 }
             }
@@ -1853,21 +1950,38 @@ impl App {
         true
     }
 
-    /// The cell `to` leads to from the current one in the gallery's grid.
-    fn grid_target(&self, to: Move) -> Option<usize> {
-        let last = self.files.len().checked_sub(1)?;
+    /// The cell `to` leads to from the one with the cursor (a sub-folder's
+    /// or the current image's) in the gallery's grid, as it was drawn.
+    fn grid_target(&self, to: Move) -> Option<Cell> {
         let layout = &self.gallery.as_ref()?.layout;
         let page = self.gallery.as_ref()?.page_rows as isize;
-        match (to, self.index) {
-            (Move::First, _) => Some(0),
-            (Move::Last, _) => Some(last),
-            (_, None) => None,
-            (Move::Arrow(Arrow::Left), Some(i)) => Some(i.saturating_sub(1)),
-            (Move::Arrow(Arrow::Right), Some(i)) => Some((i + 1).min(last)),
-            (Move::Arrow(Arrow::Up), Some(i)) => Some(layout.move_rows(i, -1)),
-            (Move::Arrow(Arrow::Down), Some(i)) => Some(layout.move_rows(i, 1)),
-            (Move::PageUp, Some(i)) => Some(layout.move_rows(i, -page)),
-            (Move::PageDown, Some(i)) => Some(layout.move_rows(i, page)),
+        let here = self.folder_focus.map(Cell::Folder).or(self.index.map(Cell::Image));
+        match (to, here) {
+            (Move::First, _) => layout.first(),
+            (Move::Last, _) => layout.last(),
+            (_, None) => layout.first(),
+            (Move::Arrow(Arrow::Left), Some(c)) => Some(layout.step(c, false)),
+            (Move::Arrow(Arrow::Right), Some(c)) => Some(layout.step(c, true)),
+            (Move::Arrow(Arrow::Up), Some(c)) => Some(layout.move_rows(c, -1)),
+            (Move::Arrow(Arrow::Down), Some(c)) => Some(layout.move_rows(c, 1)),
+            (Move::PageUp, Some(c)) => Some(layout.move_rows(c, -page)),
+            (Move::PageDown, Some(c)) => Some(layout.move_rows(c, page)),
+        }
+    }
+
+    /// Put the gallery's cursor on `c`: a sub-folder's cell, or an image,
+    /// which becomes current; the grid follows it.
+    fn move_to(&mut self, c: Cell) {
+        match c {
+            Cell::Folder(k) if k < self.folders.len() => self.folder_focus = Some(k),
+            Cell::Folder(_) => return,
+            Cell::Image(i) => {
+                self.folder_focus = None;
+                self.go(i);
+            }
+        }
+        if let Some(gallery) = &mut self.gallery {
+            gallery.scroll = Some(Scroll::Visible);
         }
     }
 
@@ -2941,6 +3055,7 @@ impl eframe::App for App {
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
         storage.set_string(INFO_KEY, self.show_info.to_string());
+        storage.set_string(FOLDERS_KEY, self.folders_folded.to_string());
         storage.set_string(INFO_WIDTH_KEY, self.info_width.round().to_string());
         storage.set_string(THUMB_FILL_KEY, self.thumb_fill.to_string());
         let aspect = self.thumb_aspect.map_or(AUTO, gallery::aspect_name);
