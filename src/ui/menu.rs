@@ -132,6 +132,14 @@ impl App {
         self.item(ui, tr!("Fill Entire Window", "Заполнить окно целиком").into(), "4", Cmd::Cover, e.image);
         let keep = self.view.keep;
         self.check_item(ui, tr!("Keep Zoom and Position", "Сохранять масштаб и положение").into(), "L", Cmd::KeepZoom, keep);
+        ui.menu_button(tr!("Filtering", "Фильтрация"), |ui| {
+            for filter in crate::view::Filter::ALL {
+                if ui.add(Button::new(filter.label()).selected(self.filter == filter)).clicked() {
+                    self.filter = filter;
+                    ui.close();
+                }
+            }
+        });
     }
 
     fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {

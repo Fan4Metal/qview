@@ -32,6 +32,8 @@ pub struct Texture {
     size: (u32, u32, usize),
     /// The smallest level uploaded so far; the texture is shown from it.
     base_level: Cell<u32>,
+    /// Enlarged with smoothing (`GL_LINEAR`), or as square pixels.
+    smooth: Cell<bool>,
 }
 
 impl Texture {
@@ -75,16 +77,40 @@ impl Texture {
         );
         let id = register(native);
         let size = (pixels.width, pixels.height, pixels.levels.len());
-        Ok(Self { gl, native, id, size, base_level: Cell::new(first) })
+        Ok(Self { gl, native, id, size, base_level: Cell::new(first), smooth: Cell::new(true) })
     }
 
     pub fn id(&self) -> egui::TextureId {
         self.id
     }
 
+    pub fn native(&self) -> glow::Texture {
+        self.native
+    }
+
+    /// The mip levels from the level it is shown from on.
+    pub fn levels(&self) -> u32 {
+        self.size.2 as u32 - self.base_level.get()
+    }
+
     /// The smallest level uploaded so far, 0 when complete.
     pub fn base_level(&self) -> u32 {
         self.base_level.get()
+    }
+
+    /// Enlarge it smoothly (`GL_LINEAR`), or with `GL_NEAREST` where the
+    /// sharp pixels' shader (`filter`) cannot be had. Reduced it is always
+    /// smooth, through its mipmaps.
+    pub fn set_smooth(&self, smooth: bool) {
+        if self.smooth.replace(smooth) == smooth {
+            return;
+        }
+        let filter = if smooth { glow::LINEAR } else { glow::NEAREST };
+        unsafe {
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(self.native));
+            self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter as i32);
+            self.gl.bind_texture(glow::TEXTURE_2D, None);
+        }
     }
 
     /// Upload the levels below the base level, so that the texture is

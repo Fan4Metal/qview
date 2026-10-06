@@ -91,6 +91,7 @@ const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
 const BACKGROUND_KEY: &str = "background";
 const CHECKER_KEY: &str = "checker";
+const FILTER_KEY: &str = "filter";
 const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
 const TREE_WIDTH_KEY: &str = "tree_width";
@@ -248,6 +249,13 @@ pub struct App {
     pub checker: bool,
     /// Its texture, made when first painted.
     checker_texture: Option<TextureHandle>,
+    /// How the image is filtered when not at 100% (View → Filtering).
+    pub filter: view::Filter,
+    /// The filters' programs, made when first needed; None if one cannot
+    /// be made (a mesh then, see `paint_picture`).
+    programs: HashMap<view::Filter, Option<Arc<crate::filter::Program>>>,
+    /// The program of the filter chosen is made in this frame.
+    program_due: bool,
     /// The files the delete confirmation asks about.
     pub confirm_delete: Option<Vec<PathBuf>>,
     pub rename: Option<Rename>,
@@ -464,6 +472,13 @@ impl App {
                 .unwrap_or(DEFAULT_BACKGROUND),
             checker: flag(CHECKER_KEY),
             checker_texture: None,
+            filter: cc
+                .storage
+                .and_then(|s| s.get_string(FILTER_KEY))
+                .and_then(|v| view::Filter::from_name(&v))
+                .unwrap_or(view::Filter::Bilinear),
+            programs: HashMap::new(),
+            program_due: false,
             confirm_delete: None,
             rename: None,
             batch_rename: None,
@@ -2187,6 +2202,58 @@ impl App {
         }
     }
 
+    /// Paint `picture` at `place`, filtered as chosen.
+    fn paint_picture(&mut self, painter: &egui::Painter, picture: &Picture, place: Rect, area: Rect, ppp: f32) {
+        use view::Filter;
+        let texture = &picture.texture;
+        // The zoom shown (2.0 is 200%).
+        let zoom = self.view.scale(picture.size(), area, ppp);
+        let trace = log::log_enabled!(log::Level::Debug);
+        // Bilinear is the texture's own, through a program only to be
+        // timed; bicubic at 100% gives the pixels as they are, as the mesh
+        // does for a sixteenth of the work; sharp pixels only enlarged.
+        let wanted = match self.filter {
+            Filter::Bilinear => trace,
+            Filter::Bicubic => zoom != 1.0,
+            Filter::Pixels => zoom > 1.0,
+        };
+        let program = match self.programs.get(&self.filter) {
+            _ if !wanted => None,
+            Some(program) => program.clone(),
+            // Made in the frame after the one that wants it (8-85 ms, the
+            // first one the longest): the image on screen first, as a mesh.
+            None if self.program_due => {
+                self.program_due = false;
+                let program = crate::filter::Program::new(&self.gl, self.filter);
+                self.programs.insert(self.filter, program.clone());
+                program
+            }
+            None => {
+                self.program_due = true;
+                painter.ctx().request_repaint();
+                None
+            }
+        };
+        if trace {
+            // Every program polled, not only up to the first with some pending.
+            let pending = self.programs.values().flatten().filter(|p| p.poll_timings(&self.gl)).count() > 0;
+            if pending {
+                painter.ctx().request_repaint_after(Duration::from_millis(50));
+            }
+        }
+        let (turns, flip) = (self.view.turns, self.view.flip);
+        // GL_NEAREST only where the sharp pixels' program cannot be made.
+        let failed = matches!(self.programs.get(&Filter::Pixels), Some(None));
+        texture.set_smooth(!(self.filter == Filter::Pixels && zoom > 1.0 && failed));
+        match program {
+            Some(program) => {
+                let uv = std::array::from_fn(|i| view::corner_uv(i, turns, flip));
+                crate::filter::paint(painter, &program, texture.native(), texture.levels(), place, uv, area, zoom);
+            }
+            None => view::paint(painter, texture.id(), place, turns, flip),
+        }
+    }
+
     /// The image area: the picture, panning, the wheel and the context
     /// menu.
     fn image_area(&mut self, ui: &mut egui::Ui) {
@@ -2217,7 +2284,7 @@ impl App {
             }
             let place = self.view.place(size, rect, ppp);
             self.paint_checker(&painter, place, ppp);
-            view::paint(&painter, picture.texture.id(), place, self.view.turns, self.view.flip);
+            self.paint_picture(&painter, &picture, place, rect, ppp);
             if let Some(crop) = &mut self.crop {
                 crate::ui::crop::frame(crop, &response, &painter, place, self.view.rotated(size));
             } else if self.view.pannable(size, rect, ppp).contains(&true) && response.hovered() {
@@ -2487,6 +2554,9 @@ impl eframe::App for App {
             gallery.clear();
         }
         crate::texture::delete_dropped();
+        for program in self.programs.drain().filter_map(|(_, p)| p) {
+            program.delete(&self.gl);
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -2494,6 +2564,7 @@ impl eframe::App for App {
         storage.set_string(STATUS_BAR_KEY, self.show_status_bar.to_string());
         storage.set_string(BACKGROUND_KEY, background_to_hex(self.background));
         storage.set_string(CHECKER_KEY, self.checker.to_string());
+        storage.set_string(FILTER_KEY, self.filter.name().to_string());
         storage.set_string(ZOOM_KEY, self.view.mode.name().unwrap_or("fit").to_string());
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());

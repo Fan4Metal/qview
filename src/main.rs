@@ -10,6 +10,7 @@ mod edit;
 mod editors;
 mod exif;
 mod favorites;
+mod filter;
 mod filetypes;
 mod folder;
 mod format;

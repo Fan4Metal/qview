@@ -243,9 +243,47 @@ pub fn paint(painter: &Painter, texture: TextureId, rect: Rect, turns: u8, flip:
     painter.add(Shape::mesh(mesh));
 }
 
+/// How the image is filtered when it is not shown at 100% (View →
+/// Filtering); see `filter`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Filter {
+    /// The texture's own: bilinear enlarged, trilinear reduced.
+    Bilinear,
+    /// Catmull-Rom, enlarged and reduced: sharper.
+    Bicubic,
+    /// Enlarged, every image pixel a sharp square of equal size: pixel
+    /// art, screenshots. Reduced as `Bilinear`.
+    Pixels,
+}
+
+impl Filter {
+    pub const ALL: [Filter; 3] = [Filter::Bilinear, Filter::Bicubic, Filter::Pixels];
+
+    /// As kept in the settings.
+    pub fn name(self) -> &'static str {
+        match self {
+            Filter::Bilinear => "bilinear",
+            Filter::Bicubic => "bicubic",
+            Filter::Pixels => "pixels",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.name() == name)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Filter::Bilinear => tr!("Bilinear", "Билинейная"),
+            Filter::Bicubic => tr!("Bicubic (sharper)", "Бикубическая (чётче)"),
+            Filter::Pixels => tr!("Sharp Pixels When Enlarged", "Чёткие пиксели при увеличении"),
+        }
+    }
+}
+
 /// The texture coordinates shown at corner `i` (clockwise from the top
 /// left) of an image mirrored if `flip`, then turned `turns`.
-fn corner_uv(i: usize, turns: u8, flip: bool) -> Pos2 {
+pub fn corner_uv(i: usize, turns: u8, flip: bool) -> Pos2 {
     const UV: [Pos2; 4] = [pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)];
     let uv = UV[(i + 4 - (turns % 4) as usize) % 4];
     if flip { pos2(1.0 - uv.x, uv.y) } else { uv }
