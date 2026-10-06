@@ -18,7 +18,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 
 ![qview showing a photo with its context menu open, under the menu bar and the toolbar, above the status bar](images/screenshot.png)
 
-*Screenshot of version 0.2.0; the toolbar of the current version has more buttons.*
+*Screenshot of version 0.2.0.*
 
 ## Features
 
@@ -33,6 +33,8 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - Deletion moves the file to the Recycle Bin after a confirmation.
 - Comic books in CBZ and other ZIP archives are viewed without unpacking (see [Comic books and ZIP archives](#comic-books-and-zip-archives)).
 - File → Copy Image (`Ctrl+Shift+C`) puts the image on the clipboard as it is shown, rotated, flipped and, while cropping, cropped, at the full size of the file, for pasting into other programs; an image with transparency is also put there as PNG. File → Paste (`Ctrl+V`) opens what the clipboard holds: a file copied in Explorer, a path copied as text, or an image, such as a screenshot, which is saved as a PNG file named `Clipboard <date> <time>.png` in the `qview` folder of the temporary folder and can then be cropped and saved elsewhere with Save As.
+- File → Print… (`Ctrl+P`) opens the Windows Print Pictures dialog, the one Explorer opens for images (printer, paper size, layouts such as a full page or several photos per sheet, number of copies), for the current image or, in the gallery, for all chosen images. A file is passed as it is when Windows reads it itself (JPEG, PNG, BMP, GIF and TIFF stored upright); an image rotated, flipped or being cropped in the viewer, one with an EXIF orientation, one in another format such as WebP, HEIC or RAW, and one in an archive are first rendered as shown into a PNG file in the `qview\Print` folder of the temporary folder (files there older than an hour are deleted).
+- File → Set as Desktop Background makes the current image, as it is shown (rotated, flipped and, while cropping, cropped), the desktop background. The image is saved as `Wallpaper 1.png` or `Wallpaper 2.png` in `%LOCALAPPDATA%\qview`, so any format qview reads can be used and the background does not depend on the original file; its position (fill, fit, centre and so on) is the one chosen in the Windows personalization settings.
 - Images can be rotated, flipped and cropped and saved over the file or as another file; a JPEG that is only rotated or flipped keeps its compressed data (see [Rotating and cropping](#rotating-and-cropping)).
 - The filtering of images not shown at 100% is chosen in View → Filtering: bilinear (the default), bicubic, which is sharper both when enlarging and when reducing, or pixelated, which shows every pixel of an enlarged image as a sharp square of the same size at any zoom and suits pixel art and screenshots.
 - The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour. Transparent areas of an image are shown over a checkerboard, which can be turned off in the same menu.
@@ -80,6 +82,7 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Undo the last rename or save (up to 20 in a session) | `Ctrl+Z` |
 | Copy the file to the clipboard | `Ctrl+C` |
 | Copy the image as shown to the clipboard | `Ctrl+Shift+C` |
+| Print the image as shown, or the chosen images | `Ctrl+P` |
 | Open an image, file or path from the clipboard | `Ctrl+V`, `Shift+Insert` |
 | Add to / remove from the favorites | `S` |
 | Open a file | `Ctrl+O`, or dropping a file onto the window |

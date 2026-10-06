@@ -24,6 +24,7 @@ mod icon;
 mod input;
 mod instance;
 mod loader;
+mod print;
 mod rename;
 mod selection;
 mod texture;
@@ -33,6 +34,7 @@ mod type_icon;
 mod ui;
 mod update;
 mod view;
+mod wallpaper;
 mod wic;
 mod win;
 

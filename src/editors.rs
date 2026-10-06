@@ -149,7 +149,7 @@ pub fn open(editor: Option<&Editor>, files: &[PathBuf]) -> Result<(), String> {
 }
 
 /// `files` as a data object, which a handler is invoked with.
-fn data_object(files: &[PathBuf]) -> Result<Com, String> {
+pub fn data_object(files: &[PathBuf]) -> Result<Com, String> {
     use windows_sys::Win32::UI::Shell::{BHID_DataObject, ILCreateFromPathW, ILFree, SHCreateShellItemArrayFromIDLists};
     let ids: Vec<_> = files.iter().map(|f| unsafe { ILCreateFromPathW(wide(f).as_ptr()) }).collect();
     let made = (|| {

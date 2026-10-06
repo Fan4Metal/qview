@@ -49,6 +49,11 @@ pub enum Cmd {
     FlipVertical,
     /// Put the image as shown on the clipboard (Ctrl+Shift+C).
     CopyImage,
+    /// Make the image as shown the desktop background.
+    Wallpaper,
+    /// Open Windows' Print Pictures dialog for the image, or those chosen
+    /// (Ctrl+P).
+    Print,
     /// Type a filter for the gallery's images (Ctrl+F).
     Find,
     /// Open what the clipboard holds: files, a path, an image (Ctrl+V,
@@ -168,6 +173,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::H if letter => FlipHorizontal,
         Key::V if letter => FlipVertical,
         Key::P if letter => Pause,
+        Key::P if m.ctrl && !m.alt && !m.shift => Print,
         Key::Period if letter => NextFrame,
         Key::Comma if letter => PrevFrame,
         Key::F if m.ctrl && !m.shift && !m.alt => Find,
@@ -352,6 +358,7 @@ mod tests {
         assert_eq!(command(Key::V, NONE, false), Some(Cmd::FlipVertical));
         assert_eq!(command(Key::V, CTRL, false), None);
         assert_eq!(command(Key::P, NONE, false), Some(Cmd::Pause));
+        assert_eq!(command(Key::P, CTRL, false), Some(Cmd::Print));
         assert_eq!(command(Key::Slash, NONE, false), Some(Cmd::Actual));
         assert_eq!(gallery_command(Key::Slash, NONE, false), Some(Cmd::Find));
         assert_eq!(command(Key::F, CTRL, false), Some(Cmd::Find));

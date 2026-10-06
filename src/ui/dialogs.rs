@@ -106,6 +106,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                     tr!("Ctrl+V  Shift+Insert", "Ctrl+V  Shift+Insert"),
                     tr!("Open the clipboard's image, file or path", "Открыть изображение, файл или путь из буфера обмена"),
                 ),
+                ("Ctrl+P", tr!("Print the image as shown, or those chosen", "Печать изображения, как оно показано, или выбранных")),
                 ("Ctrl+O", tr!("Open a file", "Открыть файл")),
                 (
                     "F5",

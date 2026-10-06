@@ -309,6 +309,8 @@ pub struct App {
     pub archive: bool,
     /// Copy Image or Paste under way on a thread (`clipboard`).
     clipboard: Option<mpsc::Receiver<Clipped>>,
+    /// Set as Wallpaper, or the files for Print, under way on a thread.
+    handing: Option<mpsc::Receiver<Handed>>,
     /// Made when the gallery is first opened.
     pub gallery: Option<Gallery>,
     /// The gallery is shown instead of the image.
@@ -388,6 +390,13 @@ enum Clipped {
     Copied(Result<(), String>),
     /// The file to open.
     Pasted(Result<PathBuf, String>),
+}
+
+/// What a thread handing an image to Windows did.
+enum Handed {
+    Wallpaper(Result<(), String>),
+    /// The files to show the Print Pictures dialog for.
+    Print(Result<Vec<PathBuf>, String>),
 }
 
 /// The window is cloaked at start-up until its first maximized frame is on
@@ -546,6 +555,7 @@ impl App {
             filter_open: false,
             archive: false,
             clipboard: None,
+            handing: None,
             gallery: None,
             gallery_open: false,
             image_clicked: false,
@@ -1555,6 +1565,8 @@ impl App {
             Cmd::RotateLeft => self.view.turns = (self.view.turns + 3) % 4,
             Cmd::RotateRight => self.view.turns = (self.view.turns + 1) % 4,
             Cmd::CopyImage => self.copy_image(ctx),
+            Cmd::Wallpaper => self.set_wallpaper(ctx),
+            Cmd::Print => self.print(ctx),
             Cmd::Find => {
                 if !self.gallery_open {
                     self.enter_gallery(ctx);
@@ -1895,16 +1907,12 @@ impl App {
         self.copying = Some(Copying { done, to, count });
     }
 
-    /// Put the current image on the clipboard as it is shown: turned and
-    /// mirrored in the viewer, cropped while cropping; decoded from its file
-    /// at full size, on a thread.
-    fn copy_image(&mut self, ctx: &egui::Context) {
-        if self.clipboard.is_some() {
-            return;
-        }
-        let Some(path) = self.current.clone().filter(|p| crate::archive::is_file(p)) else { return };
+    /// What `path` is rendered as for the clipboard, the wallpaper and
+    /// printing: the image on screen as it is shown, turned and mirrored in
+    /// the viewer, cropped while cropping; any other as it is.
+    fn as_shown(&self, path: PathBuf) -> edit::Job {
         // The view's turn counts only for the image it shows.
-        let shown = self.editable();
+        let shown = self.editable().filter(|(p, _)| *p == path);
         let (turns, flip) = if shown.is_some() { (self.view.turns, self.view.flip) } else { (0, false) };
         let (size, crop) = match (&shown, &self.crop) {
             (Some((_, picture)), Some(c)) => {
@@ -1914,7 +1922,17 @@ impl App {
             }
             _ => ([0, 0], None),
         };
-        let job = edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop };
+        edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop }
+    }
+
+    /// Put the current image on the clipboard as it is shown (`as_shown`),
+    /// decoded from its file at full size, on a thread.
+    fn copy_image(&mut self, ctx: &egui::Context) {
+        if self.clipboard.is_some() {
+            return;
+        }
+        let Some(path) = self.current.clone().filter(|p| crate::archive::is_file(p)) else { return };
+        let job = self.as_shown(path);
         self.notice(tr!("Copying the image…".into(), "Копирование изображения…".into()));
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
@@ -1925,6 +1943,72 @@ impl App {
             ctx.request_repaint();
         });
         self.clipboard = Some(rx);
+    }
+
+    /// Make the current image as it is shown (`as_shown`) the desktop
+    /// background, on a thread.
+    fn set_wallpaper(&mut self, ctx: &egui::Context) {
+        if self.handing.is_some() {
+            return;
+        }
+        let Some(path) = self.current.clone().filter(|p| crate::archive::is_file(p)) else { return };
+        let job = self.as_shown(path);
+        self.notice(tr!("Setting the desktop background…".into(), "Установка фона рабочего стола…".into()));
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _com = win::com_init();
+            let _ = tx.send(Handed::Wallpaper(crate::wallpaper::set(&job)));
+            ctx.request_repaint();
+        });
+        self.handing = Some(rx);
+    }
+
+    /// Print the current image, or those chosen, through Windows' Print
+    /// Pictures dialog; those it cannot take as they are, or the image as
+    /// it is shown (`as_shown`), are rendered on a thread first.
+    fn print(&mut self, ctx: &egui::Context) {
+        if self.handing.is_some() {
+            return;
+        }
+        let jobs: Vec<edit::Job> =
+            self.targets().into_iter().filter(|p| crate::archive::is_file(p)).map(|p| self.as_shown(p)).collect();
+        if jobs.is_empty() {
+            return;
+        }
+        if !jobs.iter().all(crate::print::plain) {
+            self.notice(tr!("Preparing to print…".into(), "Подготовка к печати…".into()));
+        }
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _com = win::com_init();
+            let _ = tx.send(Handed::Print(crate::print::prepare(&jobs)));
+            ctx.request_repaint();
+        });
+        self.handing = Some(rx);
+    }
+
+    fn poll_handed(&mut self) {
+        let Some(Ok(done)) = self.handing.as_ref().map(mpsc::Receiver::try_recv) else { return };
+        self.handing = None;
+        let error = match done {
+            Handed::Wallpaper(Ok(())) => {
+                self.notice(tr!("Set as the desktop background".into(), "Установлено фоном рабочего стола".into()));
+                return;
+            }
+            Handed::Wallpaper(Err(e)) => tr!(format!("Cannot set the desktop background: {e}"), format!("Не удалось установить фон: {e}")),
+            Handed::Print(Ok(files)) => {
+                // The notice of the preparation is over.
+                self.notice = None;
+                match crate::print::show(&files) {
+                    Ok(()) => return,
+                    Err(e) => tr!(format!("Cannot print: {e}"), format!("Не удалось напечатать: {e}")),
+                }
+            }
+            Handed::Print(Err(e)) => tr!(format!("Cannot print: {e}"), format!("Не удалось напечатать: {e}")),
+        };
+        self.notice(error);
     }
 
     /// Open what the clipboard holds (see `clipboard::paste`), read on a
@@ -2102,6 +2186,8 @@ impl App {
             | Cmd::Shortcuts
             | Cmd::About
             | Cmd::CopyImage
+            | Cmd::Wallpaper
+            | Cmd::Print
             | Cmd::Close => return false,
             _ => {}
         }
@@ -2697,6 +2783,7 @@ impl eframe::App for App {
         self.poll_delete(&ctx);
         self.poll_copy();
         self.poll_clipboard(&ctx);
+        self.poll_handed();
         self.poll_save(&ctx);
         self.poll_opening();
         self.updates.poll();

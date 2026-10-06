@@ -362,6 +362,22 @@ pub fn render(job: &Job) -> Result<DynamicImage, String> {
     transform(job, decode(&job.src, &bytes)?.img)
 }
 
+/// `render`'s image as a PNG with the ICC profile of `job.src`, quickly
+/// compressed: a file for Windows to show or print (the wallpaper, Print).
+pub fn render_png(job: &Job) -> Result<Vec<u8>, String> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    let bytes = crate::archive::read(&job.src).map_err(|e| e.to_string())?;
+    let Decoded { img, icc, .. } = decode(&job.src, &bytes)?;
+    let img = transform(job, img)?;
+    let mut out = Vec::new();
+    let mut encoder = PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive);
+    if let Some(icc) = icc {
+        let _ = encoder.set_icc_profile(icc);
+    }
+    img.write_with_encoder(encoder).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
 /// `img`, decoded upright from `job.src`, mirrored, turned and cropped.
 fn transform(job: &Job, img: DynamicImage) -> Result<DynamicImage, String> {
     if job.crop.is_some() && [img.width(), img.height()] != job.size {

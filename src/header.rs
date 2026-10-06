@@ -56,6 +56,16 @@ fn from_header(path: &Path) -> Option<Size> {
 }
 
 fn from_reader<R: Read + Seek>(file: R) -> Option<Size> {
+    with_orientation(file).map(|(size, _)| size)
+}
+
+/// The orientation the metadata (EXIF) of the file at `path` gives its
+/// image, read by `image` alone; `NoTransforms` when it has none.
+pub fn orientation(path: &Path) -> Orientation {
+    File::open(path).ok().and_then(with_orientation).map_or(Orientation::NoTransforms, |(_, o)| o)
+}
+
+fn with_orientation<R: Read + Seek>(file: R) -> Option<(Size, Orientation)> {
     let mut file = BufReader::with_capacity(16 * 1024, file);
     if file.fill_buf().ok()?.starts_with(&[0xff, 0xd8]) {
         return jpeg(&mut file);
@@ -64,7 +74,7 @@ fn from_reader<R: Read + Seek>(file: R) -> Option<Size> {
     let mut decoder = image::ImageReader::new(file).with_guessed_format().ok()?.into_decoder().ok()?;
     let (width, height) = image::ImageDecoder::dimensions(&decoder);
     let orientation = image::ImageDecoder::orientation(&mut decoder).unwrap_or(Orientation::NoTransforms);
-    Some(Size { width, height, turned: turns(orientation) })
+    Some((Size { width, height, turned: turns(orientation) }, orientation))
 }
 
 fn turns(o: Orientation) -> bool {
@@ -73,13 +83,13 @@ fn turns(o: Orientation) -> bool {
 
 /// The JPEG segments up to the frame header: the EXIF orientation from
 /// APP1 (which comes first) and the size from SOFn.
-fn jpeg<R: Read + Seek>(r: &mut BufReader<R>) -> Option<Size> {
+fn jpeg<R: Read + Seek>(r: &mut BufReader<R>) -> Option<(Size, Orientation)> {
     fn read_u16(r: &mut impl Read) -> Option<u16> {
         let mut b = [0u8; 2];
         r.read_exact(&mut b).ok()?;
         Some(u16::from_be_bytes(b))
     }
-    let mut turned = false;
+    let mut orientation = Orientation::NoTransforms;
     let mut byte = [0u8; 1];
     r.consume(2);
     loop {
@@ -109,13 +119,14 @@ fn jpeg<R: Read + Seek>(r: &mut BufReader<R>) -> Option<Size> {
                 r.read_exact(&mut sof).ok()?;
                 let height = u16::from_be_bytes([sof[1], sof[2]]) as u32;
                 let width = u16::from_be_bytes([sof[3], sof[4]]) as u32;
-                return (width > 0 && height > 0).then_some(Size { width, height, turned });
+                let size = Size { width, height, turned: turns(orientation) };
+                return (width > 0 && height > 0).then_some((size, orientation));
             }
             0xe1 => {
                 let mut data = vec![0u8; len];
                 r.read_exact(&mut data).ok()?;
                 if let Some(o) = exif_orientation(&data) {
-                    turned = turns(o);
+                    orientation = o;
                 }
             }
             // Within the buffer, unlike `seek`, which drops it.

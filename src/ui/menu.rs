@@ -71,6 +71,9 @@ impl App {
         self.editor_items(ui, e.file && self.crop.is_none());
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
+        self.print_item(ui, e.file);
+        self.wallpaper_item(ui, e.file);
+        ui.separator();
         self.copy_item(ui, e.file);
         self.copy_image_item(ui, e.file);
         let paste = crate::clipboard::can_paste() && self.crop.is_none();
@@ -291,6 +294,20 @@ impl App {
         self.item(ui, tr!("Copy Image", "Копировать изображение").into(), "Ctrl+Shift+C", Cmd::CopyImage, enabled);
     }
 
+    pub(super) fn print_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let text = match self.several() {
+            Some(n) => tr!(format!("Print {n} Images…"), format!("Печать изображений ({n})…")),
+            None => tr!("Print…", "Печать…").into(),
+        };
+        self.item(ui, text, "Ctrl+P", Cmd::Print, enabled);
+    }
+
+    /// The current image only, even with several chosen.
+    pub(super) fn wallpaper_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let text = tr!("Set as Desktop Background", "Сделать фоном рабочего стола");
+        self.item(ui, text.into(), "", Cmd::Wallpaper, enabled && self.several().is_none());
+    }
+
     pub(super) fn rename_item(&mut self, ui: &mut Ui, enabled: bool) {
         let text = match self.several() {
             Some(n) => tr!(format!("Rename {n} Files…"), format!("Переименовать файлы ({n})…")),
@@ -357,6 +374,8 @@ impl App {
         self.convert_menu(ui);
         self.editor_items(ui, e.file);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
+        self.print_item(ui, e.file);
+        self.wallpaper_item(ui, e.file);
         ui.separator();
         self.delete_item(ui, e.file);
     }
