@@ -101,7 +101,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("F2", tr!("Rename the file", "Переименовать файл")),
                 ("Ctrl+Z", tr!("Undo the last rename or save", "Отменить последнее переименование или сохранение")),
                 ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
-                ("Ctrl+Shift+C", tr!("Copy the image as shown", "Копировать изображение, как оно показано")),
+                ("Ctrl+Shift+C", tr!("Copy the image as shown", "Копировать картинку, как она показана")),
                 (
                     tr!("Ctrl+V  Shift+Insert", "Ctrl+V  Shift+Insert"),
                     tr!("Open the clipboard's image, file or path", "Открыть изображение, файл или путь из буфера обмена"),

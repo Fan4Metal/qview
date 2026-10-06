@@ -284,16 +284,35 @@ impl App {
         Some(self.targets().len()).filter(|&n| n > 1)
     }
 
+    /// An item with a tooltip saying what it does.
+    fn item_explained(&mut self, ui: &mut Ui, text: String, shortcut: &str, cmd: Cmd, enabled: bool, tip: &str) {
+        let button = ui.add_enabled(enabled, Button::new(text).shortcut_text(shortcut));
+        if button.on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+            self.clicked.push(cmd);
+            ui.close();
+        }
+    }
+
+    /// The file itself, as Explorer copies it.
     pub(super) fn copy_item(&mut self, ui: &mut Ui, enabled: bool) {
         let text = match self.several() {
             Some(n) => tr!(format!("Copy {n} Files"), format!("Копировать файлы ({n})")),
-            None => tr!("Copy", "Копировать").into(),
+            None => tr!("Copy File", "Копировать файл").into(),
         };
-        self.item(ui, text, "Ctrl+C", Cmd::Copy, enabled && !self.in_archive());
+        let tip = tr!(
+            "The file, to paste into Explorer, a messenger or an e-mail",
+            "Файл — для вставки в Проводник, мессенджер или письмо"
+        );
+        self.item_explained(ui, text, "Ctrl+C", Cmd::Copy, enabled && !self.in_archive(), tip);
     }
 
+    /// The pixels, as shown.
     pub(super) fn copy_image_item(&mut self, ui: &mut Ui, enabled: bool) {
-        self.item(ui, tr!("Copy Image", "Копировать изображение").into(), "Ctrl+Shift+C", Cmd::CopyImage, enabled);
+        let tip = tr!(
+            "The picture as shown (rotated, cropped), to paste into an editor or a document",
+            "Картинка в показанном виде (с поворотом и обрезкой) — для вставки в редактор или документ"
+        );
+        self.item_explained(ui, tr!("Copy Image", "Копировать картинку").into(), "Ctrl+Shift+C", Cmd::CopyImage, enabled, tip);
     }
 
     pub(super) fn print_item(&mut self, ui: &mut Ui, enabled: bool) {
