@@ -3,7 +3,8 @@
 //! Keys are matched by `Event::Key::key`, which egui-winit fills with the
 //! logical key or, for a letter of a non-Latin layout, the physical one:
 //! `F` works with the Russian layout too. Numpad `*` has no `egui::Key`
-//! and arrives only as text. `Ctrl+C` arrives as `Event::Copy`.
+//! and arrives only as text. `Ctrl+C` arrives as `Event::Copy` (with Shift
+//! held, Copy Image); `Ctrl+V` is watched for by `win::watch_paste`.
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton};
 
@@ -46,6 +47,11 @@ pub enum Cmd {
     /// Mirror the image as shown left to right (H), or top to bottom (V).
     FlipHorizontal,
     FlipVertical,
+    /// Put the image as shown on the clipboard (Ctrl+Shift+C).
+    CopyImage,
+    /// Open what the clipboard holds: files, a path, an image (Ctrl+V,
+    /// Shift+Insert; see `win::watch_paste`).
+    Paste,
     /// Pause an animation, or play it on (P).
     Pause,
     /// Show the next frame of an animation (`.`) or the previous one
@@ -256,6 +262,7 @@ pub fn keys(ctx: &egui::Context, mode: Mode) -> Vec<Cmd> {
                 Event::PointerButton { button: PointerButton::Extra1, pressed: true, .. } if gallery => Some(Cmd::Back),
                 Event::PointerButton { button: PointerButton::Extra2, pressed: true, .. } if gallery => Some(Cmd::Forward),
                 Event::Text(t) if t == "*" => Some(Cmd::Fit),
+                Event::Copy if i.modifiers.shift => Some(Cmd::CopyImage),
                 Event::Copy => Some(Cmd::Copy),
                 _ => None,
             })

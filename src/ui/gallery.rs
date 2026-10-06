@@ -541,6 +541,7 @@ impl App {
         }
         ui.separator();
         self.copy_item(ui, true);
+        self.copy_image_item(ui, true);
         self.rename_item(ui, true);
         self.convert_menu(ui);
         self.editor_items(ui, true);

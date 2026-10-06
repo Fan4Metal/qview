@@ -292,6 +292,8 @@ pub struct App {
     favorites_gone: Option<mpsc::Receiver<Vec<PathBuf>>>,
     /// The favourites being copied to a folder.
     copying: Option<Copying>,
+    /// Copy Image or Paste under way on a thread (`clipboard`).
+    clipboard: Option<mpsc::Receiver<Clipped>>,
     /// Made when the gallery is first opened.
     pub gallery: Option<Gallery>,
     /// The gallery is shown instead of the image.
@@ -348,6 +350,13 @@ struct Copying {
     done: mpsc::Receiver<Result<(), String>>,
     to: PathBuf,
     count: usize,
+}
+
+/// What a clipboard thread did.
+enum Clipped {
+    Copied(Result<(), String>),
+    /// The file to open.
+    Pasted(Result<PathBuf, String>),
 }
 
 /// The window is cloaked at start-up until its first maximized frame is on
@@ -500,6 +509,7 @@ impl App {
             confirm_clear_favorites: false,
             favorites_gone: None,
             copying: None,
+            clipboard: None,
             gallery: None,
             gallery_open: false,
             image_clicked: false,
@@ -538,6 +548,7 @@ impl App {
             app.open(ctx, path);
         }
         app.updates.start_if_due(ctx);
+        win::watch_paste();
         if app.favorites.len() > 0 {
             app.favorites_gone = Some(folder::find_gone(app.favorites.paths(), ctx.clone()));
         }
@@ -1433,6 +1444,8 @@ impl App {
             Cmd::Cover => self.view.choose(Zoom::Cover, size, viewport, ppp),
             Cmd::RotateLeft => self.view.turns = (self.view.turns + 3) % 4,
             Cmd::RotateRight => self.view.turns = (self.view.turns + 1) % 4,
+            Cmd::CopyImage => self.copy_image(ctx),
+            Cmd::Paste => self.paste(ctx),
             Cmd::FlipHorizontal => self.view.mirror(true),
             Cmd::FlipVertical => self.view.mirror(false),
             Cmd::Pause => {
@@ -1760,6 +1773,68 @@ impl App {
         self.copying = Some(Copying { done, to, count });
     }
 
+    /// Put the current image on the clipboard as it is shown: turned and
+    /// mirrored in the viewer, cropped while cropping; decoded from its file
+    /// at full size, on a thread.
+    fn copy_image(&mut self, ctx: &egui::Context) {
+        if self.clipboard.is_some() {
+            return;
+        }
+        let Some(path) = self.current.clone().filter(|p| p.is_file()) else { return };
+        // The view's turn counts only for the image it shows.
+        let shown = self.editable();
+        let (turns, flip) = if shown.is_some() { (self.view.turns, self.view.flip) } else { (0, false) };
+        let (size, crop) = match (&shown, &self.crop) {
+            (Some((_, picture)), Some(c)) => {
+                let turned = self.view.rotated(picture.size());
+                let crop = (!crate::crop::is_whole(c.rect, turned)).then(|| crate::crop::pixels(c.rect, turned));
+                ([picture.meta.width, picture.meta.height], crop)
+            }
+            _ => ([0, 0], None),
+        };
+        let job = edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop };
+        self.notice(tr!("Copying the image…".into(), "Копирование изображения…".into()));
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            // Windows' codecs may decode it.
+            let _com = win::com_init();
+            let _ = tx.send(Clipped::Copied(crate::clipboard::copy_image(&job)));
+            ctx.request_repaint();
+        });
+        self.clipboard = Some(rx);
+    }
+
+    /// Open what the clipboard holds (see `clipboard::paste`), read on a
+    /// thread: a large image is saved as a PNG first.
+    fn paste(&mut self, ctx: &egui::Context) {
+        if self.clipboard.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Clipped::Pasted(crate::clipboard::paste()));
+            ctx.request_repaint();
+        });
+        self.clipboard = Some(rx);
+    }
+
+    fn poll_clipboard(&mut self, ctx: &egui::Context) {
+        let Some(Ok(done)) = self.clipboard.as_ref().map(mpsc::Receiver::try_recv) else { return };
+        self.clipboard = None;
+        match done {
+            Clipped::Copied(Ok(())) => {
+                self.notice(tr!("Image copied to the clipboard".into(), "Изображение скопировано в буфер обмена".into()))
+            }
+            Clipped::Copied(Err(e)) => {
+                self.notice(tr!(format!("Cannot copy the image: {e}"), format!("Не удалось скопировать изображение: {e}")))
+            }
+            Clipped::Pasted(Ok(path)) => self.open(ctx, path),
+            Clipped::Pasted(Err(e)) => self.notice(e),
+        }
+    }
+
     fn poll_copy(&mut self) {
         let Some(copying) = &self.copying else { return };
         let Ok(result) = copying.done.try_recv() else { return };
@@ -1899,6 +1974,7 @@ impl App {
             | Cmd::ToggleStatusBar
             | Cmd::Shortcuts
             | Cmd::About
+            | Cmd::CopyImage
             | Cmd::Close => return false,
             _ => {}
         }
@@ -2490,6 +2566,7 @@ impl eframe::App for App {
         }
         self.poll_delete(&ctx);
         self.poll_copy();
+        self.poll_clipboard(&ctx);
         self.poll_save(&ctx);
         self.poll_opening();
         self.updates.poll();
@@ -2497,11 +2574,16 @@ impl eframe::App for App {
         self.sync_shown();
 
         let modal_open = self.modal_open();
+        // Taken in every frame; a dialog's text field pastes for itself.
+        let paste = win::take_paste();
         if !modal_open && !egui::Popup::is_any_open(&ctx) {
             // Keys are the viewer's: no widget keeps the focus to take
             // Space or Enter as a click.
             if let Some(id) = ctx.memory(|m| m.focused()) {
                 ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+            if paste {
+                self.run(&ctx, frame, Cmd::Paste);
             }
             for cmd in crate::input::keys(&ctx, self.key_mode()) {
                 self.run(&ctx, frame, cmd);

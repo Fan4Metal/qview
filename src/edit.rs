@@ -346,6 +346,20 @@ fn encode_anew(job: &Job, bytes: &[u8], format: Format) -> Result<Vec<u8>, Strin
         return Err(tr!("Animated images cannot be edited", "Анимированные изображения не редактируются").into());
     }
     let Decoded { img, icc, exif } = decode(&job.src, bytes)?;
+    let img = transform(job, img)?;
+    let exif = exif.and_then(|e| crate::exif::for_new_pixels(&e, img.width(), img.height()));
+    encode(&img, format, icc, exif).map_err(|e| e.to_string())
+}
+
+/// `job.src` decoded, mirrored, turned and cropped: what would be saved,
+/// without its metadata (Copy Image). An animation gives its first frame.
+pub fn render(job: &Job) -> Result<DynamicImage, String> {
+    let bytes = std::fs::read(&job.src).map_err(|e| e.to_string())?;
+    transform(job, decode(&job.src, &bytes)?.img)
+}
+
+/// `img`, decoded upright from `job.src`, mirrored, turned and cropped.
+fn transform(job: &Job, img: DynamicImage) -> Result<DynamicImage, String> {
     if job.crop.is_some() && [img.width(), img.height()] != job.size {
         return Err(tr!("The file has changed on disk; open it again", "Файл изменился на диске; откройте его заново").into());
     }
@@ -356,13 +370,11 @@ fn encode_anew(job: &Job, bytes: &[u8], format: Format) -> Result<Vec<u8>, Strin
         3 => img.rotate270(),
         _ => img,
     };
-    let img = match job.crop {
-        Some([x, y, w, h]) if x + w <= img.width() && y + h <= img.height() && w > 0 && h > 0 => img.crop_imm(x, y, w, h),
-        Some(_) => return Err(tr!("the crop is outside the image", "рамка выходит за изображение").into()),
-        None => img,
-    };
-    let exif = exif.and_then(|e| crate::exif::for_new_pixels(&e, img.width(), img.height()));
-    encode(&img, format, icc, exif).map_err(|e| e.to_string())
+    match job.crop {
+        Some([x, y, w, h]) if x + w <= img.width() && y + h <= img.height() && w > 0 && h > 0 => Ok(img.crop_imm(x, y, w, h)),
+        Some(_) => Err(tr!("the crop is outside the image", "рамка выходит за изображение").into()),
+        None => Ok(img),
+    }
 }
 
 /// An image decoded upright, with the metadata carried into the new file.

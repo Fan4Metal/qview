@@ -72,6 +72,9 @@ impl App {
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
         self.copy_item(ui, e.file);
+        self.copy_image_item(ui, e.file);
+        let paste = crate::clipboard::can_paste() && self.crop.is_none();
+        self.item(ui, tr!("Paste", "Вставить").into(), "Ctrl+V", Cmd::Paste, paste);
         self.rename_item(ui, e.file);
         let undo = !self.undo.is_empty() && self.crop.is_none();
         self.item(ui, self.undo_label().into(), "Ctrl+Z", Cmd::Undo, undo);
@@ -282,6 +285,10 @@ impl App {
         self.item(ui, text, "Ctrl+C", Cmd::Copy, enabled);
     }
 
+    pub(super) fn copy_image_item(&mut self, ui: &mut Ui, enabled: bool) {
+        self.item(ui, tr!("Copy Image", "Копировать изображение").into(), "Ctrl+Shift+C", Cmd::CopyImage, enabled);
+    }
+
     pub(super) fn rename_item(&mut self, ui: &mut Ui, enabled: bool) {
         let text = match self.several() {
             Some(n) => tr!(format!("Rename {n} Files…"), format!("Переименовать файлы ({n})…")),
@@ -343,6 +350,7 @@ impl App {
         }
         ui.separator();
         self.copy_item(ui, e.file);
+        self.copy_image_item(ui, e.file);
         self.rename_item(ui, e.file);
         self.convert_menu(ui);
         self.editor_items(ui, e.file);

@@ -566,6 +566,54 @@ pub fn ms_since_process_start() -> Option<f64> {
     Some(ticks(now).saturating_sub(ticks(created)) as f64 / 10_000.0)
 }
 
+
+/// Set by [`watch_paste`]'s hook when Ctrl+V or Shift+Insert is pressed.
+static PASTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Watch the keys of this thread (the UI thread) for Ctrl+V and
+/// Shift+Insert; [`take_paste`] says whether they were pressed. egui-winit
+/// reads the clipboard's text for these keys and passes on nothing at all
+/// when it holds none (an image, files), so they are taken from Windows: a
+/// keyboard hook of this thread alone (`WH_KEYBOARD`, no other process sees
+/// it), which only looks and passes every key on.
+pub fn watch_paste() {
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD};
+    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD, Some(paste_hook), std::ptr::null_mut(), GetCurrentThreadId()) };
+    if hook.is_null() {
+        log::warn!("cannot watch for Ctrl+V: {}", std::io::Error::last_os_error());
+    }
+}
+
+/// Whether Ctrl+V or Shift+Insert was pressed since the last call.
+pub fn take_paste() -> bool {
+    PASTE.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+unsafe extern "system" fn paste_hook(code: i32, wparam: usize, lparam: isize) -> isize {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_INSERT, VK_MENU, VK_SHIFT, VK_V};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION};
+    // HC_ACTION: the message is taken from the queue (not only peeked at).
+    // Bit 31 of lParam: released; bit 30: down before (a repeat).
+    if code == HC_ACTION as i32 && lparam & (3 << 30) == 0 {
+        let down = |vk: u16| unsafe { GetKeyState(vk as i32) } < 0;
+        let (ctrl, shift, alt) = (down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU));
+        let key = wparam as u16;
+        if (key == VK_V && ctrl && !shift && !alt) || (key == VK_INSERT && shift && !ctrl && !alt) {
+            PASTE.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+}
+
+/// The local date and time as a file name may hold it:
+/// `2026-10-06 10-30-15`.
+pub fn local_stamp() -> String {
+    let mut t = windows_sys::Win32::Foundation::SYSTEMTIME::default();
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    format!("{:04}-{:02}-{:02} {:02}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

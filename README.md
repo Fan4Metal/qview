@@ -31,6 +31,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - The EXIF orientation of photos is applied.
 - The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
 - Deletion moves the file to the Recycle Bin after a confirmation.
+- File → Copy Image (`Ctrl+Shift+C`) puts the image on the clipboard as it is shown, rotated, flipped and, while cropping, cropped, at the full size of the file, for pasting into other programs; an image with transparency is also put there as PNG. File → Paste (`Ctrl+V`) opens what the clipboard holds: a file copied in Explorer, a path copied as text, or an image, such as a screenshot, which is saved as a PNG file named `Clipboard <date> <time>.png` in the `qview` folder of the temporary folder and can then be cropped and saved elsewhere with Save As.
 - Images can be rotated, flipped and cropped and saved over the file or as another file; a JPEG that is only rotated or flipped keeps its compressed data (see [Rotating and cropping](#rotating-and-cropping)).
 - The filtering of images not shown at 100% is chosen in View → Filtering: bilinear (the default), bicubic, which is sharper both when enlarging and when reducing, or pixelated, which shows every pixel of an enlarged image as a sharp square of the same size at any zoom and suits pixel art and screenshots.
 - The background of the image area is chosen in View → Background: dark (the default), black, grey, white or any other colour. Transparent areas of an image are shown over a checkerboard, which can be turned off in the same menu.
@@ -77,6 +78,8 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Rename the file | `F2` (`Enter` renames, `Esc` cancels) |
 | Undo the last rename or save (up to 20 in a session) | `Ctrl+Z` |
 | Copy the file to the clipboard | `Ctrl+C` |
+| Copy the image as shown to the clipboard | `Ctrl+Shift+C` |
+| Open an image, file or path from the clipboard | `Ctrl+V`, `Shift+Insert` |
 | Add to / remove from the favorites | `S` |
 | Open a file | `Ctrl+O`, or dropping a file onto the window |
 | Reload the image and the folder | `F5` |
