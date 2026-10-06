@@ -165,10 +165,22 @@ impl App {
     }
 
     fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {
+        self.turn_items(ui, e);
+        self.flip_items(ui, e);
+        self.crop_item(ui, e);
+    }
+
+    fn turn_items(&mut self, ui: &mut Ui, e: &Enabled) {
         self.item(ui, tr!("Rotate Left", "Повернуть влево").into(), "[", Cmd::RotateLeft, e.image);
         self.item(ui, tr!("Rotate Right", "Повернуть вправо").into(), "]", Cmd::RotateRight, e.image);
+    }
+
+    fn flip_items(&mut self, ui: &mut Ui, e: &Enabled) {
         self.item(ui, tr!("Flip Horizontally", "Отразить по горизонтали").into(), "H", Cmd::FlipHorizontal, e.image);
         self.item(ui, tr!("Flip Vertically", "Отразить по вертикали").into(), "V", Cmd::FlipVertical, e.image);
+    }
+
+    fn crop_item(&mut self, ui: &mut Ui, e: &Enabled) {
         let cropping = self.crop.is_some();
         if ui.add_enabled(e.edit, Button::new(tr!("Crop", "Обрезать")).shortcut_text("C").selected(cropping)).clicked() {
             self.clicked.push(Cmd::Crop);
@@ -253,11 +265,7 @@ impl App {
     /// the one picked becomes the editor.
     pub(super) fn editor_items(&mut self, ui: &mut Ui, enabled: bool) {
         let enabled = enabled && !self.in_archive();
-        let text = match &self.editor {
-            Some(e) => tr!(format!("Open in {}", e.name), format!("Открыть в {}", e.name)),
-            None => tr!("Open in Editor", "Открыть в редакторе").into(),
-        };
-        self.item(ui, text, "Ctrl+E", Cmd::Edit, enabled);
+        self.open_in_editor_item(ui, enabled);
         ui.add_enabled_ui(enabled, |ui| {
             ui.menu_button(tr!("Edit With", "Редактировать в"), |ui| {
                 // Read from Windows only while the menu is open.
@@ -277,6 +285,16 @@ impl App {
                 self.item(ui, tr!("Other Program…", "Другая программа…").into(), "", Cmd::EditWithOther, true);
             })
         });
+    }
+
+    /// Open in the editor chosen last (Ctrl+E).
+    fn open_in_editor_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let enabled = enabled && !self.in_archive();
+        let text = match &self.editor {
+            Some(e) => tr!(format!("Open in {}", e.name), format!("Открыть в {}", e.name)),
+            None => tr!("Open in Editor", "Открыть в редакторе").into(),
+        };
+        self.item(ui, text, "Ctrl+E", Cmd::Edit, enabled);
     }
 
     /// How many images the file commands act on, when more than one.
@@ -363,17 +381,18 @@ impl App {
         self.item(ui, tr!("About qview", "О программе").into(), "", Cmd::About, true);
     }
 
-    /// Right click on the image.
+    /// Right click on the image: what is done with the mouse; the zoom,
+    /// the flips and the rarer commands in submenus, browsing left to the
+    /// wheel, the keys and the View menu.
     pub(crate) fn context_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
         self.item(ui, tr!("Gallery", "Галерея").into(), "G", Cmd::Gallery, true);
+        self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
         ui.separator();
-        self.item(ui, tr!("Previous", "Предыдущее").into(), "Page Up", Cmd::Prev, e.prev);
-        self.item(ui, tr!("Next", "Следующее").into(), "Page Down", Cmd::Next, e.next);
-        ui.separator();
-        self.zoom_items(ui, &e);
-        ui.separator();
-        self.rotate_items(ui, &e);
+        ui.menu_button(tr!("Zoom", "Масштаб"), |ui| self.zoom_items(ui, &e));
+        self.turn_items(ui, &e);
+        ui.menu_button(tr!("Flip", "Отразить"), |ui| self.flip_items(ui, &e));
+        self.crop_item(ui, &e);
         if e.edited {
             self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, true);
         }
@@ -382,22 +401,27 @@ impl App {
             self.animation_items(ui);
         }
         ui.separator();
-        self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
-        ui.separator();
         self.favorite_item(ui, e.file);
         if self.can_go_to_folder() {
             self.go_to_folder_item(ui);
         }
-        ui.separator();
-        self.copy_item(ui, e.file);
-        self.copy_image_item(ui, e.file);
-        self.rename_item(ui, e.file);
-        self.convert_menu(ui);
-        self.editor_items(ui, e.file);
-        self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
-        self.print_item(ui, e.file);
-        self.wallpaper_item(ui, e.file);
+        self.file_items(ui, e.file);
         ui.separator();
         self.delete_item(ui, e.file);
+    }
+
+    /// What the context menus of the image and of a thumbnail do with the
+    /// file, the rarer commands under More (the File menu has them all).
+    pub(super) fn file_items(&mut self, ui: &mut Ui, enabled: bool) {
+        self.copy_item(ui, enabled);
+        self.copy_image_item(ui, enabled);
+        self.rename_item(ui, enabled);
+        self.open_in_editor_item(ui, enabled);
+        self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, enabled);
+        ui.menu_button(tr!("More", "Ещё"), |ui| {
+            self.convert_menu(ui);
+            self.print_item(ui, enabled);
+            self.wallpaper_item(ui, enabled);
+        });
     }
 }

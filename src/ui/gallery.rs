@@ -597,14 +597,7 @@ impl App {
             self.favorites_items(ui);
         }
         ui.separator();
-        self.copy_item(ui, true);
-        self.copy_image_item(ui, true);
-        self.rename_item(ui, true);
-        self.convert_menu(ui);
-        self.editor_items(ui, true);
-        self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
-        self.print_item(ui, true);
-        self.wallpaper_item(ui, true);
+        self.file_items(ui, true);
         ui.separator();
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         ui.separator();
