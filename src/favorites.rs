@@ -5,12 +5,18 @@
 //! a temporary file, so that a crash never leaves half a list.
 //!
 //! The gallery lists them in place of a folder: `App::dir` is then [`DIR`].
+//!
+//! The folders pinned to the favourites are kept the same way, in
+//! [`PINNED_FILE`]: the tree shows them under the favourites, and the
+//! gallery as cells before the favourite images.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// The file in the settings folder.
 pub const FILE: &str = "favorites.txt";
+/// The pinned folders' file, beside it.
+pub const PINNED_FILE: &str = "pinned.txt";
 
 /// `App::dir` while the favourites are listed: no folder can have this
 /// path (a colon), and as a path it keys the gallery's per-folder state,
@@ -35,6 +41,8 @@ pub struct Favorites {
     keys: HashSet<String>,
     /// Where they are kept; `None`: not kept (no settings folder).
     file: Option<PathBuf>,
+    /// The pinned folders, not the favourite images (for the messages).
+    folders: bool,
 }
 
 fn key(path: &Path) -> String {
@@ -44,7 +52,16 @@ fn key(path: &Path) -> String {
 impl Favorites {
     /// Read from `file`; none yet is no favourites.
     pub fn load(file: Option<PathBuf>) -> Self {
-        let mut favorites = Self { file, ..Self::default() };
+        Self::read(file, false)
+    }
+
+    /// The pinned folders, read from `file`.
+    pub fn load_pinned(file: Option<PathBuf>) -> Self {
+        Self::read(file, true)
+    }
+
+    fn read(file: Option<PathBuf>, folders: bool) -> Self {
+        let mut favorites = Self { file, folders, ..Self::default() };
         let text = match favorites.file.as_ref().map(std::fs::read_to_string) {
             None => None,
             Some(Ok(text)) => Some(text),
@@ -87,7 +104,11 @@ impl Favorites {
             .and_then(|()| std::fs::rename(&temp, file));
         result.map_err(|e| {
             log::warn!("cannot save {}: {e}", file.display());
-            tr!(format!("Cannot save the favorites: {e}"), format!("Не удалось сохранить избранное: {e}"))
+            if self.folders {
+                tr!(format!("Cannot save the pinned folders: {e}"), format!("Не удалось сохранить закреплённые папки: {e}"))
+            } else {
+                tr!(format!("Cannot save the favorites: {e}"), format!("Не удалось сохранить избранное: {e}"))
+            }
         })
     }
 
@@ -203,5 +224,11 @@ mod tests {
         // No file yet: none.
         assert_eq!(Favorites::load(Some(file)).len(), 0);
         assert!(is_dir(Path::new(DIR)) && !is_dir(Path::new(r"C:\favorites")));
+        // The pinned folders: the same list, in a file of their own.
+        let pinned = dir.join(PINNED_FILE);
+        let mut p = Favorites::load_pinned(Some(pinned.clone()));
+        assert_eq!(p.toggle(Path::new(r"D:\Фото")), Ok(true));
+        assert!(Favorites::load_pinned(Some(pinned)).contains(Path::new(r"d:\фото")));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1,5 +1,8 @@
 //! The menu bar and the image's context menu. Items only queue commands in
-//! `App::clicked`; `App::run` carries them out after drawing.
+//! `App::clicked`; `App::run` carries them out after drawing. Pinning a
+//! folder, which takes the folder's path, is done at once (`pin_item`).
+
+use std::path::PathBuf;
 
 use egui::{Button, Ui};
 
@@ -235,10 +238,35 @@ impl App {
         self.favorite_item(ui, e.file);
         self.item(ui, tr!("Show Favorites", "Показать избранное").into(), "", Cmd::Favorites, true);
         self.go_to_folder_item(ui);
+        match self.pinnable_dir() {
+            Some(dir) => self.pin_item(ui, dir, true),
+            None => {
+                ui.add_enabled(false, Button::new(tr!("Pin This Folder", "Закрепить эту папку")));
+            }
+        }
         ui.separator();
         self.favorites_items(ui);
         ui.separator();
         self.clear_favorites_item(ui);
+    }
+
+    /// Pin `dir` to the favourites, or unpin it; `this`: it is the folder
+    /// listed ("This Folder"), otherwise a sub-folder's cell.
+    pub(super) fn pin_item(&mut self, ui: &mut Ui, dir: PathBuf, this: bool) {
+        let text = match (self.pinned.contains(&dir), this) {
+            (false, true) => tr!("Pin This Folder", "Закрепить эту папку"),
+            (true, true) => tr!("Unpin This Folder", "Открепить эту папку"),
+            (false, false) => tr!("Pin to Favorites", "Закрепить в избранном"),
+            (true, false) => tr!("Unpin from Favorites", "Открепить от избранного"),
+        };
+        let button = ui.add(Button::new(text)).on_hover_text(tr!(
+            "Pinned folders are shown under Favorites in the tree and as cells among the favorites",
+            "Закреплённые папки показываются под «Избранным» в дереве и ячейками в избранном"
+        ));
+        if button.clicked() {
+            self.toggle_pin(dir);
+            ui.close();
+        }
     }
 
     /// Clear the favourites, after a confirmation.

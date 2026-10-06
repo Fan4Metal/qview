@@ -10,6 +10,7 @@ use crate::app::{App, file_name};
 use crate::gallery::{self, ASPECTS, Cell, HEADER, HOVER_DELAY, LABEL, MAX_SIZE, MIN_SIZE, PAD, Scroll};
 use crate::input::Cmd;
 use crate::thumbs::Request;
+use crate::tree::Action;
 
 const TREE_BG: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
 pub const GRID_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
@@ -126,6 +127,11 @@ impl App {
         // In the mode chosen above the grid.
         if let Some(dir) = tree.inner {
             self.open_folder(&ctx, dir, self.deep);
+        }
+        match self.gallery.as_mut().and_then(|g| g.tree.take_action()) {
+            Some(Action::Pin(dir) | Action::Unpin(dir)) => self.toggle_pin(dir),
+            Some(Action::ShowInExplorer(dir)) => crate::win::show_in_explorer(&dir),
+            None => {}
         }
         self.gallery_bar(root_ui);
         let mut open = None;
@@ -718,6 +724,10 @@ impl App {
         }
         background.context_menu(|ui| {
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
+            if let Some(dir) = self.pinnable_dir() {
+                ui.separator();
+                self.pin_item(ui, dir, true);
+            }
             if self.in_favorites() {
                 ui.separator();
                 self.favorites_items(ui);
@@ -736,6 +746,10 @@ impl App {
     fn folder_menu(&mut self, ui: &mut Ui) {
         self.item(ui, tr!("Open", "Открыть").into(), "Enter", Cmd::Gallery, true);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
+        if let Some(dir) = self.focused_folder() {
+            ui.separator();
+            self.pin_item(ui, dir, false);
+        }
     }
 
     /// The frame dragged over the grid (from anywhere on it): the images it

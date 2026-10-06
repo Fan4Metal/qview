@@ -288,6 +288,9 @@ pub struct App {
     pub history: History,
     /// The favourite images (S), listed in the gallery as `favorites::DIR`.
     pub favorites: Favorites,
+    /// The folders pinned to the favourites: under them in the tree, and
+    /// cells before their images in the gallery.
+    pub pinned: Favorites,
     /// Clearing the favourites waits for the user's yes.
     pub confirm_clear_favorites: bool,
     /// The favourites gone from their folders, looked for at start-up, so
@@ -574,6 +577,7 @@ impl App {
             reloading: None,
             history: History::default(),
             favorites: Favorites::load(eframe::storage_dir(crate::APP_ID).map(|d| d.join(favorites::FILE))),
+            pinned: Favorites::load_pinned(eframe::storage_dir(crate::APP_ID).map(|d| d.join(favorites::PINNED_FILE))),
             confirm_clear_favorites: false,
             favorites_gone: None,
             copying: None,
@@ -821,6 +825,33 @@ impl App {
         self.listed_folders.iter().filter(|p| filter.is_empty() || folder::matches(&file_name(p), filter)).cloned().collect()
     }
 
+    /// The folder that can be pinned to the favourites from the menus: the
+    /// one listed, a real folder.
+    pub fn pinnable_dir(&self) -> Option<PathBuf> {
+        self.dir.clone().filter(|d| !favorites::is_dir(d) && !self.archive)
+    }
+
+    /// Pin `dir` to the favourites, or unpin it if it is pinned.
+    pub fn toggle_pin(&mut self, dir: PathBuf) {
+        let name = match dir.file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => dir.display().to_string(),
+        };
+        let text = match self.pinned.toggle(&dir) {
+            Ok(true) => tr!(format!("Pinned to the favorites: {name}"), format!("Закреплено в избранном: {name}")),
+            Ok(false) => tr!(format!("Unpinned from the favorites: {name}"), format!("Откреплено от избранного: {name}")),
+            Err(e) => e,
+        };
+        self.notice(text);
+        if let Some(gallery) = &mut self.gallery {
+            gallery.tree.set_pinned(&self.pinned.paths());
+        }
+        if self.in_favorites() && self.scan.is_none() {
+            self.listed_folders = self.pinned.paths();
+            self.filter_changed();
+        }
+    }
+
     /// The sub-folder whose cell has the gallery's cursor.
     pub fn focused_folder(&self) -> Option<PathBuf> {
         self.folder_focus.and_then(|k| self.folders.get(k).cloned())
@@ -865,6 +896,7 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
         let gallery = self.gallery.get_or_insert_with(|| Gallery::new(ctx));
+        gallery.tree.set_pinned(&self.pinned.paths());
         if let Some(dir) = &self.dir {
             gallery.tree.reveal(&crate::archive::tree_folder(dir));
         }
@@ -1239,6 +1271,10 @@ impl App {
         let scan = self.scan.take();
         let gone = scan.as_ref().map(Scan::take_gone).unwrap_or_default();
         self.listed_folders = scan.as_ref().map(Scan::take_folders).unwrap_or_default();
+        // Among the favourites, the folders pinned to them.
+        if self.in_favorites() {
+            self.listed_folders = self.pinned.paths();
+        }
         drop(scan);
         self.forget_gone_favorites(&gone);
         match result {
