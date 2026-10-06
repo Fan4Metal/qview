@@ -2,6 +2,7 @@
 //! icons drawn as vector shapes, so they are crisp at any display scaling
 //! and need no icon font. In the gallery: back, forward and up through the
 //! folders instead, the gallery button and delete staying where they are.
+//! At the right end, over the panel it opens, the information button.
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -34,6 +35,8 @@ enum Icon {
     ZoomIn,
     ZoomOut,
     Delete,
+    /// The information panel (I): an "i" in a circle.
+    Info,
 }
 
 impl App {
@@ -110,18 +113,24 @@ impl App {
                             }
                         }
                     }
-                    // A newer release, found by the update check, at the
-                    // right end.
-                    if let Some(tag) = self.updates.newer() {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // At the right end, over the panel: the information,
+                    // and a newer release found by the update check left
+                    // of it.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let tip = tr!("Information (I)", "Сведения (I)");
+                        if icon_button(ui, Icon::Info, tip, true, self.show_info) {
+                            self.clicked.push(Cmd::Info);
+                        }
+                        if let Some(tag) = self.updates.newer() {
+                            divider(ui);
                             if update_button(ui, tag).clicked() {
                                 let url = crate::update::release_url(tag);
                                 if !crate::win::shell_open(&url) {
                                     log::warn!("could not open {url}");
                                 }
                             }
-                        });
-                    }
+                        }
+                    });
                 });
             });
     }
@@ -258,6 +267,11 @@ fn paint_icon(painter: &Painter, icon: Icon, c: Pos2, color: Color32) {
             if let Icon::ZoomIn = icon {
                 painter.line_segment([lens - vec2(0.0, 3.0), lens + vec2(0.0, 3.0)], stroke);
             }
+        }
+        Icon::Info => {
+            painter.circle_stroke(c, 8.0, Stroke::new(1.6, color));
+            painter.circle_filled(c + vec2(0.0, -4.0), 1.3, color);
+            painter.line_segment([c + vec2(0.0, -1.0), c + vec2(0.0, 4.8)], Stroke::new(2.0, color));
         }
         Icon::Delete => {
             // A bin: the handle, the lid, the body narrowing downwards and
