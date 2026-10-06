@@ -2211,7 +2211,7 @@ impl App {
         let trace = log::log_enabled!(log::Level::Debug);
         // Bilinear is the texture's own, through a program only to be
         // timed; bicubic at 100% gives the pixels as they are, as the mesh
-        // does for a sixteenth of the work; sharp pixels only enlarged.
+        // does for a sixteenth of the work; pixelated only enlarged.
         let wanted = match self.filter {
             Filter::Bilinear => trace,
             Filter::Bicubic => zoom != 1.0,
@@ -2242,7 +2242,7 @@ impl App {
             }
         }
         let (turns, flip) = (self.view.turns, self.view.flip);
-        // GL_NEAREST only where the sharp pixels' program cannot be made.
+        // GL_NEAREST only where the pixelated program cannot be made.
         let failed = matches!(self.programs.get(&Filter::Pixels), Some(None));
         texture.set_smooth(!(self.filter == Filter::Pixels && zoom > 1.0 && failed));
         match program {

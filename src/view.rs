@@ -276,7 +276,7 @@ impl Filter {
         match self {
             Filter::Bilinear => tr!("Bilinear", "Билинейная"),
             Filter::Bicubic => tr!("Bicubic (sharper)", "Бикубическая (чётче)"),
-            Filter::Pixels => tr!("Sharp Pixels When Enlarged", "Чёткие пиксели при увеличении"),
+            Filter::Pixels => tr!("Pixelated (When Enlarged)", "Пиксельная (при увеличении)"),
         }
     }
 }

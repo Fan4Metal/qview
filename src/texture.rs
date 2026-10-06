@@ -99,7 +99,7 @@ impl Texture {
     }
 
     /// Enlarge it smoothly (`GL_LINEAR`), or with `GL_NEAREST` where the
-    /// sharp pixels' shader (`filter`) cannot be had. Reduced it is always
+    /// pixelated shader (`filter`) cannot be had. Reduced it is always
     /// smooth, through its mipmaps.
     pub fn set_smooth(&self, smooth: bool) {
         if self.smooth.replace(smooth) == smooth {

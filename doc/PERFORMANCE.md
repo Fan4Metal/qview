@@ -1,6 +1,6 @@
 # qview performance
 
-[Русская версия](PERFORMANCE.ru.md) · [README](README.md)
+[Русская версия](PERFORMANCE.ru.md) · [README](../README.md)
 
 This document collects the measurements behind qview's design: where the time goes from start-up to a browsed image, the estimates made before a change, and the decisions taken from them. Every figure comes from the test machine below unless stated otherwise; figures from other hardware are estimates and are marked as such.
 
@@ -93,14 +93,14 @@ Measured for a 14.7 MP JPEG on a decoder thread:
 
 ## Filtering
 
-View → Filtering chooses how an image not shown at 100% is filtered. Bilinear is the texture's own filtering and is drawn as an egui mesh; Bicubic and Sharp Pixels are fragment shaders of qview's own (`src/filter.rs`), drawn through egui_glow paint callbacks.
+View → Filtering chooses how an image not shown at 100% is filtered. Bilinear is the texture's own filtering and is drawn as an egui mesh; Bicubic and Pixelated are fragment shaders of qview's own (`src/filter.rs`), drawn through egui_glow paint callbacks.
 
 ### Estimates made beforehand
 
 | Filter | Texture reads per screen pixel | RTX-class GPU, 2560×1440 image area | Integrated Intel UHD 620, same (estimate) |
 |---|---|---|---|
 | Bilinear | 1–2 (trilinear) | ~0.02 ms | ~0.3 ms |
-| Sharp Pixels | 1 | ~0.02 ms | ~0.3 ms |
+| Pixelated | 1 | ~0.02 ms | ~0.3 ms |
 | Bicubic, enlarged | 16 | ~0.1–0.2 ms | ~2–3 ms |
 | Bicubic, reduced | 16–64, by zoom | ~0.1–0.5 ms | ~3–10 ms |
 
@@ -112,7 +112,7 @@ A 6000×4000 test image on a 2827×1652 image area (4.7 million screen pixels), 
 |---|---|---|---|---|
 | Bilinear | ~0.05 ms | ~0.03 ms | 0.06–0.08 ms | — (none needed) |
 | Bicubic | 1.0–1.4 ms | 0.8–1.7 ms (now drawn as a mesh) | 0.43–0.9 ms | 17.6 ms |
-| Sharp Pixels | as Bilinear | as Bilinear | 0.13–0.48 ms | 8.1 ms |
+| Pixelated | as Bilinear | as Bilinear | 0.13–0.48 ms | 8.1 ms |
 
 - The first program built in a run took 85 ms (the driver's shader compiler starting); later ones 8–18 ms.
 - Bilinear showed 1–8 ms in the first seconds after the image was opened while the full-resolution levels were still being uploaded; once they were, it was steady at 0.03–0.05 ms.
@@ -123,7 +123,7 @@ A 6000×4000 test image on a 2827×1652 image area (4.7 million screen pixels), 
 ### Decisions
 
 - **Bilinear stays the default.** It costs nothing on any GPU and is what earlier versions showed; Bicubic is a choice for those who want sharper images and have the GPU for it.
-- **Sharp Pixels uses a "sharp bilinear" shader, not `GL_NEAREST`.** With `GL_NEAREST` alone, pixels at a zoom that is not whole have unequal widths (at 250% some are 2 screen pixels wide, some 3) and shimmer while panning; the shader keeps every pixel flat and equally wide, blending over one screen pixel at its edges, and is exactly `GL_NEAREST` at whole zooms. `GL_NEAREST` remains the fallback if the shader cannot be built.
+- **Pixelated uses a "sharp bilinear" shader, not `GL_NEAREST`.** With `GL_NEAREST` alone, pixels at a zoom that is not whole have unequal widths (at 250% some are 2 screen pixels wide, some 3) and shimmer while panning; the shader keeps every pixel flat and equally wide, blending over one screen pixel at its edges, and is exactly `GL_NEAREST` at whole zooms. `GL_NEAREST` remains the fallback if the shader cannot be built.
 - **Bicubic reduction samples one mip level, not two.** Trilinear filtering blends a level with one of half its size, which softens images shown between 50% and 100%. Bicubic instead takes the largest level with at most two image pixels per screen pixel and stretches a Catmull-Rom kernel over the screen pixel's footprint (up to 8×8 reads).
 - **At 100% Bicubic is drawn as a mesh.** Its result there equals the image's pixels, and the mesh does it for a sixteenth of the work.
 - **A program is built in the frame after the one that first wants it.** The image is drawn as a mesh in that first frame, so a start-up with Bicubic chosen shows the image as soon as before; the 8–85 ms of building follow once it is on screen.

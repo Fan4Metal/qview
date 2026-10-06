@@ -11,7 +11,7 @@
 //!   (up to 8x8 of them): sharper than trilinear filtering, which blends
 //!   a level with one of half its size. At 100% it gives the pixels as
 //!   they are.
-//! - Sharp pixels ("sharp bilinear", enlarged only): `GL_NEAREST` alone
+//! - Pixelated ("sharp bilinear", enlarged only): `GL_NEAREST` alone
 //!   makes pixels of unequal widths at a zoom that is not whole (at 250%
 //!   some are 2 screen pixels wide, some 3), which shimmer while panning.
 //!   Sampled with `GL_LINEAR` at moved coordinates instead, each pixel is
@@ -140,7 +140,7 @@ struct Timing {
 impl Program {
     /// None if the context has no GLSL 1.40 or ES 3.0 (in/out,
     /// gl_VertexID, textureSize, texelFetch) or the shaders fail; the
-    /// caller then paints a mesh (with `GL_NEAREST` for sharp pixels).
+    /// caller then paints a mesh (with `GL_NEAREST` for Pixelated).
     pub fn new(gl: &glow::Context, filter: Filter) -> Option<Arc<Self>> {
         let started = Instant::now();
         let version = egui_glow::ShaderVersion::get(gl);
