@@ -413,7 +413,10 @@ fn decode(src: &Path, bytes: &[u8]) -> Result<Decoded, String> {
         None => None,
     };
     let (img, _) = crate::loader::read_wic(src, false).map_err(|e| first.unwrap_or(e))?;
-    Ok(Decoded { img, icc: None, exif: None })
+    // libheif gives the profile (an iPhone's Display P3); Windows' codecs
+    // are not asked for one.
+    let icc = if crate::heif::takes(src) { crate::heif::metadata(src).and_then(|(_, icc)| icc) } else { None };
+    Ok(Decoded { img, icc, exif: None })
 }
 
 fn decode_image(src: &Path, bytes: &[u8]) -> Result<Decoded, String> {

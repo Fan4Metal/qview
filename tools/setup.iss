@@ -48,8 +48,8 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 [CustomMessages]
 english.AssocGroup=File types:
 russian.AssocGroup=Типы файлов:
-english.AssocTask=Register qview for image files (JPEG, PNG, GIF, WebP, BMP, TIFF and others)
-russian.AssocTask=Зарегистрировать qview для файлов изображений (JPEG, PNG, GIF, WebP, BMP, TIFF и других)
+english.AssocTask=Register qview for image files (JPEG, PNG, GIF, WebP, BMP, TIFF, CBZ comic books and others)
+russian.AssocTask=Зарегистрировать qview для файлов изображений (JPEG, PNG, GIF, WebP, BMP, TIFF, комиксов CBZ и других)
 english.AssocStatus=Registering file types...
 russian.AssocStatus=Регистрация типов файлов...
 english.ChooseDefault=Choose qview as the default image viewer (opens Windows Settings)

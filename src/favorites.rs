@@ -45,8 +45,10 @@ pub struct Favorites {
     folders: bool,
 }
 
+/// Windows paths ignore case, and a folder is the same with or without
+/// its trailing separator.
 fn key(path: &Path) -> String {
-    path.to_string_lossy().to_lowercase()
+    path.components().collect::<PathBuf>().to_string_lossy().to_lowercase()
 }
 
 impl Favorites {
@@ -228,6 +230,7 @@ mod tests {
         let pinned = dir.join(PINNED_FILE);
         let mut p = Favorites::load_pinned(Some(pinned.clone()));
         assert_eq!(p.toggle(Path::new(r"D:\Фото")), Ok(true));
+        assert!(p.contains(Path::new(r"D:\Фото\")));
         assert!(Favorites::load_pinned(Some(pinned)).contains(Path::new(r"d:\фото")));
         std::fs::remove_dir_all(&dir).unwrap();
     }

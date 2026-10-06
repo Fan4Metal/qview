@@ -205,7 +205,7 @@ pub struct App {
     /// The folder of `files`.
     pub dir: Option<PathBuf>,
     /// `files` has the images of all the sub-folders of `dir` too, folder
-    /// by folder ("Sub-folders" above the gallery's grid; folders chosen in
+    /// by folder ("With sub-folders" in the list above the gallery's grid; folders chosen in
     /// the tree are listed the same way).
     pub deep: bool,
     /// Where each folder's images start in `files`.
@@ -633,7 +633,7 @@ impl App {
             app.open(ctx, path);
         }
         app.updates.start_if_due(ctx);
-        win::watch_paste();
+        win::watch_paste(app.hwnd.unwrap_or(0));
         if app.favorites.len() > 0 {
             app.favorites_gone = Some(folder::find_gone(app.favorites.paths(), ctx.clone()));
         }
@@ -833,6 +833,8 @@ impl App {
 
     /// Pin `dir` to the favourites, or unpin it if it is pinned.
     pub fn toggle_pin(&mut self, dir: PathBuf) {
+        // `D:\Photos\` (a path from the command line) is `D:\Photos`.
+        let dir: PathBuf = dir.components().collect();
         let name = match dir.file_name() {
             Some(n) => n.to_string_lossy().into_owned(),
             None => dir.display().to_string(),
@@ -975,6 +977,10 @@ impl App {
             self.favorites_sort = order;
         } else {
             self.sort = order;
+        }
+        // The sub-folders' cells show their first images in the order.
+        if let Some(gallery) = &mut self.gallery {
+            gallery.forget_previews();
         }
         self.relist(ctx);
     }
@@ -1133,7 +1139,10 @@ impl App {
             self.info = None;
             return;
         };
-        if self.info.as_ref().is_none_or(|i| i.path != path) {
+        // One reading at a time: while browsing fast, the images passed
+        // over are not read (each would take a thread, COM and a codec).
+        let reading = self.info.as_ref().is_some_and(|i| i.rx.is_some());
+        if !reading && self.info.as_ref().is_none_or(|i| i.path != path) {
             let (tx, rx) = mpsc::channel();
             let (ctx, file) = (ctx.clone(), path.clone());
             std::thread::spawn(move || {
@@ -1686,6 +1695,8 @@ impl App {
             Cmd::Next | Cmd::PageDown => self.step(1),
             Cmd::Prev | Cmd::PageUp => self.step(-1),
             Cmd::Gallery => self.enter_gallery(ctx),
+            // Only with a folder cell under the cursor (`run_in_gallery`).
+            Cmd::OpenFolder => {}
             Cmd::First => self.go(0),
             Cmd::Last => self.go(self.files.len().saturating_sub(1)),
             Cmd::Arrow(arrow) => {
@@ -1874,8 +1885,18 @@ impl App {
         // to the current image, and the commands of the files have no file.
         if let Some(dir) = self.focused_folder() {
             match cmd {
-                Cmd::Gallery => {
+                Cmd::OpenFolder => {
                     self.open_subfolder(ctx, dir);
+                    return true;
+                }
+                // Along the cells, as the arrows go.
+                Cmd::Next | Cmd::Prev => {
+                    if let Some(layout) = self.gallery.as_ref().map(|g| &g.layout)
+                        && let Some(k) = self.folder_focus
+                    {
+                        let target = layout.step(Cell::Folder(k), cmd == Cmd::Next);
+                        self.move_to(target);
+                    }
                     return true;
                 }
                 Cmd::Escape => {
@@ -2009,7 +2030,9 @@ impl App {
     /// which becomes current; the grid follows it.
     fn move_to(&mut self, c: Cell) {
         match c {
-            Cell::Folder(k) if k < self.folders.len() => self.folder_focus = Some(k),
+            // Not while they are folded: the layout of the last frame may
+            // still have them.
+            Cell::Folder(k) if k < self.folders.len() && !self.folders_folded => self.folder_focus = Some(k),
             Cell::Folder(_) => return,
             Cell::Image(i) => {
                 self.folder_focus = None;
@@ -2131,6 +2154,12 @@ impl App {
     /// decoded from its file at full size, on a thread.
     fn copy_image(&mut self, ctx: &egui::Context) {
         if self.clipboard.is_some() {
+            self.notice(tr!("Still copying…".into(), "Копирование ещё идёт…".into()));
+            return;
+        }
+        // The file may be the old one or the new one: the view's turns
+        // cannot be composed with it until it is on screen again.
+        if self.still_saving() {
             return;
         }
         let Some(path) = self.current.clone().filter(|p| crate::archive::is_file(p)) else { return };
@@ -2151,6 +2180,10 @@ impl App {
     /// background, on a thread.
     fn set_wallpaper(&mut self, ctx: &egui::Context) {
         if self.handing.is_some() {
+            self.notice(tr!("Still busy with the last one…".into(), "Предыдущее действие ещё выполняется…".into()));
+            return;
+        }
+        if self.still_saving() {
             return;
         }
         let Some(path) = self.current.clone().filter(|p| crate::archive::is_file(p)) else { return };
@@ -2171,6 +2204,10 @@ impl App {
     /// it is shown (`as_shown`), are rendered on a thread first.
     fn print(&mut self, ctx: &egui::Context) {
         if self.handing.is_some() {
+            self.notice(tr!("Still busy with the last one…".into(), "Предыдущее действие ещё выполняется…".into()));
+            return;
+        }
+        if self.still_saving() {
             return;
         }
         let jobs: Vec<edit::Job> =
@@ -2217,6 +2254,7 @@ impl App {
     /// thread: a large image is saved as a PNG first.
     fn paste(&mut self, ctx: &egui::Context) {
         if self.clipboard.is_some() {
+            self.notice(tr!("Still copying…".into(), "Копирование ещё идёт…".into()));
             return;
         }
         let (tx, rx) = mpsc::channel();
@@ -2293,7 +2331,7 @@ impl App {
     /// Where the keys go now.
     fn key_mode(&self) -> Mode {
         if self.gallery_open {
-            Mode::Gallery
+            if self.focused_folder().is_some() { Mode::GalleryFolder } else { Mode::Gallery }
         } else if self.crop.is_some() {
             Mode::Crop
         } else {

@@ -119,6 +119,9 @@ pub enum Cmd {
     Associations,
     /// Opens the gallery, or leaves it for the selected image.
     Gallery,
+    /// Open the sub-folder whose cell has the gallery's cursor (Enter and
+    /// G there; the Open item of its menu).
+    OpenFolder,
     /// A page of the gallery up or down (Page Up / Page Down there).
     PageUp,
     PageDown,
@@ -244,6 +247,15 @@ pub fn gallery_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
 /// The command of a key press while cropping: Enter saves, the other keys
 /// are the viewer's (see [`command`]; `App::run_in_crop` decides which of
 /// them work).
+/// The gallery's keys with a sub-folder's cell under the cursor: Enter and
+/// G open the folder.
+pub fn folder_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
+    match gallery_command(key, m, repeat) {
+        Some(Cmd::Gallery) => Some(Cmd::OpenFolder),
+        other => other,
+    }
+}
+
 pub fn crop_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
     match key {
         Key::Enter if !m.ctrl && !m.alt && !m.shift => (!repeat).then_some(Cmd::Save),
@@ -256,15 +268,19 @@ pub fn crop_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
 pub enum Mode {
     Viewer,
     Gallery,
+    /// The gallery with a sub-folder's cell under the cursor: Enter and G
+    /// open it, not the image.
+    GalleryFolder,
     Crop,
 }
 
 /// Commands of this frame's key presses in `mode`.
 pub fn keys(ctx: &egui::Context, mode: Mode) -> Vec<Cmd> {
-    let gallery = mode == Mode::Gallery;
+    let gallery = matches!(mode, Mode::Gallery | Mode::GalleryFolder);
     let map = match mode {
         Mode::Viewer => command,
         Mode::Gallery => gallery_command,
+        Mode::GalleryFolder => folder_command,
         Mode::Crop => crop_command,
     };
     ctx.input(|i| {

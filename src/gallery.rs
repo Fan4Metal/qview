@@ -144,8 +144,10 @@ pub struct Gallery {
     /// listed on a thread.
     previews: HashMap<PathBuf, Preview>,
     previewing: HashSet<PathBuf>,
-    preview_tx: mpsc::Sender<(PathBuf, Preview)>,
-    preview_rx: mpsc::Receiver<(PathBuf, Preview)>,
+    /// Raised by `forget_previews`: what was listed before is dropped.
+    preview_generation: u64,
+    preview_tx: mpsc::Sender<(u64, PathBuf, Preview)>,
+    preview_rx: mpsc::Receiver<(u64, PathBuf, Preview)>,
     ctx: egui::Context,
 }
 
@@ -185,6 +187,7 @@ impl Gallery {
             finding: None,
             previews: HashMap::new(),
             previewing: HashSet::new(),
+            preview_generation: 0,
             preview_tx,
             preview_rx,
             ctx: ctx.clone(),
@@ -209,13 +212,14 @@ impl Gallery {
             crate::folder::SortKey::Taken | crate::folder::SortKey::Added => crate::folder::Order::default(),
             _ => order,
         };
-        let (tx, ctx) = (self.preview_tx.clone(), self.ctx.clone());
+        let (tx, ctx, generation) = (self.preview_tx.clone(), self.ctx.clone(), self.preview_generation);
+        let listed = dirs.clone();
         let spawned = std::thread::Builder::new().name("folder previews".into()).spawn(move || {
             for dir in dirs {
                 let preview = crate::folder::list_with_folders(&dir, None, order, false)
                     .map(|(files, _)| Preview { count: files.len(), images: files.into_iter().take(PREVIEW_IMAGES).collect() })
                     .unwrap_or_default();
-                if tx.send((dir, preview)).is_err() {
+                if tx.send((generation, dir, preview)).is_err() {
                     return;
                 }
                 ctx.request_repaint();
@@ -223,7 +227,18 @@ impl Gallery {
         });
         if let Err(e) = spawned {
             log::warn!("cannot start a thread for the folder previews: {e}");
+            for dir in &listed {
+                self.previewing.remove(dir);
+            }
         }
+    }
+
+    /// Forget what the sub-folders' cells show (the order changed, F5):
+    /// listed again when drawn; listings started before are dropped.
+    pub fn forget_previews(&mut self) {
+        self.previews.clear();
+        self.previewing.clear();
+        self.preview_generation += 1;
     }
 
     /// The cells' proportions in Auto mode for folder `dir` listing
@@ -284,7 +299,10 @@ impl Gallery {
     /// at most; the rest wait for the next frames.
     pub fn poll(&mut self, gl: &Arc<glow::Context>, frame: &mut eframe::Frame, ctx: &egui::Context) {
         self.frame += 1;
-        for (dir, preview) in self.preview_rx.try_iter() {
+        for (generation, dir, preview) in self.preview_rx.try_iter() {
+            if generation != self.preview_generation {
+                continue;
+            }
             self.previewing.remove(&dir);
             self.previews.insert(dir, preview);
         }
@@ -385,7 +403,7 @@ impl Gallery {
         // The images may have changed too.
         self.auto.clear();
         self.finding = None;
-        self.previews.clear();
+        self.forget_previews();
         for p in paths {
             if let Some(t) = self.cache.remove(p) {
                 self.pixels -= texture_pixels(&t);

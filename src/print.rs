@@ -28,6 +28,7 @@ type DropMethod = unsafe extern "system" fn(Unknown, Unknown, u32, POINTL, *mut 
 
 // Vtable indices, from oleidl.h.
 const DRAG_ENTER: usize = 3;
+const DRAG_LEAVE: usize = 5;
 const DROP: usize = 6;
 
 const MK_LBUTTON: u32 = 1;
@@ -39,12 +40,13 @@ const NATIVE: [&str; 10] = ["jpg", "jpeg", "jpe", "jfif", "png", "bmp", "dib", "
 
 /// Rendered files older than this are deleted before others are made: the
 /// dialog has long been closed.
-const KEEP: Duration = Duration::from_secs(60 * 60);
+const KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Where images rendered for printing go: `Print` in qview's temporary
-/// folder.
+/// Where images rendered for printing go: `qview-print` in the temporary
+/// folder (not inside `clipboard::folder`, which the gallery shows after a
+/// paste).
 fn folder() -> PathBuf {
-    crate::clipboard::folder().join("Print")
+    std::env::temp_dir().join("qview-print")
 }
 
 /// `job` is printed from its file as it is: nothing to turn or crop, a
@@ -118,6 +120,11 @@ pub fn show(files: &[PathBuf]) -> Result<(), String> {
     let mut effect = DROPEFFECT_COPY;
     let hr = unsafe { target.method::<DropMethod>(DRAG_ENTER)(target.0, data.0, MK_LBUTTON, at, &mut effect) };
     if hr < 0 || effect == 0 {
+        // Entered: left again, as the protocol wants.
+        type Leave = unsafe extern "system" fn(Unknown) -> HRESULT;
+        if hr >= 0 {
+            unsafe { target.method::<Leave>(DRAG_LEAVE)(target.0) };
+        }
         return Err(tr!(format!("the dialog refused the files (error {hr:#x})"), format!("окно не приняло файлы (ошибка {hr:#x})")));
     }
     let hr = unsafe { target.method::<DropMethod>(DROP)(target.0, data.0, 0, at, &mut effect) };

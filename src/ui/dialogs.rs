@@ -87,6 +87,10 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ),
                 ("Alt+↑", tr!("Folder above", "Папка уровнем выше")),
                 (
+                    tr!("Enter  Double click", "Enter  Двойной щелчок"),
+                    tr!("On a folder's cell: open the folder", "На ячейке папки: открыть папку"),
+                ),
+                (
                     "/  Ctrl+F  Esc",
                     tr!("Filter the images by name (*.png and the like too) / clear", "Фильтр изображений по имени (и маски вида *.png) / очистить"),
                 ),

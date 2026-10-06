@@ -637,6 +637,8 @@ pub fn local_filetime(year: u16, month: u8, day: u8, hour: u8, minute: u8, secon
 
 /// Set by [`watch_paste`]'s hook when Ctrl+V or Shift+Insert is pressed.
 static PASTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The main window, the only one whose Ctrl+V counts (0: any).
+static PASTE_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 /// Watch the keys of this thread (the UI thread) for Ctrl+V and
 /// Shift+Insert; [`take_paste`] says whether they were pressed. egui-winit
@@ -644,9 +646,10 @@ static PASTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 /// when it holds none (an image, files), so they are taken from Windows: a
 /// keyboard hook of this thread alone (`WH_KEYBOARD`, no other process sees
 /// it), which only looks and passes every key on.
-pub fn watch_paste() {
+pub fn watch_paste(hwnd: isize) {
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD};
+    PASTE_WINDOW.store(hwnd, std::sync::atomic::Ordering::Relaxed);
     let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD, Some(paste_hook), std::ptr::null_mut(), GetCurrentThreadId()) };
     if hook.is_null() {
         log::warn!("cannot watch for Ctrl+V: {}", std::io::Error::last_os_error());
@@ -667,7 +670,12 @@ unsafe extern "system" fn paste_hook(code: i32, wparam: usize, lparam: isize) ->
         let down = |vk: u16| unsafe { GetKeyState(vk as i32) } < 0;
         let (ctrl, shift, alt) = (down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU));
         let key = wparam as u16;
-        if (key == VK_V && ctrl && !shift && !alt) || (key == VK_INSERT && shift && !ctrl && !alt) {
+        // In the main window only: a file dialog (rfd) runs on this thread
+        // too, and Ctrl+V in its name field is its own.
+        let main = PASTE_WINDOW.load(std::sync::atomic::Ordering::Relaxed);
+        let active = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow() } as isize;
+        if (main == 0 || active == main) && ((key == VK_V && ctrl && !shift && !alt) || (key == VK_INSERT && shift && !ctrl && !alt))
+        {
             PASTE.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }

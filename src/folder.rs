@@ -2,6 +2,7 @@
 //! listed on a thread; with its sub-folders, folder by folder.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, mpsc};
@@ -126,6 +127,17 @@ impl Entry {
     }
 }
 
+/// The dates taken read so far, by path (lowercase), with the file's
+/// date modified and size they were read for: a folder listed again (a
+/// save, a rename, F5) does not read every file again. None: the file
+/// does not say.
+static TAKEN: Mutex<Option<HashMap<String, Taken>>> = Mutex::new(None);
+/// A cached date taken: the file's date modified and size it was read
+/// for, and the date (None: the file has none).
+type Taken = (u64, u64, Option<u64>);
+/// Entries kept in it at most; it starts over past that.
+const TAKEN_CACHE: usize = 200_000;
+
 /// The dates `files` were taken (`info::taken`), read when they are sorted
 /// by them, on several threads (a file's header each); those that do not
 /// say keep their date modified. Stops when `cancel` is set.
@@ -134,28 +146,53 @@ fn read_taken(files: &mut [Entry], order: Order, cancel: &AtomicBool) {
     if order.key != SortKey::Taken {
         return;
     }
+    let key = |e: &Entry| e.path.to_string_lossy().to_lowercase();
+    let mut cache = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if cache.len() > TAKEN_CACHE {
+        cache.clear();
+    }
+    let known: Vec<Option<Option<u64>>> = files
+        .iter()
+        .map(|e| cache.get(&key(e)).filter(|(m, s, _)| *m == e.modified && *s == e.size).map(|(_, _, t)| *t))
+        .collect();
     let next = AtomicUsize::new(0);
     let taken: Vec<AtomicU64> = files.iter().map(|e| AtomicU64::new(e.taken)).collect();
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)).min(files.len());
+    // Read: the file's date, or 0 when it has none.
+    let read: Vec<AtomicU64> = files.iter().map(|_| AtomicU64::new(u64::MAX)).collect();
+    let unknown: Vec<usize> = (0..files.len()).filter(|&i| known[i].is_none()).collect();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)).min(unknown.len());
     std::thread::scope(|s| {
         for _ in 0..threads {
             s.spawn(|| {
                 // libheif and the `image` crate read the headers; Windows'
                 // codecs are not asked.
                 loop {
-                    let i = next.fetch_add(1, Relaxed);
-                    if i >= files.len() || cancel.load(Relaxed) {
+                    let k = next.fetch_add(1, Relaxed);
+                    if k >= unknown.len() || cancel.load(Relaxed) {
                         break;
                     }
-                    if let Some(t) = crate::info::taken(&files[i].path) {
+                    let i = unknown[k];
+                    let t = crate::info::taken(&files[i].path);
+                    read[i].store(t.unwrap_or(0), Relaxed);
+                    if let Some(t) = t {
                         taken[i].store(t, Relaxed);
                     }
                 }
             });
         }
     });
-    for (e, t) in files.iter_mut().zip(taken) {
-        e.taken = t.into_inner();
+    for (i, e) in files.iter_mut().enumerate() {
+        match (known[i], read[i].load(Relaxed)) {
+            (Some(Some(t)), _) => e.taken = t,
+            (Some(None), _) => {}
+            // Not read (cancelled): not remembered.
+            (None, u64::MAX) => {}
+            (None, t) => {
+                e.taken = taken[i].load(Relaxed);
+                cache.insert(key(e), (e.modified, e.size, (t != 0).then_some(t)));
+            }
+        }
     }
 }
 
@@ -231,6 +268,18 @@ pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Ve
 /// [`list`], and with `folders` the sub-folders of `dir` that Explorer
 /// shows, in its name order (the gallery's folder cells).
 pub fn list_with_folders(dir: &Path, keep: Option<&Path>, order: Order, folders: bool) -> std::io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    list_with_folders_until(dir, keep, order, folders, &AtomicBool::new(false))
+}
+
+/// [`list_with_folders`], stopping (with `Interrupted`) when `cancel` is
+/// set while the dates taken are read.
+fn list_with_folders_until(
+    dir: &Path,
+    keep: Option<&Path>,
+    order: Order,
+    folders: bool,
+    cancel: &AtomicBool,
+) -> std::io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let (mut files, subfolders) = read(dir, folders)?;
     if let Some(keep) = keep
         && !files.iter().any(|e| same_path(&e.path, keep))
@@ -238,7 +287,10 @@ pub fn list_with_folders(dir: &Path, keep: Option<&Path>, order: Order, folders:
     {
         files.push(Entry::new(keep.to_path_buf(), std::fs::metadata(keep).ok().as_ref()));
     }
-    read_taken(&mut files, order, &AtomicBool::new(false));
+    read_taken(&mut files, order, cancel);
+    if cancel.load(Relaxed) {
+        return Err(std::io::ErrorKind::Interrupted.into());
+    }
     files.sort_by(|a, b| compare(a, b, order));
     Ok((files.into_iter().map(|e| e.path).collect(), subfolders))
 }
@@ -350,8 +402,8 @@ fn sorted(mut files: Vec<Entry>, order: Order, by_folder: bool) -> Vec<PathBuf> 
 
 /// The images of `archive` (see `archive::list`) in `order`; `by_folder`:
 /// its folders one after another, as [`list_files`] does. Named by their
-/// paths within it, so that a comic's chapters (`ch1.jpg`,
-/// `ch2.jpg`) stay apart in name order.
+/// paths within it, so that a comic's chapters (`ch1\001.jpg`,
+/// `ch2\001.jpg`) stay apart in name order.
 pub fn list_archive(archive: &Path, order: Order, by_folder: bool) -> std::io::Result<Vec<PathBuf>> {
     let files = crate::archive::list(archive)?
         .into_iter()
@@ -501,7 +553,7 @@ pub fn scan(dir: PathBuf, depth: Depth, keep: Option<PathBuf>, order: Order, ctx
     let folders = Arc::new(Mutex::new(Vec::new()));
     let out = folders.clone();
     let mut scan = spawn(ctx, move |found, cancel| match depth {
-        Depth::Folder => list_with_folders(&dir, keep.as_deref(), order, true).map(|(files, subfolders)| {
+        Depth::Folder => list_with_folders_until(&dir, keep.as_deref(), order, true, cancel).map(|(files, subfolders)| {
             *out.lock().unwrap_or_else(|e| e.into_inner()) = subfolders;
             files
         }),
@@ -743,12 +795,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // A JPEG's start with an EXIF whose first IFD holds DateTime.
         let jpeg = |date: &str| {
-            let mut tiff = b"II*     2           ".to_vec();
+            let mut tiff = b"II*\0\x08\0\0\0\x01\0\x32\x01\x02\0\x14\0\0\0\x1a\0\0\0\0\0\0\0".to_vec();
             tiff.extend(date.as_bytes());
             tiff.push(0);
             let mut out = vec![0xff, 0xd8, 0xff, 0xe1];
             out.extend(((tiff.len() + 8) as u16).to_be_bytes());
-            out.extend(b"Exif  ");
+            out.extend(b"Exif\0\0");
             out.extend(tiff);
             out.extend([0xff, 0xd9]);
             out
@@ -767,6 +819,10 @@ mod tests {
         };
         assert_eq!(names(false), ["c.jpg", "a.jpg", "b.jpg"]);
         assert_eq!(names(true), ["b.jpg", "a.jpg", "c.jpg"]);
+        // The dates are cached by the file's date and size: a file written
+        // anew (another size) is read again.
+        std::fs::write(dir.join("b.jpg"), jpeg("2000:01:01 00:00:00")).unwrap();
+        assert_eq!(names(false), ["b.jpg", "c.jpg", "a.jpg"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

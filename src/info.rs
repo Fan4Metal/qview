@@ -111,7 +111,14 @@ fn metadata(path: &Path) -> (Option<Exif>, Option<Vec<u8>>) {
         return found_in(&bytes[..], || from_image(std::io::Cursor::new(&bytes[..])), || None);
     }
     let Ok(file) = File::open(path) else { return (None, None) };
-    let image = || from_image(std::io::BufReader::new(&file));
+    // `seek_read` moves the file's cursor on Windows, and the decoder
+    // guesses the format from wherever the cursor is.
+    let image = || {
+        use std::io::Seek;
+        let mut file = &file;
+        file.rewind().ok()?;
+        from_image(std::io::BufReader::new(file))
+    };
     found_in(&file, image, || crate::heif::metadata(path))
 }
 
@@ -328,7 +335,8 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
         nonempty(text)
     }
 
-    /// The first value of `e` as a whole number (BYTE, SHORT or LONG).
+    /// The first value of `e` as a whole number (BYTE, SHORT, LONG, or
+    /// IFD, the type TIFF-EP and DNG may give the sub-IFD pointers).
     fn number(&self, e: &Entry) -> Option<u32> {
         if e.count == 0 {
             return None;
@@ -336,7 +344,7 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
         match e.kind {
             1 | 7 => Some(e.field[0] as u32),
             3 => Some(self.u16(&e.field) as u32),
-            4 => Some(self.u32(&e.field)),
+            4 | 13 => Some(self.u32(&e.field)),
             _ => None,
         }
     }
@@ -678,6 +686,15 @@ mod tests {
         }
         let (exif, _) = found_in(&png[..], || from_image(std::io::Cursor::new(&png[..])), || None);
         assert_eq!(exif.unwrap().model.as_deref(), Some("Canon EOS R6"));
+        // From a file on disk too: the header is read first, and the
+        // decoder must start from the beginning.
+        let dir = std::env::temp_dir().join(format!("qview_info_png_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("camera.png");
+        std::fs::write(&path, &png).unwrap();
+        assert_eq!(metadata(&path).0.unwrap().model.as_deref(), Some("Canon EOS R6"));
+        assert!(taken(&path).is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `$env:QVIEW_INFO_FILE="<file>"; cargo test --release info_file -- --ignored --nocapture`:

@@ -9,10 +9,11 @@
 //! and opened from there, so that it can be cropped and saved elsewhere
 //! like any file.
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use clipboard_win::{formats, raw};
-use image::{DynamicImage, ImageFormat, RgbaImage};
+use image::{DynamicImage, ImageFormat, ImageReader, RgbaImage};
 
 use crate::edit;
 
@@ -24,6 +25,10 @@ const PNG_NAMES: [&str; 2] = ["PNG", "image/png"];
 /// may decode it, so the calling thread has COM initialised.
 pub fn copy_image(job: &edit::Job) -> Result<(), String> {
     let img = edit::render(job)?;
+    // A DIB's size is a u32.
+    if (img.width() as u64) * (img.height() as u64) * 4 > u32::MAX as u64 {
+        return Err(tr!("the image is too large for the clipboard", "изображение слишком велико для буфера обмена").into());
+    }
     let rgba = img.to_rgba8();
     let transparent = img.color().has_alpha() && rgba.pixels().any(|p| p.0[3] < 255);
     let png = if transparent { Some(fast_png(&img)?) } else { None };
@@ -187,7 +192,12 @@ fn from_dib(dib: &[u8]) -> Result<DynamicImage, String> {
     bmp.extend([0; 4]);
     bmp.extend((offset as u32).to_le_bytes());
     bmp.extend(dib);
-    image::load_from_memory_with_format(&bmp, ImageFormat::Bmp).map_err(|e| format!("{}: {e}", bad()))
+    // As large as any file qview opens, not the decoder's default.
+    let mut reader = ImageReader::with_format(Cursor::new(&bmp), ImageFormat::Bmp);
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(crate::loader::MAX_ALLOC);
+    reader.limits(limits);
+    reader.decode().map_err(|e| format!("{}: {e}", bad()))
 }
 
 #[cfg(test)]

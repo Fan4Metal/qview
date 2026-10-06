@@ -366,9 +366,11 @@ impl App {
         }
         // Auto: the folder's proportions once found, the last ones until
         // then.
+        // No images (sub-folders only): nothing to find out, and 1:1
+        // must not be remembered for the folder.
         let aspect = match (self.thumb_aspect, &listing) {
             (Some(a), _) => a,
-            (None, Some(listing)) if self.scan.is_none() => {
+            (None, Some(listing)) if self.scan.is_none() && n > 0 => {
                 gallery.auto_aspect(listing, &self.files).unwrap_or(gallery.shown_aspect)
             }
             (None, _) => gallery.shown_aspect,
@@ -402,7 +404,7 @@ impl App {
         }
         let mut offset = None;
         // The cell with the cursor: a sub-folder's, or the current image's.
-        let target = self.folder_focus.filter(|&k| k < self.folders.len()).map(Cell::Folder).or(self.index.map(Cell::Image));
+        let target = self.folder_focus.filter(|&k| k < self.folders.len() && !folded).map(Cell::Folder).or(self.index.map(Cell::Image));
         if let (Some(scroll), Some(c)) = (gallery.scroll, target) {
             let y = layout.pos(c).y;
             // The header above the first row of a folder comes into view
@@ -744,7 +746,7 @@ impl App {
 
     /// Right click on a sub-folder's cell, which then has the cursor.
     fn folder_menu(&mut self, ui: &mut Ui) {
-        self.item(ui, tr!("Open", "Открыть").into(), "Enter", Cmd::Gallery, true);
+        self.item(ui, tr!("Open", "Открыть").into(), "Enter", Cmd::OpenFolder, true);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
         if let Some(dir) = self.focused_folder() {
             ui.separator();
@@ -762,6 +764,8 @@ impl App {
         {
             let before = if ctx.input(|i| i.modifiers.ctrl) { self.chosen_or_current() } else { Default::default() };
             self.selection.band = Some(crate::selection::Band { start: to_grid(origin), before });
+            // The images chosen are the file commands' again.
+            self.folder_focus = None;
         }
         let Some(band) = &self.selection.band else { return };
         if !background.dragged() {
