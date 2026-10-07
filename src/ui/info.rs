@@ -110,6 +110,9 @@ impl App {
             let animated = if m.animated { tr!(", animated", ", анимация") } else { "" };
             image.rows.push((tr!("Format", "Формат"), tr!(format!("{}, {}-bit{animated}", m.format, m.bits), format!("{}, {} бит{animated}", m.format, m.bits))));
         }
+        if let Some(o) = x.orientation.filter(|&o| o != 1) {
+            image.rows.push((tr!("Orientation", "Ориентация"), orientation(o)));
+        }
         let profile = info.profile.clone().or_else(|| (x.color_space == Some(1)).then(|| "sRGB".to_string()));
         if let Some(profile) = profile {
             image.rows.push((tr!("Colour profile", "Цветовой профиль"), profile));
@@ -146,12 +149,31 @@ impl App {
             let fired = if flash & 1 != 0 { tr!("Fired", "Сработала") } else { tr!("Did not fire", "Не сработала") };
             shot.rows.push((tr!("Flash", "Вспышка"), fired.into()));
         }
+        if let Some(p) = x.program {
+            shot.rows.push((tr!("Exposure program", "Режим съёмки"), program(p).into()));
+        }
+        if let Some(m) = x.metering {
+            shot.rows.push((tr!("Metering", "Замер экспозиции"), metering(m).into()));
+        }
+        if let Some(w) = x.white_balance {
+            let wb = if w == 0 { tr!("Auto", "Автоматический") } else { tr!("Manual", "Ручной") };
+            shot.rows.push((tr!("White balance", "Баланс белого"), wb.into()));
+        }
+        if let Some(d) = x.distance {
+            shot.rows.push((tr!("Subject distance", "Расстояние до объекта"), format::distance(d)));
+        }
+        if let Some(z) = x.zoom {
+            shot.rows.push((tr!("Digital zoom", "Цифровой зум"), format::ratio(z)));
+        }
         if let Some(software) = &x.software {
             shot.rows.push((tr!("Software", "Программа"), software.clone()));
         }
         sections.push(shot);
 
         let mut about = Section { title: tr!("Description", "Описание"), rows: Vec::new() };
+        if let Some(r) = x.rating.filter(|&r| r > 0) {
+            about.rows.push((tr!("Rating", "Оценка"), format::stars(r)));
+        }
         for (label, value) in [
             (tr!("Title", "Название"), &x.title),
             (tr!("Authors", "Авторы"), &x.artist),
@@ -172,10 +194,54 @@ impl App {
             if let Some(alt) = gps.altitude {
                 place.rows.push((tr!("Altitude", "Высота"), format::metres(alt)));
             }
+            if let Some((degrees, magnetic)) = gps.direction {
+                place.rows.push((tr!("Direction", "Направление"), format::direction(degrees, magnetic)));
+            }
             sections.push(place);
         }
         sections.retain(|s| !s.rows.is_empty());
         sections
+    }
+}
+
+/// What the EXIF orientation `o` (2 to 8) does to the stored pixels to
+/// show them.
+fn orientation(o: u32) -> String {
+    let what = match o {
+        2 => tr!("mirrored", "отражение"),
+        3 => tr!("turned 180°", "поворот на 180°"),
+        4 => tr!("flipped upside down", "отражение сверху вниз"),
+        5 => tr!("mirrored, turned 90° anticlockwise", "отражение и поворот на 90° против часовой"),
+        6 => tr!("turned 90° clockwise", "поворот на 90° по часовой"),
+        7 => tr!("mirrored, turned 90° clockwise", "отражение и поворот на 90° по часовой"),
+        _ => tr!("turned 90° anticlockwise", "поворот на 90° против часовой"),
+    };
+    format!("{o}: {what}")
+}
+
+/// The EXIF ExposureProgram `p` (1 to 8).
+fn program(p: u32) -> &'static str {
+    match p {
+        1 => tr!("Manual", "Ручной"),
+        2 => tr!("Program", "Программный"),
+        3 => tr!("Aperture priority", "Приоритет диафрагмы"),
+        4 => tr!("Shutter priority", "Приоритет выдержки"),
+        5 => tr!("Creative (depth of field)", "Творческий (глубина резкости)"),
+        6 => tr!("Action (fast shutter)", "Спорт (короткая выдержка)"),
+        7 => tr!("Portrait", "Портрет"),
+        _ => tr!("Landscape", "Пейзаж"),
+    }
+}
+
+/// The EXIF MeteringMode `m` (1 to 6).
+fn metering(m: u32) -> &'static str {
+    match m {
+        1 => tr!("Average", "Средний по кадру"),
+        2 => tr!("Centre-weighted", "Центровзвешенный"),
+        3 => tr!("Spot", "Точечный"),
+        4 => tr!("Multi-spot", "Многоточечный"),
+        5 => tr!("Pattern (matrix)", "Оценочный (матричный)"),
+        _ => tr!("Partial", "Частичный"),
     }
 }
 

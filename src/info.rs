@@ -31,6 +31,9 @@ pub struct Gps {
     pub latitude: f64,
     pub longitude: f64,
     pub altitude: Option<f64>,
+    /// Where the camera looked, degrees clockwise from north, and whether
+    /// from magnetic north rather than true north.
+    pub direction: Option<(f64, bool)>,
 }
 
 /// The EXIF fields the panel shows, those the file has.
@@ -65,6 +68,22 @@ pub struct Exif {
     /// 1 for sRGB.
     pub color_space: Option<u32>,
     pub gps: Option<Gps>,
+    /// The EXIF orientation, 1 to 8 (1: as stored).
+    pub orientation: Option<u32>,
+    /// Windows' rating, 1 to 5 stars (0: none).
+    pub rating: Option<u32>,
+    /// ExposureProgram: 1 manual, 2 program, 3 aperture priority, 4
+    /// shutter priority, 5 creative, 6 action, 7 portrait, 8 landscape.
+    pub program: Option<u32>,
+    /// MeteringMode: 1 average, 2 centre-weighted, 3 spot, 4 multi-spot,
+    /// 5 pattern, 6 partial.
+    pub metering: Option<u32>,
+    /// WhiteBalance: 0 auto, 1 manual.
+    pub white_balance: Option<u32>,
+    /// SubjectDistance in metres; very large for infinity.
+    pub distance: Option<f64>,
+    /// DigitalZoomRatio, when above 1.
+    pub zoom: Option<f64>,
 }
 
 /// What the panel shows of a file besides what the decoder found.
@@ -387,6 +406,8 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
                 0x0131 => x.software = self.text(&e),
                 0x0132 => modified = self.text(&e).as_deref().and_then(parse_date),
                 0x013b => set(&mut x.artist, self.text(&e)),
+                0x0112 => x.orientation = self.number(&e).filter(|o| (1..=8).contains(o)),
+                0x4746 => x.rating = self.number(&e).map(|r| r.min(5)),
                 0x8298 => x.copyright = self.text(&e),
                 0x8769 => exif_ifd = self.number(&e),
                 0x8825 => gps_ifd = self.number(&e),
@@ -403,6 +424,11 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
                 0x829a => x.exposure = self.rational(&e, 0),
                 0x829d => x.f_number = self.rational(&e, 0),
                 0x8827 => x.iso = self.number(&e),
+                0x8822 => x.program = self.number(&e).filter(|p| (1..=8).contains(p)),
+                0x9206 => x.distance = self.rational(&e, 0).filter(|&d| d > 0.0),
+                0x9207 => x.metering = self.number(&e).filter(|m| (1..=6).contains(m)),
+                0xa403 => x.white_balance = self.number(&e).filter(|&w| w <= 1),
+                0xa404 => x.zoom = self.rational(&e, 0).filter(|&z| z > 1.0),
                 0x9003 => x.taken = self.text(&e).as_deref().and_then(parse_date),
                 0x9204 => x.bias = self.rational(&e, 0),
                 0x9209 => x.flash = self.number(&e),
@@ -424,8 +450,8 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
     }
 
     fn gps(&self, offset: u32) -> Option<Gps> {
-        let (mut lat, mut lon, mut alt) = (None, None, None);
-        let (mut south, mut west, mut below) = (false, false, false);
+        let (mut lat, mut lon, mut alt, mut direction) = (None, None, None, None);
+        let (mut south, mut west, mut below, mut magnetic) = (false, false, false, false);
         for e in self.ifd(offset) {
             match e.tag {
                 1 => south = self.text(&e).is_some_and(|r| r.eq_ignore_ascii_case("S")),
@@ -434,6 +460,8 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
                 4 => lon = self.degrees(&e),
                 5 => below = self.number(&e) == Some(1),
                 6 => alt = self.rational(&e, 0),
+                0x10 => magnetic = self.text(&e).is_some_and(|r| r.eq_ignore_ascii_case("M")),
+                0x11 => direction = self.rational(&e, 0).filter(|d| (0.0..=360.0).contains(d)),
                 _ => {}
             }
         }
@@ -443,7 +471,12 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
             return None;
         }
         let sign = |negative: bool, v: f64| if negative { -v } else { v };
-        Some(Gps { latitude: sign(south, lat), longitude: sign(west, lon), altitude: alt.map(|a| sign(below, a)) })
+        Some(Gps {
+            latitude: sign(south, lat),
+            longitude: sign(west, lon),
+            altitude: alt.map(|a| sign(below, a)),
+            direction: direction.map(|d| (d, magnetic)),
+        })
     }
 
     /// The ICC profile of the first IFD (InterColorProfile).
@@ -592,6 +625,8 @@ mod tests {
                 (0x8769, 4, vec![0; 4]),
                 (0x8825, 4, vec![0; 4]),
                 (0x9c9b, 1, "Закат\0".encode_utf16().flat_map(u16::to_le_bytes).collect()),
+                (0x0112, 3, short(6)),
+                (0x4746, 3, short(4)),
             ],
             vec![
                 (0x829a, 5, b.rational(1, 250)),
@@ -604,6 +639,11 @@ mod tests {
                 (0xa001, 3, short(1)),
                 (0xa405, 3, short(80)),
                 (0xa434, 2, Builder::ascii("RF50mm F1.8 STM")),
+                (0x8822, 3, short(3)),
+                (0x9206, 5, b.rational(250, 100)),
+                (0x9207, 3, short(5)),
+                (0xa403, 3, short(0)),
+                (0xa404, 5, b.rational(0, 1)),
             ],
             vec![
                 (1, 2, Builder::ascii("N")),
@@ -612,6 +652,8 @@ mod tests {
                 (4, 5, [b.rational(37, 1), b.rational(37, 1), b.rational(0, 1)].concat()),
                 (5, 1, vec![1]),
                 (6, 5, b.rational(15, 1)),
+                (0x10, 2, Builder::ascii("M")),
+                (0x11, 5, b.rational(12345, 100)),
             ],
         ])
     }
@@ -640,6 +682,10 @@ mod tests {
             assert!((gps.latitude - (55.0 + 45.0 / 60.0 + 20.88 / 3600.0)).abs() < 1e-9);
             assert!((gps.longitude + (37.0 + 37.0 / 60.0)).abs() < 1e-9);
             assert_eq!(gps.altitude, Some(-15.0));
+            assert_eq!(gps.direction, Some((123.45, true)));
+            assert_eq!((x.orientation, x.rating, x.program, x.metering), (Some(6), Some(4), Some(3), Some(5)));
+            // A zoom ratio of 0 is no digital zoom.
+            assert_eq!((x.white_balance, x.distance, x.zoom), (Some(0), Some(2.5), None));
         }
     }
 

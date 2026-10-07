@@ -176,6 +176,54 @@ pub fn metres(m: f64) -> String {
     tr!(format!("{sign}{v} m"), format!("{sign}{v} м"))
 }
 
+/// A subject distance: `2.5 m`, `12 m`, infinity (EXIF writes
+/// 0xFFFFFFFF/1 for it).
+pub fn distance(m: f64) -> String {
+    distance_in(lang(), m)
+}
+
+pub fn distance_in(lang: Lang, m: f64) -> String {
+    if m >= 1e6 {
+        return match lang {
+            Lang::En => "infinity".into(),
+            Lang::Ru => "бесконечность".into(),
+        };
+    }
+    let v = decimal_in(lang, m, if m < 10.0 { 2 } else { 1 });
+    match lang {
+        Lang::En => format!("{v} m"),
+        Lang::Ru => format!("{v} м"),
+    }
+}
+
+/// Where a camera looked: `123° SE`, from magnetic north `123° SE
+/// (magnetic)`; in Russian `123° ЮВ (магнитное)`.
+pub fn direction(degrees: f64, magnetic: bool) -> String {
+    direction_in(lang(), degrees, magnetic)
+}
+
+pub fn direction_in(lang: Lang, degrees: f64, magnetic: bool) -> String {
+    let d = degrees.rem_euclid(360.0);
+    let point = ((d / 45.0).round() as usize) % 8;
+    let (points, note) = match lang {
+        Lang::En => (["N", "NE", "E", "SE", "S", "SW", "W", "NW"], " (magnetic)"),
+        Lang::Ru => (["С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ"], " (магнитное)"),
+    };
+    let note = if magnetic { note } else { "" };
+    format!("{}° {}{note}", d.round() as u32 % 360, points[point])
+}
+
+/// A rating of 1 to 5 as stars, `★★★★☆`.
+pub fn stars(rating: u32) -> String {
+    let rating = rating.min(5) as usize;
+    format!("{}{}", "★".repeat(rating), "☆".repeat(5 - rating))
+}
+
+/// A zoom ratio: `2×`, `1.5×`.
+pub fn ratio(v: f64) -> String {
+    format!("{}×", decimal_in(lang(), v, 1))
+}
+
 /// A share of 0 to 1 as a percentage: `0.42%`, `12.5%`, `0%`, `<0.01%`;
 /// in Russian `0,42 %`.
 pub fn percent(share: f64) -> String {
@@ -211,6 +259,18 @@ pub fn camera(make: Option<&str>, model: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shooting_values() {
+        assert_eq!(distance_in(Lang::En, 2.5), "2.5 m");
+        assert_eq!(distance_in(Lang::Ru, 12.34), "12,3 м");
+        assert_eq!(distance_in(Lang::En, 4294967295.0), "infinity");
+        assert_eq!(direction_in(Lang::En, 123.45, false), "123° SE");
+        assert_eq!(direction_in(Lang::Ru, 359.8, true), "0° С (магнитное)");
+        assert_eq!(direction_in(Lang::En, 337.4, false), "337° NW");
+        assert_eq!(stars(4), "★★★★☆");
+        assert_eq!(stars(9), "★★★★★");
+    }
 
     #[test]
     fn percentages() {
