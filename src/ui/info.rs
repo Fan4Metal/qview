@@ -39,6 +39,9 @@ impl App {
         let histogram = if self.show_histogram { self.current_histogram() } else { None };
         let mut open = self.show_histogram;
         let mut channels = self.histogram_channels;
+        let mut colour_open = self.show_colour;
+        let colour = self.colour_state();
+        let marks = self.picked.map(|p| p.rgba);
         let panel = egui::Panel::right("info")
             .resizable(true)
             .default_size(self.info_width)
@@ -49,7 +52,8 @@ impl App {
                     if sections.is_empty() {
                         ui.label(RichText::new(tr!("No image", "Нет изображения")).color(TEXT_WEAK));
                     } else {
-                        histogram_section(ui, &mut open, &mut channels, histogram.as_ref().map(|h| h.as_deref()));
+                        histogram_section(ui, &mut open, &mut channels, histogram.as_ref().map(|h| h.as_deref()), marks);
+                        colour_section(ui, &mut colour_open, colour);
                     }
                     for section in &sections {
                         draw_section(ui, section);
@@ -69,10 +73,27 @@ impl App {
             });
         self.info_width = panel.response.rect.width().round();
         self.histogram_channels = channels;
+        if colour_open != self.show_colour {
+            // Reading starts (or what was read goes) in the next frame.
+            self.show_colour = colour_open;
+            root_ui.ctx().request_repaint();
+        }
         if open != self.show_histogram {
             // Counting starts (or stops) in the next frame.
             self.show_histogram = open;
             root_ui.ctx().request_repaint();
+        }
+    }
+
+    /// What the Colour section shows.
+    fn colour_state(&self) -> ColourState {
+        let Some(slot) = self.colour_pixels.as_ref().filter(|c| Some(&c.path) == self.current.as_ref()) else {
+            return ColourState::Reading;
+        };
+        match (&slot.image, slot.reading()) {
+            (_, true) => ColourState::Reading,
+            (None, false) => ColourState::Unavailable,
+            (Some(_), false) => self.picked.map_or(ColourState::Away, ColourState::Picked),
         }
     }
 
@@ -299,10 +320,73 @@ fn draw_section(ui: &mut Ui, section: &Section) {
     ui.add_space(6.0);
 }
 
+/// What the Colour section has to show.
+enum ColourState {
+    /// The image is being read.
+    Reading,
+    /// It could not be.
+    Unavailable,
+    /// The pointer is not over the image.
+    Away,
+    Picked(crate::app::Picked),
+}
+
+/// The Colour section: the pixel under the pointer, its colour as a
+/// swatch, in hex, as RGB and its alpha when not opaque, and where it is.
+fn colour_section(ui: &mut Ui, open: &mut bool, state: ColourState) {
+    ui.add_space(4.0);
+    if fold_heading(ui, tr!("Colour", "Цвет"), *open).clicked() {
+        *open = !*open;
+    }
+    if !*open {
+        ui.add_space(6.0);
+        return;
+    }
+    ui.add_space(4.0);
+    let picked = match state {
+        ColourState::Picked(p) => p,
+        other => {
+            let text = match other {
+                ColourState::Reading => tr!("Reading…", "Чтение…"),
+                ColourState::Unavailable => tr!("Not available", "Недоступен"),
+                _ => tr!("Point at the image", "Наведите указатель на изображение"),
+            };
+            ui.label(RichText::new(text).color(TEXT_WEAK));
+            ui.add_space(6.0);
+            return;
+        }
+    };
+    let [r, g, b, a] = picked.rgba;
+    let (swatch, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
+    let painter = ui.painter();
+    if a < 255 {
+        // Over black and white halves, so that its opacity shows.
+        let middle = swatch.center().x;
+        painter.rect_filled(Rect::from_min_max(swatch.min, pos2(middle, swatch.max.y)), 2.0, Color32::BLACK);
+        painter.rect_filled(Rect::from_min_max(pos2(middle, swatch.min.y), swatch.max), 2.0, Color32::WHITE);
+    }
+    painter.rect_filled(swatch, 2.0, Color32::from_rgba_unmultiplied(r, g, b, a));
+    painter.rect_stroke(swatch, 2.0, Stroke::new(1.0, TEXT_WEAK), egui::StrokeKind::Inside);
+    ui.add_space(4.0);
+    let mut rows = vec![("HEX", picked.hex()), ("RGB", picked.rgb())];
+    if a < 255 {
+        rows.push((tr!("Alpha", "Альфа"), format!("{a} ({})", format::percent(a as f64 / 255.0))));
+    }
+    rows.push((tr!("Position", "Позиция"), format!("x {}, y {}", picked.x, picked.y)));
+    draw_rows(ui, &rows);
+    ui.add_space(6.0);
+}
+
 /// The Histogram section: a heading with a triangle that opens and folds
 /// it, and when open the graph of `histogram` (None: not available, Some(None):
 /// being counted) of `channels`, the buttons that choose them, and its rows.
-fn histogram_section(ui: &mut Ui, open: &mut bool, channels: &mut Channels, histogram: Option<Option<&Histogram>>) {
+fn histogram_section(
+    ui: &mut Ui,
+    open: &mut bool,
+    channels: &mut Channels,
+    histogram: Option<Option<&Histogram>>,
+    marks: Option<[u8; 4]>,
+) {
     ui.add_space(4.0);
     if fold_heading(ui, tr!("Histogram", "Гистограмма"), *open).clicked() {
         *open = !*open;
@@ -330,6 +414,15 @@ fn histogram_section(ui: &mut Ui, open: &mut bool, channels: &mut Channels, hist
         return;
     };
     painter.extend(graph(h, rect, *channels));
+    // The levels of the pixel under the pointer (the Colour section).
+    if let Some([r, g, b, _]) = marks {
+        let width = rect.width() / 256.0;
+        for &c in channels.indices() {
+            let level = [r, g, b, crate::histogram::luma(r, g, b)][c];
+            let x = rect.left() + (level as f32 + 0.5) * width;
+            painter.vline(x, rect.y_range(), Stroke::new(1.0, COLOURS[c].gamma_multiply(0.8)));
+        }
+    }
     if let Some(pos) = response.hover_pos() {
         let width = rect.width() / 256.0;
         let level = (((pos.x - rect.left()) / width).max(0.0) as usize).min(255);

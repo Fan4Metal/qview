@@ -100,6 +100,7 @@ const FOLDERS_KEY: &str = "folders_folded";
 const INFO_WIDTH_KEY: &str = "info_width";
 const HISTOGRAM_KEY: &str = "info_histogram";
 const HISTOGRAM_CHANNELS_KEY: &str = "info_histogram_channels";
+const COLOUR_KEY: &str = "info_colour";
 const SLIDESHOW_SECONDS_KEY: &str = "slideshow_seconds";
 const SLIDESHOW_LOOP_KEY: &str = "slideshow_loop";
 const THUMB_FILL_KEY: &str = "thumb_fill";
@@ -362,6 +363,16 @@ pub struct App {
     pub show_histogram: bool,
     /// The channels its graph shows (persisted).
     pub histogram_channels: crate::histogram::Channels,
+    /// The panel's Colour section is open (persisted): only then is the
+    /// current image kept in memory (`update_colour`).
+    pub show_colour: bool,
+    /// The current image's pixels for the Colour section, read again from
+    /// its file on a thread.
+    pub colour_pixels: Option<PixelSlot>,
+    /// The pixel under the pointer, found while the image area is drawn.
+    pub picked: Option<Picked>,
+    /// The pixel the image's context menu was opened on.
+    pub menu_picked: Option<Picked>,
     /// The current image's histogram counted from the file read again,
     /// when it was decoded before the section was opened.
     pub histogram: Option<HistogramSlot>,
@@ -501,6 +512,44 @@ pub struct HistogramSlot {
     /// None while it is counted, or when the file could not be read.
     pub histogram: Option<Arc<crate::histogram::Histogram>>,
     rx: Option<mpsc::Receiver<Option<crate::histogram::Histogram>>>,
+}
+
+/// The decoded pixels of one image, upright, at full size (see
+/// `App::update_colour`).
+pub struct PixelSlot {
+    pub path: PathBuf,
+    /// None while it is read, or when it could not be.
+    pub image: Option<Arc<image::DynamicImage>>,
+    rx: Option<mpsc::Receiver<Option<image::DynamicImage>>>,
+}
+
+impl PixelSlot {
+    pub fn reading(&self) -> bool {
+        self.rx.is_some()
+    }
+}
+
+/// A pixel of the image on screen: where it is on the image as shown
+/// (turned and mirrored as the view is), and its colour, straight RGBA.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Picked {
+    pub x: u32,
+    pub y: u32,
+    pub rgba: [u8; 4],
+}
+
+impl Picked {
+    /// `#3A6EA5`.
+    pub fn hex(&self) -> String {
+        let [r, g, b, _] = self.rgba;
+        format!("#{r:02X}{g:02X}{b:02X}")
+    }
+
+    /// `58, 110, 165`.
+    pub fn rgb(&self) -> String {
+        let [r, g, b, _] = self.rgba;
+        format!("{r}, {g}, {b}")
+    }
 }
 
 /// What a thread handing an image to Windows did.
@@ -691,6 +740,10 @@ impl App {
             info: None,
             show_histogram: cc.storage.and_then(|s| s.get_string(HISTOGRAM_KEY)).as_deref() == Some("true"),
             histogram: None,
+            show_colour: cc.storage.and_then(|s| s.get_string(COLOUR_KEY)).as_deref() == Some("true"),
+            colour_pixels: None,
+            picked: None,
+            menu_picked: None,
             histogram_channels: cc
                 .storage
                 .and_then(|s| s.get_string(HISTOGRAM_CHANNELS_KEY))
@@ -1308,6 +1361,9 @@ impl App {
         if self.histogram.as_ref().is_some_and(|h| paths.contains(&h.path)) {
             self.histogram = None;
         }
+        if self.colour_pixels.as_ref().is_some_and(|c| paths.contains(&c.path)) {
+            self.colour_pixels = None;
+        }
     }
 
     /// Read the current image's information for the panel, on a thread,
@@ -1377,6 +1433,59 @@ impl App {
             });
             self.histogram = Some(HistogramSlot { path, histogram: None, rx: Some(rx) });
         }
+    }
+
+    /// While the panel shows its Colour section (`shown`), the current
+    /// image is read again on a thread and kept decoded at full size, so
+    /// that the pixel under the pointer is found at once; one reading at a
+    /// time, as `update_info` reads. Nothing is read or kept otherwise.
+    pub(crate) fn update_colour(&mut self, ctx: &egui::Context, shown: bool) {
+        let Some(path) = self.current.clone().filter(|_| shown && self.show_colour) else {
+            self.colour_pixels = None;
+            self.picked = None;
+            return;
+        };
+        if self.gallery_open {
+            // No image area: no pointer over the image.
+            self.picked = None;
+        }
+        if let Some(slot) = &mut self.colour_pixels
+            && let Some(Ok(image)) = slot.rx.as_ref().map(mpsc::Receiver::try_recv)
+        {
+            slot.image = image.map(Arc::new);
+            slot.rx = None;
+        }
+        let reading = self.colour_pixels.as_ref().is_some_and(|c| c.rx.is_some());
+        if !reading && self.colour_pixels.as_ref().is_none_or(|c| c.path != path) {
+            // The previous image goes now, not after the next is read.
+            self.colour_pixels = None;
+            let (tx, rx) = mpsc::channel();
+            let (ctx, file) = (ctx.clone(), path.clone());
+            std::thread::spawn(move || {
+                let _com = win::com_init();
+                let start = Instant::now();
+                let image = crate::loader::read(&file).ok().map(|(img, _)| img);
+                log::debug!("pixels of {} read again in {:.1} ms", file.display(), start.elapsed().as_secs_f64() * 1e3);
+                if tx.send(image).is_ok() {
+                    ctx.request_repaint();
+                }
+            });
+            self.colour_pixels = Some(PixelSlot { path, image: None, rx: Some(rx) });
+        }
+    }
+
+    /// The pixel of the image on screen under `pointer`, the picture shown
+    /// at `place`; None without kept pixels of it, or off the image.
+    fn pick(&self, pointer: Option<egui::Pos2>, place: Rect, picture_path: &Path, size: Vec2) -> Option<Picked> {
+        let slot = self.colour_pixels.as_ref().filter(|c| c.path == picture_path)?;
+        let image = slot.image.as_ref()?;
+        let (uv, s) = view::image_point(pointer?, place, self.view.turns, self.view.flip)?;
+        let (w, h) = (image.width(), image.height());
+        let at = |v: f32, n: u32| ((v * n as f32) as u32).min(n.saturating_sub(1));
+        use image::GenericImageView;
+        let rgba = image.get_pixel(at(uv.x, w), at(uv.y, h)).0;
+        let shown = self.view.rotated(size);
+        Some(Picked { x: at(s.x, shown.x as u32), y: at(s.y, shown.y as u32), rgba })
     }
 
     /// The current image's histogram for the panel: None when there is
@@ -3564,6 +3673,15 @@ impl App {
             let place = self.view.place(size, rect, ppp);
             self.paint_checker(&painter, place, ppp);
             self.paint_picture(&painter, &picture, place, rect, ppp);
+            if let Some((path, _)) = &self.shown {
+                let picked = self.pick(response.hover_pos(), place, path, size);
+                if picked != self.picked {
+                    // The panel, drawn before the image area, shows it in
+                    // the next frame.
+                    self.picked = picked;
+                    ctx.request_repaint();
+                }
+            }
             if let Some(crop) = &mut self.crop {
                 crate::ui::crop::frame(crop, &response, &painter, place, self.view.rotated(size));
             } else if self.view.pannable(size, rect, ppp).contains(&true) && response.hovered() {
@@ -3625,6 +3743,9 @@ impl App {
                     self.view.zoom_step(zoom > 0, picture.size(), rect, ppp, anchor);
                 }
             }
+        }
+        if response.secondary_clicked() {
+            self.menu_picked = self.picked;
         }
         if !cropping {
             response.context_menu(|ui| self.context_menu(ui));
@@ -3802,6 +3923,7 @@ impl eframe::App for App {
         self.fullscreen = Self::is_fullscreen(&ctx);
         let fullscreen = self.fullscreen && !self.gallery_open;
         self.update_histogram(&ctx, self.show_info && !fullscreen);
+        self.update_colour(&ctx, self.show_info && !fullscreen);
         if !fullscreen {
             self.menu_bar(root_ui);
             if self.show_toolbar {
@@ -3872,6 +3994,7 @@ impl eframe::App for App {
         storage.set_string(FOLDERS_KEY, self.folders_folded.to_string());
         storage.set_string(INFO_WIDTH_KEY, self.info_width.round().to_string());
         storage.set_string(HISTOGRAM_KEY, self.show_histogram.to_string());
+        storage.set_string(COLOUR_KEY, self.show_colour.to_string());
         storage.set_string(HISTOGRAM_CHANNELS_KEY, self.histogram_channels.name().to_string());
         storage.set_string(SLIDESHOW_SECONDS_KEY, self.slideshow_seconds.to_string());
         storage.set_string(SLIDESHOW_LOOP_KEY, self.slideshow_loop.to_string());

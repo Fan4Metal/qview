@@ -289,6 +289,20 @@ pub fn corner_uv(i: usize, turns: u8, flip: bool) -> Pos2 {
     if flip { pos2(1.0 - uv.x, uv.y) } else { uv }
 }
 
+/// Where `point` falls on an image shown in `rect`, mirrored if `flip`,
+/// then turned `turns`: its place on the texture (0 to 1 both ways) and
+/// on the image as shown (0 to 1 across and down the screen); None
+/// outside it.
+pub fn image_point(point: Pos2, rect: Rect, turns: u8, flip: bool) -> Option<(Pos2, Pos2)> {
+    if !rect.contains(point) || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    let s = ((point - rect.min) / rect.size()).to_pos2();
+    let [lt, rt, rb, lb] = std::array::from_fn(|i| corner_uv(i, turns, flip).to_vec2());
+    let uv = lt * (1.0 - s.x) * (1.0 - s.y) + rt * s.x * (1.0 - s.y) + rb * s.x * s.y + lb * (1.0 - s.x) * s.y;
+    Some((uv.to_pos2(), s))
+}
+
 /// Squares of the checkerboard behind transparency, in points.
 const CHECKER_CELL: f32 = 8.0;
 
@@ -458,6 +472,46 @@ mod tests {
     }
 
     /// What a view shows at each corner, as the texture coordinates there.
+    /// Finding the pixel under the pointer as the Colour section does
+    /// (`App::pick`), per call, printed with `--nocapture`.
+    #[test]
+    #[ignore]
+    fn pick_timings() {
+        use image::GenericImageView;
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(5120, 2880, |x, y| image::Rgb([x as u8, y as u8, 7])));
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0));
+        let n = 1_000_000;
+        let t = std::time::Instant::now();
+        let mut sum = 0u64;
+        for i in 0..n {
+            let p = pos2((i % 1920) as f32, (i / 1920 % 1080) as f32);
+            if let Some((uv, _)) = image_point(p, rect, (i % 4) as u8, i % 2 == 0) {
+                let at = |v: f32, n: u32| ((v * n as f32) as u32).min(n - 1);
+                sum += image.get_pixel(at(uv.x, 5120), at(uv.y, 2880)).0[0] as u64;
+            }
+        }
+        let ns = t.elapsed().as_secs_f64() * 1e9 / n as f64;
+        println!("{ns:.1} ns per pixel picked ({sum})");
+    }
+
+    #[test]
+    fn points_on_the_image() {
+        let rect = Rect::from_min_size(pos2(10.0, 20.0), vec2(200.0, 100.0));
+        let near = |a: Pos2, b: Pos2| (a - b).length() < 1e-5;
+        // Near the top left corner of the screen.
+        let p = pos2(10.0 + 20.0, 20.0 + 10.0);
+        let (uv, s) = image_point(p, rect, 0, false).unwrap();
+        assert!(near(uv, pos2(0.1, 0.1)) && near(s, pos2(0.1, 0.1)));
+        // Turned once clockwise: the screen's top left shows the texture's
+        // bottom left.
+        let (uv, _) = image_point(p, rect, 1, false).unwrap();
+        assert!(near(uv, pos2(0.1, 0.9)), "{uv:?}");
+        // Mirrored: its top right.
+        let (uv, _) = image_point(p, rect, 0, true).unwrap();
+        assert!(near(uv, pos2(0.9, 0.1)), "{uv:?}");
+        assert!(image_point(pos2(5.0, 30.0), rect, 0, false).is_none());
+    }
+
     fn corners(v: &View) -> [Pos2; 4] {
         std::array::from_fn(|i| corner_uv(i, v.turns, v.flip))
     }

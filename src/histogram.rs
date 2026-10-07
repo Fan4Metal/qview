@@ -225,7 +225,7 @@ fn unpremultiply(c: u8, a: u8) -> u8 {
 
 /// Rec. 709 luma of 8-bit values, with integer weights that add up to 256,
 /// so white stays 255.
-fn luma(r: u8, g: u8, b: u8) -> u8 {
+pub fn luma(r: u8, g: u8, b: u8) -> u8 {
     ((54 * r as u32 + 183 * g as u32 + 19 * b as u32 + 128) >> 8) as u8
 }
 

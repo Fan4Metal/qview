@@ -484,6 +484,19 @@ impl App {
             ui.separator();
             self.animation_items(ui);
         }
+        if let Some(picked) = self.menu_picked {
+            ui.separator();
+            let hex = picked.hex();
+            if ui.button(tr!(format!("Copy Colour {hex}"), format!("Копировать цвет {hex}"))).clicked() {
+                ui.ctx().copy_text(hex);
+                ui.close();
+            }
+            let rgb = picked.rgb();
+            if ui.button(tr!(format!("Copy RGB {rgb}"), format!("Копировать RGB {rgb}"))).clicked() {
+                ui.ctx().copy_text(rgb);
+                ui.close();
+            }
+        }
         ui.separator();
         self.favorite_item(ui, e.file);
         if self.can_go_to_folder() {

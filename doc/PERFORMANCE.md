@@ -171,6 +171,19 @@ What the panel adds to opening an image:
 - **From the full image, not from a mip level.** A level of 512 pixels would be counted in well under a millisecond, but averaging smooths the peaks, those at 0 and 255 in particular, which are what a histogram is looked at for.
 - **One reading again at a time.** As for the panel's other data, while browsing fast with the section open only the image stopped at is read again; images decoded with the section open need no reading.
 
+## Colour under the pointer
+
+The information panel's Colour section shows the pixel under the pointer. Folded, it costs nothing. Open, the current image is read again from its file on a thread and kept decoded at full size; the pixel is then looked up on every pointer move.
+
+| | 14.7 MP photo (JPEG) | 14.7 MP gradient (PNG) | 49.8 MP JPEG |
+|---|---|---|---|
+| Reading again, on a thread, per image browsed to | 81 ms | 38 ms | 134 ms |
+| Kept in memory (RGB, 3 bytes a pixel) | ~44 MB | ~44 MB | ~149 MB |
+| Finding the pixel under the pointer | ~8 ns | ~8 ns | ~8 ns |
+
+- **The file is read again rather than the decoder's pixels kept.** The neighbours of the current image are decoded ahead, so by the time one becomes current its pixels have been uploaded and dropped; keeping them for every cached image would cost several times the memory. Reading again also gives the full image when the GPU shows it shrunk.
+- **One reading at a time.** While browsing fast with the section open, only the image stopped at is read; the image read before is dropped when the next reading starts.
+
 ## Measuring
 
 | What | How |
@@ -182,6 +195,7 @@ What the panel adds to opening an image:
 | HEIC through libheif and WIC | `$env:QVIEW_HEIF_FILE="<heic>"; cargo test --release heif_file -- --ignored --nocapture` |
 | Histogram counting of one file, and decoding with and without it | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release histogram_timings -- --ignored --nocapture` |
 | A histogram read again (the section opened on a decoded image) | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release read_again_timings -- --ignored --nocapture` |
+| Finding the pixel under the pointer | `cargo test --release pick_timings -- --ignored --nocapture` |
 | Building the histogram's graph | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release graph_timings -- --ignored --nocapture` |
 | Header reading of a folder, qview's against the `image` crate's | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release header_timings -- --ignored --nocapture` |
 
