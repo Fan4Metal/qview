@@ -98,6 +98,8 @@ const TREE_WIDTH_KEY: &str = "tree_width";
 const INFO_KEY: &str = "info_panel";
 const FOLDERS_KEY: &str = "folders_folded";
 const INFO_WIDTH_KEY: &str = "info_width";
+const SLIDESHOW_SECONDS_KEY: &str = "slideshow_seconds";
+const SLIDESHOW_LOOP_KEY: &str = "slideshow_loop";
 const THUMB_FILL_KEY: &str = "thumb_fill";
 const THUMB_ASPECT_KEY: &str = "thumb_aspect";
 /// `thumb_aspect` in the settings when it is Auto.
@@ -153,6 +155,11 @@ pub struct Rename {
 pub enum Undo {
     /// Files renamed, `(old, new)`.
     Rename(Vec<(PathBuf, PathBuf)>),
+    /// Files moved into a pinned folder (Alt+1 to Alt+9), `(old, new)`.
+    Move(Vec<(PathBuf, PathBuf)>),
+    /// Copies made in a pinned folder (Shift+Alt+1 to Shift+Alt+9), where
+    /// no file of the name was: undone by deleting them.
+    Copy(Vec<PathBuf>),
     /// Files saved (turned, cropped, converted): each one's contents
     /// before, None if saving made it.
     Save(Vec<(PathBuf, Option<edit::Before>)>),
@@ -288,16 +295,21 @@ pub struct App {
     pub history: History,
     /// The favourite images (S), listed in the gallery as `favorites::DIR`.
     pub favorites: Favorites,
-    /// The folders pinned to the favourites: under them in the tree, and
-    /// cells before their images in the gallery.
+    /// The folders pinned to Quick Access: under it in the tree, cells in
+    /// its grid (`favorites::PINNED_DIR`), and with a key (Alt+1 to Alt+9)
+    /// the folders the current image is moved or copied into.
     pub pinned: Favorites,
     /// Clearing the favourites waits for the user's yes.
     pub confirm_clear_favorites: bool,
+    /// Unpinning every folder from Quick Access waits for the user's yes.
+    pub confirm_unpin_all: bool,
     /// The favourites gone from their folders, looked for at start-up, so
     /// that their count is right before they are listed.
     favorites_gone: Option<mpsc::Receiver<Vec<PathBuf>>>,
-    /// The favourites being copied to a folder.
+    /// Files being copied to a folder by the shell.
     copying: Option<Copying>,
+    /// Files being moved to a folder on another drive by the shell.
+    moving: Option<Moving>,
     /// The listing as it came, before the gallery's filter: `files` is what
     /// of it passes `name_filter`.
     listed: Vec<PathBuf>,
@@ -328,6 +340,12 @@ pub struct App {
     /// The information panel (I) is shown, and its width in points.
     pub show_info: bool,
     pub info_width: f32,
+    /// The slideshow (Shift+F), while it runs.
+    pub slideshow: Option<Slideshow>,
+    /// Seconds each image stays, and whether it starts over after the
+    /// last one (View → Slideshow; persisted).
+    pub slideshow_seconds: u32,
+    pub slideshow_loop: bool,
     /// What it shows of the current image, read on a thread.
     pub info: Option<InfoSlot>,
     /// Copy Image or Paste under way on a thread (`clipboard`).
@@ -390,6 +408,27 @@ struct Copying {
     done: mpsc::Receiver<Result<(), String>>,
     to: PathBuf,
     count: usize,
+    /// The copies that would be new in `to` (Shift+Alt+1 to 9), for the
+    /// notice and Ctrl+Z; None: the favourites (Copy All to Folder).
+    fresh: Option<Vec<PathBuf>>,
+}
+
+/// Files being moved by the shell on a thread (see `win::move_to`).
+struct Moving {
+    done: mpsc::Receiver<Result<(), String>>,
+    /// Each file and where it goes.
+    pairs: Vec<(PathBuf, PathBuf)>,
+    /// Remember the move for Ctrl+Z (not when it is one).
+    undoable: bool,
+}
+
+/// The name of a folder for a message: a drive's root has none, so its
+/// path.
+pub fn folder_label(path: &Path) -> String {
+    match path.file_name() {
+        Some(n) => n.to_string_lossy().into_owned(),
+        None => path.display().to_string(),
+    }
 }
 
 /// The commands that change the files (or the favourites), refused for the
@@ -405,6 +444,8 @@ fn changes_files(cmd: Cmd) -> bool {
             | Cmd::EditWith(_)
             | Cmd::EditWithOther
             | Cmd::Favorite
+            | Cmd::MoveTo(_)
+            | Cmd::CopyTo(_)
     )
 }
 
@@ -413,6 +454,18 @@ enum Clipped {
     Copied(Result<(), String>),
     /// The file to open.
     Pasted(Result<PathBuf, String>),
+}
+
+/// A slideshow under way: the next image comes `slideshow_seconds` after
+/// the current one is on screen.
+pub struct Slideshow {
+    /// When the next image is due, once the image it was armed for is on
+    /// screen; None until then.
+    next_at: Option<Instant>,
+    /// The image the timer runs for: another current image (browsed to by
+    /// hand) starts the time over.
+    armed_for: Option<PathBuf>,
+    pub paused: bool,
 }
 
 /// The information panel's data of one file (`info::read`).
@@ -579,8 +632,10 @@ impl App {
             favorites: Favorites::load(eframe::storage_dir(crate::APP_ID).map(|d| d.join(favorites::FILE))),
             pinned: Favorites::load_pinned(eframe::storage_dir(crate::APP_ID).map(|d| d.join(favorites::PINNED_FILE))),
             confirm_clear_favorites: false,
+            confirm_unpin_all: false,
             favorites_gone: None,
             copying: None,
+            moving: None,
             listed: Vec::new(),
             name_filter: String::new(),
             filter_focused: false,
@@ -601,6 +656,9 @@ impl App {
             tree_width: number(TREE_WIDTH_KEY).unwrap_or(240.0).clamp(140.0, 640.0),
             show_info: cc.storage.and_then(|s| s.get_string(INFO_KEY)).as_deref() == Some("true"),
             info_width: number(INFO_WIDTH_KEY).unwrap_or(280.0).clamp(200.0, 600.0),
+            slideshow: None,
+            slideshow_seconds: number(SLIDESHOW_SECONDS_KEY).map_or(5, |s| (s as u32).clamp(1, 3600)),
+            slideshow_loop: cc.storage.and_then(|s| s.get_string(SLIDESHOW_LOOP_KEY)).as_deref() != Some("false"),
             info: None,
             thumb_fill: cc.storage.and_then(|s| s.get_string(THUMB_FILL_KEY)).as_deref() == Some("true"),
             thumb_aspect: match cc.storage.and_then(|s| s.get_string(THUMB_ASPECT_KEY)).as_deref() {
@@ -723,7 +781,7 @@ impl App {
 
     /// The folder above the one on screen, if there is one.
     pub fn parent_dir(&self) -> Option<PathBuf> {
-        self.dir.as_deref().filter(|d| !favorites::is_dir(d)).and_then(Path::parent).map(Path::to_path_buf)
+        self.dir.as_deref().filter(|d| !favorites::is_virtual(d)).and_then(Path::parent).map(Path::to_path_buf)
     }
 
     /// The current image's own folder can be gone to: the favourites or
@@ -780,12 +838,18 @@ impl App {
     /// (the scroll position, the Auto proportions): `dir`, and with its
     /// sub-folders `dir\*`, which no folder can be called.
     pub fn listing(&self) -> Option<PathBuf> {
-        self.dir.as_ref().map(|d| if self.deep && !favorites::is_dir(d) { d.join("*") } else { d.clone() })
+        self.dir.as_ref().map(|d| if self.deep && !favorites::is_virtual(d) { d.join("*") } else { d.clone() })
     }
 
     /// The favourites are listed in place of a folder.
     pub fn in_favorites(&self) -> bool {
         self.dir.as_deref().is_some_and(favorites::is_dir)
+    }
+
+    /// Quick Access, the pinned folders as cells, is shown in place of a
+    /// folder.
+    pub fn in_quick_access(&self) -> bool {
+        self.dir.as_deref().is_some_and(favorites::is_pinned_dir)
     }
 
     /// `files` come from several folders: the sub-folders of `dir`, or the
@@ -825,30 +889,47 @@ impl App {
         self.listed_folders.iter().filter(|p| filter.is_empty() || folder::matches(&file_name(p), filter)).cloned().collect()
     }
 
-    /// The folder that can be pinned to the favourites from the menus: the
+    /// The folder that can be pinned to Quick Access from the menus: the
     /// one listed, a real folder.
     pub fn pinnable_dir(&self) -> Option<PathBuf> {
-        self.dir.clone().filter(|d| !favorites::is_dir(d) && !self.archive)
+        self.dir.clone().filter(|d| !favorites::is_virtual(d) && !self.archive)
     }
 
-    /// Pin `dir` to the favourites, or unpin it if it is pinned.
+    /// Pin `dir` to Quick Access, or unpin it if it is pinned.
     pub fn toggle_pin(&mut self, dir: PathBuf) {
         // `D:\Photos\` (a path from the command line) is `D:\Photos`.
         let dir: PathBuf = dir.components().collect();
-        let name = match dir.file_name() {
-            Some(n) => n.to_string_lossy().into_owned(),
-            None => dir.display().to_string(),
-        };
+        let name = folder_label(&dir);
         let text = match self.pinned.toggle(&dir) {
-            Ok(true) => tr!(format!("Pinned to the favorites: {name}"), format!("Закреплено в избранном: {name}")),
-            Ok(false) => tr!(format!("Unpinned from the favorites: {name}"), format!("Откреплено от избранного: {name}")),
+            Ok(true) => tr!(format!("Pinned to Quick Access: {name}"), format!("Закреплено на панели быстрого доступа: {name}")),
+            Ok(false) => tr!(format!("Unpinned from Quick Access: {name}"), format!("Откреплено от панели быстрого доступа: {name}")),
             Err(e) => e,
         };
         self.notice(text);
+        self.pinned_changed();
+    }
+
+    /// Give the pinned folder `dir` the key `key` (Alt+1 to Alt+9), taken
+    /// from the folder that had it, or none.
+    pub fn set_pin_key(&mut self, dir: PathBuf, key: Option<u8>) {
+        let dir: PathBuf = dir.components().collect();
+        let name = folder_label(&dir);
+        let text = match (self.pinned.set_key(&dir, key), key) {
+            (Ok(()), Some(k)) => tr!(format!("Alt+{k} moves the image to {name}"), format!("Alt+{k} перемещает изображение в {name}")),
+            (Ok(()), None) => tr!(format!("No key for {name}"), format!("Клавиша для {name} снята")),
+            (Err(e), _) => e,
+        };
+        self.notice(text);
+        self.pinned_changed();
+    }
+
+    /// The pinned folders or their keys have changed: the tree and Quick
+    /// Access's grid show them anew.
+    fn pinned_changed(&mut self) {
         if let Some(gallery) = &mut self.gallery {
-            gallery.tree.set_pinned(&self.pinned.paths());
+            gallery.tree.set_pinned(&self.pinned.entries());
         }
-        if self.in_favorites() && self.scan.is_none() {
+        if self.in_quick_access() && self.scan.is_none() {
             self.listed_folders = self.pinned.paths();
             self.filter_changed();
         }
@@ -894,11 +975,12 @@ impl App {
     /// Show the gallery of the folder of the current file, out of full
     /// screen (Ctrl+Shift+F there brings it back, bars kept).
     fn enter_gallery(&mut self, ctx: &egui::Context) {
+        self.stop_slideshow();
         if Self::is_fullscreen(ctx) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
         let gallery = self.gallery.get_or_insert_with(|| Gallery::new(ctx));
-        gallery.tree.set_pinned(&self.pinned.paths());
+        gallery.tree.set_pinned(&self.pinned.entries());
         if let Some(dir) = &self.dir {
             gallery.tree.reveal(&crate::archive::tree_folder(dir));
         }
@@ -942,9 +1024,13 @@ impl App {
     }
 
     /// List `dir`, or the favourites, as they are to be ordered, on a thread.
+    /// Quick Access has no images: its cells are the pinned folders, put
+    /// in by `poll_scan`.
     fn scan_dir(&self, dir: PathBuf, keep: Option<PathBuf>, ctx: &egui::Context) -> Scan {
         if favorites::is_dir(&dir) {
             folder::scan_files(self.favorites.paths(), self.favorites_sort, self.by_folder, ctx.clone())
+        } else if favorites::is_pinned_dir(&dir) {
+            folder::scan_files(Vec::new(), self.favorites_sort, false, ctx.clone())
         } else if crate::archive::is_archive_file(&dir) {
             folder::scan_archive(dir, self.sort, self.by_folder, ctx.clone())
         } else {
@@ -1003,6 +1089,7 @@ impl App {
             || self.confirm_edit.is_some()
             || self.dialog.is_some()
             || self.confirm_clear_favorites
+            || self.confirm_unpin_all
     }
 
     /// Rename `path` to `name` in its folder, so that Ctrl+Z can undo it;
@@ -1042,7 +1129,7 @@ impl App {
         self.undo.push(undo);
         let bytes = |u: &Undo| match u {
             Undo::Save(files) => files.iter().filter_map(|(_, b)| b.as_ref()).map(|b| b.bytes.len()).sum(),
-            Undo::Rename(_) => 0,
+            Undo::Rename(_) | Undo::Move(_) | Undo::Copy(_) => 0,
         };
         while self.undo.len() > UNDO_STEPS
             || (self.undo.len() > 1 && self.undo.iter().map(bytes).sum::<usize>() > UNDO_BYTES)
@@ -1051,15 +1138,48 @@ impl App {
         }
     }
 
-    /// Undo the last rename or save (Ctrl+Z): the old name back, or the old
-    /// contents (a file made by saving is deleted).
+    /// Undo the last rename, move, copy or save (Ctrl+Z): the old name or
+    /// place back, the copies deleted, or the old contents (a file made by
+    /// saving is deleted).
     fn undo(&mut self, ctx: &egui::Context) {
         if self.saving.is_some() {
             self.notice(tr!("Saving…".into(), "Сохранение…".into()));
             return;
         }
+        if self.moving.is_some() || self.copying.is_some() {
+            self.notice(tr!("Still moving or copying…".into(), "Перемещение или копирование ещё идёт…".into()));
+            return;
+        }
         match self.undo.pop() {
             None => {}
+            Some(Undo::Move(pairs)) => {
+                let back: Vec<(PathBuf, PathBuf)> = pairs.iter().map(|(old, new)| (new.clone(), old.clone())).collect();
+                self.move_pairs(ctx, back, false);
+            }
+            Some(Undo::Copy(copies)) => {
+                let (mut removed, mut error) = (Vec::new(), None);
+                for path in &copies {
+                    match std::fs::remove_file(path) {
+                        Ok(()) => removed.push(path.clone()),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            error.get_or_insert(format!("{}: {e}", file_name(path)));
+                        }
+                    }
+                }
+                self.forget_files(&removed);
+                for path in &removed {
+                    self.unlist(path);
+                }
+                if self.scan.is_some() {
+                    self.list_again(ctx);
+                }
+                let text = match error {
+                    None => tr!("Copy undone".into(), "Копирование отменено".into()),
+                    Some(e) => tr!(format!("Cannot undo the copy of {e}"), format!("Не удалось отменить копирование {e}")),
+                };
+                self.notice(text);
+            }
             Some(Undo::Rename(pairs)) => {
                 let back: Vec<(PathBuf, PathBuf)> = pairs.iter().map(|(old, new)| (new.clone(), old.clone())).collect();
                 let text = match crate::rename::check(&back).and_then(|()| crate::rename::rename_all(&back)) {
@@ -1105,6 +1225,8 @@ impl App {
     pub fn undo_label(&self) -> &'static str {
         match self.undo.last() {
             Some(Undo::Save(_)) => tr!("Undo Save", "Отменить сохранение"),
+            Some(Undo::Move(_)) => tr!("Undo Move", "Отменить перемещение"),
+            Some(Undo::Copy(_)) => tr!("Undo Copy", "Отменить копирование"),
             _ => tr!("Undo Rename", "Отменить переименование"),
         }
     }
@@ -1280,8 +1402,8 @@ impl App {
         let scan = self.scan.take();
         let gone = scan.as_ref().map(Scan::take_gone).unwrap_or_default();
         self.listed_folders = scan.as_ref().map(Scan::take_folders).unwrap_or_default();
-        // Among the favourites, the folders pinned to them.
-        if self.in_favorites() {
+        // Quick Access: the pinned folders.
+        if self.in_quick_access() {
             self.listed_folders = self.pinned.paths();
         }
         drop(scan);
@@ -1497,6 +1619,71 @@ impl App {
     /// contents of its texture when their time comes (see `anim`). Only
     /// the current image in the viewer plays; it starts again from the
     /// first frame when it comes back.
+    /// Start a slideshow in full screen, or stop the one running (Shift+F).
+    fn toggle_slideshow(&mut self, ctx: &egui::Context) {
+        if self.slideshow.is_some() {
+            self.stop_slideshow();
+            self.notice(tr!("Slideshow stopped".into(), "Слайд-шоу остановлено".into()));
+            return;
+        }
+        if self.current.is_none() {
+            return;
+        }
+        if self.gallery_open {
+            self.leave_gallery();
+        }
+        if !Self::is_fullscreen(ctx) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        }
+        self.slideshow = Some(Slideshow { next_at: None, armed_for: None, paused: false });
+        let s = self.slideshow_seconds;
+        self.notice(tr!(
+            format!("Slideshow: {s} s per image; Space pauses, Esc stops"),
+            format!("Слайд-шоу: {s} с на изображение; Space — пауза, Esc — стоп")
+        ));
+    }
+
+    fn stop_slideshow(&mut self) {
+        self.slideshow = None;
+    }
+
+    /// Show the next image of a slideshow when the time is up, counted
+    /// from when the current one came on screen (a slow file is not
+    /// skipped); after the last one, start over or stop.
+    fn slideshow_tick(&mut self, ctx: &egui::Context) {
+        let (on_screen, gallery_open, current) = (self.current_on_screen(), self.gallery_open, self.current.clone());
+        let Some(show) = &mut self.slideshow else { return };
+        if show.paused || gallery_open || !on_screen {
+            return;
+        }
+        let interval = Duration::from_secs(self.slideshow_seconds as u64);
+        if show.armed_for != current {
+            show.armed_for = current;
+            show.next_at = Some(Instant::now() + interval);
+        }
+        let due = show.next_at.unwrap_or_else(Instant::now);
+        let now = Instant::now();
+        if now < due {
+            ctx.request_repaint_after(due - now);
+            return;
+        }
+        let last = self.index.is_some_and(|i| i + 1 >= self.files.len());
+        if !last {
+            self.step(1);
+        } else if self.slideshow_loop && self.files.len() > 1 {
+            self.go(0);
+        } else if self.slideshow_loop {
+            // One image: shown on.
+            if let Some(show) = &mut self.slideshow {
+                show.next_at = Some(now + interval);
+            }
+        } else {
+            self.stop_slideshow();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            self.notice(tr!("Slideshow finished".into(), "Слайд-шоу закончено".into()));
+        }
+    }
+
     fn animate(&mut self, ctx: &egui::Context) {
         let playing = self
             .shown
@@ -1739,17 +1926,44 @@ impl App {
             Cmd::Paste => self.paste(ctx),
             Cmd::FlipHorizontal => self.view.mirror(true),
             Cmd::FlipVertical => self.view.mirror(false),
+            // A slideshow's pause first; an animation's otherwise.
+            Cmd::Pause if self.slideshow.is_some() => {
+                let paused = self.slideshow.as_mut().map(|show| {
+                    show.paused = !show.paused;
+                    // Resumed: the current image gets its full time again.
+                    show.armed_for = None;
+                    show.paused
+                });
+                self.notice(if paused == Some(true) {
+                    tr!("Slideshow paused".into(), "Слайд-шоу приостановлено".into())
+                } else {
+                    tr!("Slideshow resumed".into(), "Слайд-шоу продолжается".into())
+                });
+            }
             Cmd::Pause => {
                 if let Some(player) = &mut self.player {
                     player.toggle_pause(Instant::now());
                 }
             }
+            Cmd::Slideshow => self.toggle_slideshow(ctx),
+            Cmd::SlideshowInterval(seconds) => {
+                self.slideshow_seconds = seconds.clamp(1, 3600);
+                if let Some(show) = &mut self.slideshow {
+                    show.armed_for = None;
+                }
+            }
+            Cmd::SlideshowLoop => self.slideshow_loop = !self.slideshow_loop,
             Cmd::NextFrame | Cmd::PrevFrame => {
                 if let Some(player) = &mut self.player {
                     player.step(cmd == Cmd::NextFrame);
                 }
             }
             Cmd::FullScreen | Cmd::WindowFullScreen => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!Self::is_fullscreen(ctx))),
+            Cmd::Escape if self.slideshow.is_some() => {
+                self.stop_slideshow();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                self.notice(tr!("Slideshow stopped".into(), "Слайд-шоу остановлено".into()));
+            }
             Cmd::Escape if Self::is_fullscreen(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false)),
             // Back to the gallery, as with G; Esc there closes.
             Cmd::Escape => self.enter_gallery(ctx),
@@ -1851,6 +2065,14 @@ impl App {
                     self.enter_gallery(ctx);
                 }
             }
+            Cmd::QuickAccess => {
+                self.open_folder(ctx, PathBuf::from(favorites::PINNED_DIR), self.deep);
+                if !self.gallery_open {
+                    self.enter_gallery(ctx);
+                }
+            }
+            Cmd::MoveTo(n) => self.transfer(ctx, n, false),
+            Cmd::CopyTo(n) => self.transfer(ctx, n, true),
             Cmd::CopyFavorites => {
                 let files = self.favorite_files();
                 let n = files.len();
@@ -1863,6 +2085,7 @@ impl App {
             }
             Cmd::CopyFavoritesTo => self.copy_favorites_to(ctx, frame),
             Cmd::ClearFavorites => self.confirm_clear_favorites = self.favorites.len() > 0,
+            Cmd::UnpinAll => self.confirm_unpin_all = self.pinned.len() > 0,
             Cmd::GoToFolder => self.go_to_folder(ctx),
             Cmd::Shortcuts | Cmd::About | Cmd::Associations => {
                 self.dialog = Some(match cmd {
@@ -1921,6 +2144,8 @@ impl App {
                 | Cmd::Favorite
                 | Cmd::Print
                 | Cmd::Wallpaper
+                | Cmd::MoveTo(_)
+                | Cmd::CopyTo(_)
                 | Cmd::SelectTo(_) => return true,
                 Cmd::FullScreen | Cmd::SelectAll => self.folder_focus = None,
                 _ => {}
@@ -2123,13 +2348,160 @@ impl App {
             .set_parent(frame)
             .pick_folder();
         let Some(to) = picked else { return };
+        self.copy_files_to(ctx, files, to, None);
+    }
+
+    /// Copy `files` into `to` by the shell on a thread; `fresh`: the
+    /// copies that would be new there, for Ctrl+Z (None for the
+    /// favourites). `poll_copy` takes the outcome.
+    fn copy_files_to(&mut self, ctx: &egui::Context, files: Vec<PathBuf>, to: PathBuf, fresh: Option<Vec<PathBuf>>) {
         let (tx, done) = mpsc::channel();
         let (ctx, owner, dest, count) = (ctx.clone(), self.hwnd, to.clone(), files.len());
         std::thread::spawn(move || {
             let _ = tx.send(win::copy_to(&files, &dest, owner));
             ctx.request_repaint();
         });
-        self.copying = Some(Copying { done, to, count });
+        self.copying = Some(Copying { done, to, count, fresh });
+    }
+
+    /// Move the current image, or those chosen, into the pinned folder with
+    /// the key `n` (Alt+n), or with `copy` copy them there (Shift+Alt+n).
+    /// The next image takes the place of one moved.
+    fn transfer(&mut self, ctx: &egui::Context, n: u8, copy: bool) {
+        let Some(to) = self.pinned.with_key(n) else {
+            self.notice(tr!(
+                format!("No folder has Alt+{n}: give a pinned folder the key in its context menu"),
+                format!("Клавиша Alt+{n} не назначена: назначьте её закреплённой папке в её контекстном меню")
+            ));
+            return;
+        };
+        let name = folder_label(&to);
+        if !to.is_dir() {
+            self.notice(tr!(format!("Folder not found: {name}"), format!("Папка не найдена: {name}")));
+            return;
+        }
+        if self.moving.is_some() || self.copying.is_some() {
+            self.notice(tr!("Still moving or copying…".into(), "Перемещение или копирование ещё идёт…".into()));
+            return;
+        }
+        if self.still_saving() {
+            return;
+        }
+        let files: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
+        if files.is_empty() {
+            return;
+        }
+        // Already there: nothing to do.
+        if files.iter().all(|f| f.parent().is_some_and(|p| folder::same_path(p, &to))) {
+            self.notice(tr!(format!("Already in {name}"), format!("Уже в папке {name}")));
+            return;
+        }
+        let files: Vec<PathBuf> = files.into_iter().filter(|f| f.parent().is_none_or(|p| !folder::same_path(p, &to))).collect();
+        let pairs = crate::rename::into_folder(&files, &to);
+        if copy {
+            // The shell asks about the names taken; the copies that are
+            // new can be undone.
+            let fresh: Vec<PathBuf> = pairs.iter().filter(|(_, new)| !new.exists()).map(|(_, new)| new.clone()).collect();
+            self.copy_files_to(ctx, files, to, Some(fresh));
+        } else {
+            if let Err(e) = crate::rename::check(&pairs) {
+                self.notice(tr!(format!("Cannot move: {e}"), format!("Не удалось переместить: {e}")));
+                return;
+            }
+            self.move_pairs(ctx, pairs, true);
+        }
+    }
+
+    /// Move each file of `pairs` to its new path: at once by renaming, so
+    /// that the next image takes its place now, or by the shell on a
+    /// thread when the folder is on another drive (`poll_move` then);
+    /// `undoable`: remembered for Ctrl+Z.
+    fn move_pairs(&mut self, ctx: &egui::Context, pairs: Vec<(PathBuf, PathBuf)>, undoable: bool) {
+        match crate::rename::move_all(&pairs) {
+            Ok(()) => self.files_moved(ctx, pairs, undoable),
+            Err(crate::rename::MoveError::OtherDrive) => {
+                let files: Vec<PathBuf> = pairs.iter().map(|(old, _)| old.clone()).collect();
+                let Some(to) = pairs.first().and_then(|(_, new)| new.parent()).map(Path::to_path_buf) else { return };
+                let (tx, done) = mpsc::channel();
+                let (ctx, owner) = (ctx.clone(), self.hwnd);
+                std::thread::spawn(move || {
+                    let _ = tx.send(win::move_to(&files, &to, owner));
+                    ctx.request_repaint();
+                });
+                self.moving = Some(Moving { done, pairs, undoable });
+            }
+            Err(crate::rename::MoveError::Other(e)) => self.notice(e),
+        }
+    }
+
+    /// The files of `pairs` are now at their new paths: what the listing
+    /// still holds stays, with its texture and thumbnail, the rest leave
+    /// it (the next image taking the current one's place).
+    fn files_moved(&mut self, ctx: &egui::Context, pairs: Vec<(PathBuf, PathBuf)>, undoable: bool) {
+        self.moved(&pairs);
+        let mut stays = false;
+        for (_, new) in &pairs {
+            if self.lists(new) {
+                stays = true;
+            } else {
+                self.unlist(new);
+            }
+        }
+        // Still listed: their place in the order may have changed. A
+        // listing begun before the move would bring the others back.
+        if stays || self.scan.is_some() {
+            self.list_again(ctx);
+        }
+        let n = pairs.len();
+        let text = match pairs.first().and_then(|(_, new)| new.parent()).map(folder_label) {
+            Some(to) if undoable && n == 1 => tr!(format!("Moved to {to}: {}", file_name(&pairs[0].1)), format!("Перемещено в {to}: {}", file_name(&pairs[0].1))),
+            Some(to) if undoable => tr!(format!("Moved to {to}: {n}"), format!("Перемещено в {to}: {n}")),
+            _ => tr!("Move undone".into(), "Перемещение отменено".into()),
+        };
+        self.notice(text);
+        if undoable {
+            self.push_undo(Undo::Move(pairs));
+        }
+    }
+
+    /// Whether the listing on screen holds `path`, were it there: in its
+    /// folder, under it with the sub-folders, or among the favourites.
+    fn lists(&self, path: &Path) -> bool {
+        if self.in_favorites() {
+            return self.favorites.contains(path);
+        }
+        path.parent().is_some_and(|p| self.lists_folder(p))
+    }
+
+    /// Whether the images of `folder` are in the listing on screen: it is
+    /// `dir`, or under it with the sub-folders.
+    fn lists_folder(&self, folder: &Path) -> bool {
+        let Some(dir) = self.dir.as_deref() else { return false };
+        if favorites::is_virtual(dir) || self.archive {
+            return false;
+        }
+        folder::same_path(folder, dir) || (self.deep && folder.ancestors().skip(1).any(|a| folder::same_path(a, dir)))
+    }
+
+    /// The shell has moved the files (see `move_pairs`).
+    fn poll_move(&mut self, ctx: &egui::Context) {
+        let Some(moving) = &self.moving else { return };
+        let Ok(result) = moving.done.try_recv() else { return };
+        let Some(Moving { pairs, undoable, .. }) = self.moving.take() else { return };
+        // The shell may have moved some and not others.
+        let (done, left): (Vec<_>, Vec<_>) = pairs.into_iter().partition(|(old, new)| !old.exists() && new.exists());
+        match result {
+            Err(e) if e == "cancelled" => self.notice(tr!("Moving cancelled".into(), "Перемещение отменено".into())),
+            Err(e) => self.notice(tr!(format!("Cannot move: {e}"), format!("Не удалось переместить: {e}"))),
+            Ok(()) if !left.is_empty() => {
+                let n = left.len();
+                self.notice(tr!(format!("Not moved: {n}"), format!("Не перемещено: {n}")));
+            }
+            Ok(()) => {}
+        }
+        if !done.is_empty() {
+            self.files_moved(ctx, done, undoable);
+        }
     }
 
     /// What `path` is rendered as for the clipboard, the wallpaper and
@@ -2281,16 +2653,35 @@ impl App {
         }
     }
 
-    fn poll_copy(&mut self) {
+    fn poll_copy(&mut self, ctx: &egui::Context) {
         let Some(copying) = &self.copying else { return };
         let Ok(result) = copying.done.try_recv() else { return };
-        let (to, n) = (copying.to.display().to_string(), copying.count);
-        self.copying = None;
+        let Some(Copying { to, count: n, fresh, .. }) = self.copying.take() else { return };
+        let Some(fresh) = fresh else {
+            let to = to.display().to_string();
+            self.notice(match result {
+                Ok(()) => tr!(format!("Favorites copied to {to}: {n}"), format!("Избранное скопировано в {to}: {n}")),
+                Err(e) if e == "cancelled" => tr!("Copying cancelled".into(), "Копирование отменено".into()),
+                Err(e) => tr!(format!("Cannot copy the favorites: {e}"), format!("Не удалось скопировать избранное: {e}")),
+            });
+            return;
+        };
+        // Into a pinned folder: the copies made that were new there can be
+        // undone; copied into the folder shown, they are listed.
+        let made: Vec<PathBuf> = fresh.into_iter().filter(|p| p.exists()).collect();
+        let name = folder_label(&to);
         self.notice(match result {
-            Ok(()) => tr!(format!("Favorites copied to {to}: {n}"), format!("Избранное скопировано в {to}: {n}")),
+            Ok(()) if n == 1 => tr!(format!("Copied to {name}"), format!("Скопировано в {name}")),
+            Ok(()) => tr!(format!("Copied to {name}: {n}"), format!("Скопировано в {name}: {n}")),
             Err(e) if e == "cancelled" => tr!("Copying cancelled".into(), "Копирование отменено".into()),
-            Err(e) => tr!(format!("Cannot copy the favorites: {e}"), format!("Не удалось скопировать избранное: {e}")),
+            Err(e) => tr!(format!("Cannot copy: {e}"), format!("Не удалось скопировать: {e}")),
         });
+        if self.lists_folder(&to) {
+            self.list_again(ctx);
+        }
+        if !made.is_empty() {
+            self.push_undo(Undo::Copy(made));
+        }
     }
 
     /// Unmark every favourite (after the user's yes).
@@ -2301,6 +2692,15 @@ impl App {
         if self.in_favorites() {
             self.relist(ctx);
         }
+    }
+
+    /// Unpin every folder from Quick Access (after the user's yes).
+    pub fn unpin_all(&mut self) {
+        match self.pinned.remove_if(|_| true) {
+            Ok(n) => self.notice(tr!(format!("Unpinned from Quick Access: {n}"), format!("Откреплено от панели быстрого доступа: {n}"))),
+            Err(e) => self.notice(e),
+        }
+        self.pinned_changed();
     }
 
     fn pick_file(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -2334,6 +2734,8 @@ impl App {
             if self.focused_folder().is_some() { Mode::GalleryFolder } else { Mode::Gallery }
         } else if self.crop.is_some() {
             Mode::Crop
+        } else if self.slideshow.is_some() {
+            Mode::Slideshow
         } else {
             Mode::Viewer
         }
@@ -2421,6 +2823,9 @@ impl App {
             | Cmd::Cover
             | Cmd::FullScreen
             | Cmd::WindowFullScreen
+            | Cmd::Slideshow
+            | Cmd::SlideshowInterval(_)
+            | Cmd::SlideshowLoop
             | Cmd::ToggleToolbar
             | Cmd::ToggleStatusBar
             | Cmd::Info
@@ -3023,7 +3428,8 @@ impl eframe::App for App {
             gallery.poll(&self.gl, frame, &ctx);
         }
         self.poll_delete(&ctx);
-        self.poll_copy();
+        self.poll_copy(&ctx);
+        self.poll_move(&ctx);
         self.poll_clipboard(&ctx);
         self.poll_handed();
         self.poll_save(&ctx);
@@ -3057,6 +3463,7 @@ impl eframe::App for App {
         self.check_crop();
         self.complete_current_if_needed(&ctx);
         self.animate(&ctx);
+        self.slideshow_tick(&ctx);
 
         // The gallery keeps its bars in the frames before full screen is
         // left (`enter_gallery`).
@@ -3131,6 +3538,8 @@ impl eframe::App for App {
         storage.set_string(INFO_KEY, self.show_info.to_string());
         storage.set_string(FOLDERS_KEY, self.folders_folded.to_string());
         storage.set_string(INFO_WIDTH_KEY, self.info_width.round().to_string());
+        storage.set_string(SLIDESHOW_SECONDS_KEY, self.slideshow_seconds.to_string());
+        storage.set_string(SLIDESHOW_LOOP_KEY, self.slideshow_loop.to_string());
         storage.set_string(THUMB_FILL_KEY, self.thumb_fill.to_string());
         let aspect = self.thumb_aspect.map_or(AUTO, gallery::aspect_name);
         storage.set_string(THUMB_ASPECT_KEY, aspect.to_string());

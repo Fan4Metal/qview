@@ -256,7 +256,18 @@ pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
 /// progress and asks about files of the same name; the questions belong to
 /// `owner`. Blocks until done: call it on a thread.
 pub fn copy_to(files: &[PathBuf], to: &Path, owner: Option<isize>) -> Result<(), String> {
-    use windows_sys::Win32::UI::Shell::{FO_COPY, FOF_ALLOWUNDO, FOF_NOCONFIRMMKDIR, SHFILEOPSTRUCTW, SHFileOperationW};
+    transfer(files, to, owner, windows_sys::Win32::UI::Shell::FO_COPY)
+}
+
+/// Move `files` into the folder `to` as Explorer does (onto another drive,
+/// where a rename cannot): the shell copies and deletes them with its
+/// progress window and questions. Blocks until done: call it on a thread.
+pub fn move_to(files: &[PathBuf], to: &Path, owner: Option<isize>) -> Result<(), String> {
+    transfer(files, to, owner, windows_sys::Win32::UI::Shell::FO_MOVE)
+}
+
+fn transfer(files: &[PathBuf], to: &Path, owner: Option<isize>, func: u32) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::{FOF_ALLOWUNDO, FOF_NOCONFIRMMKDIR, SHFILEOPSTRUCTW, SHFileOperationW};
     // Lists of paths, each NUL-terminated, ending with an empty one.
     let mut from = Vec::new();
     for f in files {
@@ -267,7 +278,7 @@ pub fn copy_to(files: &[PathBuf], to: &Path, owner: Option<isize>) -> Result<(),
     dest.push(0);
     let mut op = SHFILEOPSTRUCTW {
         hwnd: owner.unwrap_or(0) as windows_sys::Win32::Foundation::HWND,
-        wFunc: FO_COPY,
+        wFunc: func,
         pFrom: from.as_ptr(),
         pTo: dest.as_ptr(),
         fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR) as u16,

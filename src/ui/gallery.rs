@@ -130,6 +130,7 @@ impl App {
         }
         match self.gallery.as_mut().and_then(|g| g.tree.take_action()) {
             Some(Action::Pin(dir) | Action::Unpin(dir)) => self.toggle_pin(dir),
+            Some(Action::SetKey(dir, key)) => self.set_pin_key(dir, key),
             Some(Action::ShowInExplorer(dir)) => crate::win::show_in_explorer(&dir),
             None => {}
         }
@@ -152,6 +153,8 @@ impl App {
         let (in_favorites, mixed) = (self.in_favorites(), self.mixed());
         // The favourites and an archive come from several folders already.
         let from_folders = in_favorites || self.in_archive();
+        // Quick Access has no images to list one way or another.
+        let quick_access = self.in_quick_access();
         let shown = self.gallery.as_ref().map_or(1.0, |g| g.shown_aspect);
         egui::Panel::top("gallery_bar")
             .frame(panel_frame(BAR_BG, Margin::symmetric(8, 3)))
@@ -219,20 +222,22 @@ impl App {
                             "Изображения этой папки или также всех вложенных: общим списком или по папкам под заголовками"
                         )
                     };
-                    egui::ComboBox::from_id_salt("listing")
-                        .selected_text(choice.name())
-                        .width(LISTING_WIDTH)
-                        .show_ui(ui, |ui| {
-                            let mut chosen = choice;
-                            for c in Listing::offered(from_folders) {
-                                ui.selectable_value(&mut chosen, *c, c.name());
-                            }
-                            if chosen != choice {
-                                (deep, by_folder) = chosen.apply(deep, by_folder);
-                            }
-                        })
-                        .response
-                        .on_hover_text(tip);
+                    ui.add_enabled_ui(!quick_access, |ui| {
+                        egui::ComboBox::from_id_salt("listing")
+                            .selected_text(choice.name())
+                            .width(LISTING_WIDTH)
+                            .show_ui(ui, |ui| {
+                                let mut chosen = choice;
+                                for c in Listing::offered(from_folders) {
+                                    ui.selectable_value(&mut chosen, *c, c.name());
+                                }
+                                if chosen != choice {
+                                    (deep, by_folder) = chosen.apply(deep, by_folder);
+                                }
+                            })
+                            .response
+                            .on_hover_text(tip);
+                    });
                     ui.add_space(12.0);
                     self.filter_field(ui);
                     ui.add_space(8.0);
@@ -240,6 +245,10 @@ impl App {
                         if in_favorites {
                             let n = self.favorites.len();
                             ui.label(RichText::new(tr!("Favorites", "Избранное")).size(12.5).color(TEXT));
+                            ui.label(RichText::new(n.to_string()).size(12.5).color(TEXT_WEAK));
+                        } else if quick_access {
+                            let n = self.pinned.len();
+                            ui.label(RichText::new(tr!("Quick Access", "Быстрый доступ")).size(12.5).color(TEXT));
                             ui.label(RichText::new(n.to_string()).size(12.5).color(TEXT_WEAK));
                         } else if let Some(dir) = &self.dir {
                             let text = RichText::new(dir.display().to_string()).size(12.5).color(TEXT_WEAK);
@@ -352,6 +361,12 @@ impl App {
                 Some(tr!(
                     "No favorites yet: S marks the selected image",
                     "Избранного пока нет: клавиша S отмечает выбранное изображение"
+                )
+                .into())
+            } else if self.in_quick_access() {
+                Some(tr!(
+                    "No pinned folders yet: Pin to Quick Access is in the context menu of a folder",
+                    "Закреплённых папок пока нет: пункт «Закрепить на панели быстрого доступа» есть в контекстном меню папки"
                 )
                 .into())
             } else if self.deep {
@@ -475,6 +490,7 @@ impl App {
         // An archive's folders are not opened on their own.
         let archive = self.archive;
         let favorites = &self.favorites;
+        let pinned = &self.pinned;
         let selection = &self.selection;
         let band = selection.band.as_ref().map(|b| b.start).zip(ctx.pointer_latest_pos());
         // A folder whose header was double-clicked.
@@ -544,6 +560,7 @@ impl App {
                     folder_outline(&painter, square);
                     let name = file_name(path);
                     label(&painter, &name, cell, square.bottom() + 2.0);
+                    key_badge(&painter, cell, pinned.key(path));
                     folder_cells.push((k, response));
                     continue;
                 }
@@ -568,6 +585,7 @@ impl App {
                     _ => name,
                 };
                 label(&painter, &name, cell, square.bottom() + 2.0);
+                key_badge(&painter, cell, pinned.key(path));
                 folder_cells.push((k, response));
             }
             let visible = layout.visible(viewport.min.y, viewport.max.y);
@@ -736,6 +754,10 @@ impl App {
                 ui.separator();
                 self.clear_favorites_item(ui);
             }
+            if self.in_quick_access() {
+                ui.separator();
+                self.unpin_all_item(ui);
+            }
         });
         // As if chosen in the tree, with its sub-folders still.
         if let Some(dir) = folder {
@@ -750,7 +772,13 @@ impl App {
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
         if let Some(dir) = self.focused_folder() {
             ui.separator();
-            self.pin_item(ui, dir, false);
+            self.pin_item(ui, dir.clone(), false);
+            // A pinned folder's key (Alt+1 to Alt+9).
+            if self.pinned.contains(&dir)
+                && let Some(key) = crate::tree::key_menu(ui, &self.pinned.entries(), &dir, self.pinned.key(&dir))
+            {
+                self.set_pin_key(dir, key);
+            }
         }
     }
 
@@ -912,6 +940,17 @@ fn label(painter: &Painter, name: &str, cell: Rect, top: f32) {
     let galley = painter.layout_job(job);
     let pos = pos2(cell.center().x - galley.size().x / 2.0, top + (LABEL - galley.size().y) / 2.0);
     painter.galley(pos, galley, TEXT);
+}
+
+/// A pinned folder's key ("Alt+3") in the top left corner of its cell, if
+/// it has one.
+fn key_badge(painter: &Painter, cell: Rect, key: Option<u8>) {
+    let Some(k) = key else { return };
+    let galley = painter.layout_no_wrap(format!("Alt+{k}"), FontId::proportional(11.0), TEXT);
+    let size = galley.size() + vec2(8.0, 4.0);
+    let badge = Rect::from_min_size(cell.min + vec2(PAD + 1.0, PAD + 1.0), size);
+    painter.rect_filled(badge, 3.0, Color32::from_rgba_unmultiplied(0x10, 0x10, 0x10, 0xc0));
+    painter.galley(badge.min + vec2(4.0, 2.0), galley, TEXT);
 }
 
 /// A vertical line between groups of controls in the bar.

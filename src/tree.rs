@@ -1,15 +1,16 @@
-//! The folder tree of the gallery: the favourites, with the folders pinned
-//! to them under them, the user's Pictures and Desktop and the drives at
-//! the top, each folder listed on a thread the first time it is expanded (a
-//! network or a sleeping drive can take seconds). Only the visible rows are
-//! laid out. A folder's context menu pins it, or unpins it.
+//! The folder tree of the gallery: Quick Access with the pinned folders
+//! under it, the favourites, the user's Pictures and Desktop and the drives
+//! at the top, each folder listed on a thread the first time it is expanded
+//! (a network or a sleeping drive can take seconds). Only the visible rows
+//! are laid out. A folder's context menu pins it to Quick Access, or unpins
+//! it, and gives a pinned folder its key (Alt+1 to Alt+9).
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 
-use egui::{Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
+use egui::{Button, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 
 use crate::folder::same_path;
 use crate::ui::{TEXT, TEXT_WEAK};
@@ -34,6 +35,16 @@ enum Kind {
     Drive,
     /// The favourite images, listed in place of a folder (`favorites::DIR`).
     Favorites,
+    /// Quick Access: the pinned folders are its children, and its grid
+    /// (`favorites::PINNED_DIR`) shows them as cells.
+    Pinned,
+}
+
+impl Kind {
+    /// A list of qview's, not a folder: never listed, no context menu.
+    fn is_virtual(self) -> bool {
+        matches!(self, Kind::Favorites | Kind::Pinned)
+    }
 }
 
 struct Node {
@@ -42,6 +53,8 @@ struct Node {
     name: String,
     depth: u16,
     kind: Kind,
+    /// A pinned folder's key (Alt+1 to Alt+9), under Quick Access.
+    key: Option<u8>,
     /// Sub-folders, once listed.
     children: Option<Vec<usize>>,
     /// Whether it has sub-folders, while it is not listed; `None` when
@@ -69,6 +82,8 @@ impl Node {
 pub enum Action {
     Pin(PathBuf),
     Unpin(PathBuf),
+    /// Give a pinned folder this key, or none.
+    SetKey(PathBuf, Option<u8>),
     ShowInExplorer(PathBuf),
 }
 
@@ -96,8 +111,8 @@ pub struct Tree {
     scroll_to: Option<usize>,
     /// Scroll offset and height of the list in the last frame.
     viewport: (f32, f32),
-    /// The folders pinned to the favourites, shown under them.
-    pinned: Vec<PathBuf>,
+    /// The pinned folders with their keys, shown under Quick Access.
+    pinned: Vec<(PathBuf, Option<u8>)>,
     /// Asked for in a context menu in the last frame.
     action: Option<Action>,
 }
@@ -120,7 +135,7 @@ impl Tree {
         }
         let roots: Vec<(usize, PathBuf)> = ids
             .into_iter()
-            .filter(|&r| self.nodes[r].kind != Kind::Favorites)
+            .filter(|&r| !self.nodes[r].kind.is_virtual())
             .map(|r| (r, self.nodes[r].path.clone()))
             .collect();
         if roots.is_empty() {
@@ -177,10 +192,10 @@ impl Tree {
                             path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into())
                         }
                         // Named when drawn, in the language of the moment.
-                        Kind::Favorites => String::new(),
+                        Kind::Favorites | Kind::Pinned => String::new(),
                     };
                     let id = self.add(path, name, 0, kind);
-                    if kind == Kind::Favorites {
+                    if kind.is_virtual() {
                         self.nodes[id].has_children = Some(false);
                     }
                     ids.push(id);
@@ -196,15 +211,15 @@ impl Tree {
         added
     }
 
-    /// Show `pinned` under the favourites, in this order; the folders
-    /// pinned before stay as they are (expanded, listed). The favourites
-    /// are expanded when the first is pinned.
-    pub fn set_pinned(&mut self, pinned: &[PathBuf]) {
+    /// Show `pinned`, each with its key, under Quick Access in this order;
+    /// the folders pinned before stay as they are (expanded, listed). Quick
+    /// Access is expanded when the first is pinned.
+    pub fn set_pinned(&mut self, pinned: &[(PathBuf, Option<u8>)]) {
         self.pinned = pinned.to_vec();
-        let Some(favorites) = self.roots.iter().copied().find(|&r| self.nodes[r].kind == Kind::Favorites) else { return };
-        let old = self.nodes[favorites].children.take().unwrap_or_default();
+        let Some(root) = self.roots.iter().copied().find(|&r| self.nodes[r].kind == Kind::Pinned) else { return };
+        let old = self.nodes[root].children.take().unwrap_or_default();
         let mut children = Vec::with_capacity(pinned.len());
-        for path in pinned {
+        for (path, key) in pinned {
             let id = match old.iter().copied().find(|&c| same_path(&self.nodes[c].path, path)) {
                 Some(c) => c,
                 None => {
@@ -216,12 +231,13 @@ impl Tree {
                     self.add(path.clone(), name, 1, kind)
                 }
             };
+            self.nodes[id].key = *key;
             children.push(id);
         }
         if old.is_empty() && !children.is_empty() {
-            self.nodes[favorites].expanded = true;
+            self.nodes[root].expanded = true;
         }
-        self.nodes[favorites].children = Some(children);
+        self.nodes[root].children = Some(children);
         self.dirty = true;
     }
 
@@ -236,6 +252,7 @@ impl Tree {
             name,
             depth,
             kind,
+            key: None,
             children: None,
             has_children: None,
             expanded: false,
@@ -311,9 +328,9 @@ impl Tree {
         let mut stack: Vec<usize> = self.roots.iter().rev().copied().collect();
         while let Some(id) = stack.pop() {
             if let Some(children) = &self.nodes[id].children {
-                // The favourites' children are the pinned folders, not a
+                // Quick Access's children are the pinned folders, not a
                 // listing.
-                if self.nodes[id].kind != Kind::Favorites {
+                if !self.nodes[id].kind.is_virtual() {
                     ids.push(id);
                 }
                 stack.extend(children.iter().rev());
@@ -503,9 +520,11 @@ impl Tree {
                     Kind::Folder => paint_folder(&painter, icon),
                     Kind::Drive => paint_drive(&painter, icon),
                     Kind::Favorites => crate::ui::paint_star(&painter, icon, 7.5, Some(crate::ui::STAR), crate::ui::STAR),
+                    Kind::Pinned => paint_pin(&painter, icon),
                 }
                 let name = match node.kind {
                     Kind::Favorites => tr!("Favorites", "Избранное"),
+                    Kind::Pinned => tr!("Quick Access", "Быстрый доступ"),
                     _ => &node.name,
                 };
                 let text = pos2(x + ARROW_WIDTH + ICON_WIDTH + 2.0, rect.center().y);
@@ -513,6 +532,11 @@ impl Tree {
                 if node.kind == Kind::Favorites && favorites > 0 {
                     let at = pos2(label.right() + 6.0, rect.center().y);
                     painter.text(at, egui::Align2::LEFT_CENTER, favorites.to_string(), FontId::proportional(12.0), TEXT_WEAK);
+                }
+                // A pinned folder's key, at the right.
+                if let Some(k) = node.key {
+                    let at = pos2(rect.right() - 6.0, rect.center().y);
+                    painter.text(at, egui::Align2::RIGHT_CENTER, format!("Alt+{k}"), FontId::proportional(11.0), TEXT_WEAK);
                 }
                 // The second click of a double click is a click too; the
                 // first one has chosen the folder already.
@@ -525,18 +549,23 @@ impl Tree {
                         chosen = Some(node.path.clone());
                     }
                 }
-                if node.kind != Kind::Favorites {
+                if !node.kind.is_virtual() {
                     let path = node.path.clone();
-                    let is_pinned = pinned.iter().any(|p| same_path(p, &path));
+                    let pinned_as = pinned.iter().find(|(p, _)| same_path(p, &path)).map(|(_, k)| *k);
                     response.context_menu(|ui| {
-                        let (text, asked) = if is_pinned {
-                            (tr!("Unpin from Favorites", "Открепить от избранного"), Action::Unpin(path.clone()))
+                        let (text, asked) = if pinned_as.is_some() {
+                            (tr!("Unpin from Quick Access", "Открепить от панели быстрого доступа"), Action::Unpin(path.clone()))
                         } else {
-                            (tr!("Pin to Favorites", "Закрепить в избранном"), Action::Pin(path.clone()))
+                            (tr!("Pin to Quick Access", "Закрепить на панели быстрого доступа"), Action::Pin(path.clone()))
                         };
                         if ui.button(text).clicked() {
                             action = Some(asked);
                             ui.close();
+                        }
+                        if let Some(key) = pinned_as
+                            && let Some(k) = key_menu(ui, pinned, &path, key)
+                        {
+                            action = Some(Action::SetKey(path.clone(), k));
                         }
                         if ui.button(tr!("Show in Explorer", "Показать в Проводнике")).clicked() {
                             action = Some(Action::ShowInExplorer(path.clone()));
@@ -555,13 +584,38 @@ impl Tree {
     }
 }
 
-/// The top-level nodes: the favourites, the user's Pictures and Desktop,
-/// then the drives.
+/// The top-level nodes: Quick Access, the favourites, the user's Pictures
+/// and Desktop, then the drives.
 fn system_roots() -> Vec<(PathBuf, Kind)> {
+    let pinned = std::iter::once((PathBuf::from(crate::favorites::PINNED_DIR), Kind::Pinned));
     let favorites = std::iter::once((PathBuf::from(crate::favorites::DIR), Kind::Favorites));
     let folders = crate::win::known_folders().into_iter().map(|p| (p, Kind::Folder));
     let drives = crate::win::drives().into_iter().map(|p| (p, Kind::Drive));
-    favorites.chain(folders).chain(drives).collect()
+    pinned.chain(favorites).chain(folders).chain(drives).collect()
+}
+
+/// The submenu of a pinned folder's key (Alt+1 to Alt+9, or none): the
+/// key chosen, `Some(None)` for none, None while nothing is chosen. A key
+/// another pinned folder has shows that folder's name; chosen, it is taken
+/// from it.
+pub fn key_menu(ui: &mut Ui, pinned: &[(PathBuf, Option<u8>)], path: &Path, key: Option<u8>) -> Option<Option<u8>> {
+    let mut chosen = None;
+    ui.menu_button(tr!("Key", "Клавиша"), |ui| {
+        for n in crate::favorites::KEYS {
+            let other = pinned.iter().find(|(p, k)| *k == Some(n) && !same_path(p, path)).map(|(p, _)| crate::app::folder_label(p));
+            let button = Button::new(format!("Alt+{n}")).shortcut_text(other.unwrap_or_default()).selected(key == Some(n));
+            if ui.add(button).clicked() {
+                chosen = Some(Some(n));
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.add(Button::new(tr!("None", "Нет")).selected(key.is_none())).clicked() {
+            chosen = Some(None);
+            ui.close();
+        }
+    });
+    chosen
 }
 
 /// The sub-folders of `dir` that Explorer shows, in its order.
@@ -604,6 +658,17 @@ fn paint_folder(painter: &egui::Painter, c: Pos2) {
     painter.rect_filled(tab, 1.0, FOLDER_BACK);
     let body = Rect::from_min_size(c + vec2(-8.0, -4.0), vec2(16.0, 11.0));
     painter.rect_filled(body, 1.5, FOLDER);
+}
+
+/// A pushpin 16 points high centred on `c`, as Explorer marks Quick Access.
+fn paint_pin(painter: &egui::Painter, c: Pos2) {
+    let color = Color32::from_rgb(0x6c, 0xa8, 0xe8);
+    // The head, the collar and the needle.
+    let head = Rect::from_center_size(c + vec2(0.0, -4.0), vec2(7.0, 6.0));
+    painter.rect_filled(head, 1.5, color);
+    let collar = Rect::from_center_size(c + vec2(0.0, 0.0), vec2(12.0, 3.0));
+    painter.rect_filled(collar, 1.0, color);
+    painter.line_segment([c + vec2(0.0, 1.5), c + vec2(0.0, 8.0)], Stroke::new(1.5, color));
 }
 
 /// A drive 16 points wide centred on `c`.
@@ -695,38 +760,43 @@ mod tests {
     }
 
     #[test]
-    fn pinned_folders_under_the_favorites() {
+    fn pinned_folders_under_quick_access() {
         let root = std::env::temp_dir().join(format!("qview_tree_pinned_{}", std::process::id()));
         for d in [r"p1\sub", "p2"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
+        let pinned = (PathBuf::from(crate::favorites::PINNED_DIR), Kind::Pinned);
         let favorites = (PathBuf::from(crate::favorites::DIR), Kind::Favorites);
-        let mut t = Tree::with_roots(egui::Context::default(), vec![favorites, (root.clone(), Kind::Folder)]);
-        let root_name = t.nodes[1].name.clone();
+        let mut t = Tree::with_roots(egui::Context::default(), vec![pinned, favorites, (root.clone(), Kind::Folder)]);
+        let root_name = t.nodes[2].name.clone();
         t.rebuild();
-        // None pinned: the favourites have no arrow.
-        assert!(!t.nodes[0].has_children());
-        // Pinned, in the order given: the favourites expanded to show them.
-        t.set_pinned(&[root.join("p2"), root.join("p1")]);
+        // None pinned: Quick Access has no arrow, nor do the favourites.
+        assert!(!t.nodes[0].has_children() && !t.nodes[1].has_children());
+        // Pinned, in the order given, with their keys: Quick Access
+        // expanded to show them.
+        t.set_pinned(&[(root.join("p2"), Some(3)), (root.join("p1"), None)]);
         t.rebuild();
-        assert_eq!(names(&t), ["", "p2", "p1", &root_name]);
+        assert_eq!(names(&t), ["", "p2", "p1", "", &root_name]);
+        assert_eq!(t.nodes[t.rows[1]].key, Some(3));
         // A pinned folder expands like any other.
         let p1 = t.nodes.iter().position(|n| n.name == "p1").unwrap();
         t.toggle(p1);
         pump(&mut t, |t| t.nodes[p1].children.is_some());
-        assert_eq!(names(&t), ["", "p2", "p1", "sub", &root_name]);
-        // Read again: the pinned folders are no listing of the favourites.
+        assert_eq!(names(&t), ["", "p2", "p1", "sub", "", &root_name]);
+        // Read again: the pinned folders are no listing of Quick Access.
         t.relist();
         pump(&mut t, |t| t.nodes.iter().all(|n| !n.listing));
-        assert_eq!(names(&t), ["", "p2", "p1", "sub", &root_name]);
-        // One unpinned: the other stays as it was, expanded.
-        t.set_pinned(&[root.join("p1")]);
+        assert_eq!(names(&t), ["", "p2", "p1", "sub", "", &root_name]);
+        // One unpinned, the other's key changed: it stays as it was,
+        // expanded.
+        t.set_pinned(&[(root.join("p1"), Some(1))]);
         t.rebuild();
-        assert_eq!(names(&t), ["", "p1", "sub", &root_name]);
+        assert_eq!(names(&t), ["", "p1", "sub", "", &root_name]);
         assert_eq!(t.nodes.iter().position(|n| n.name == "p1"), Some(p1));
+        assert_eq!(t.nodes[p1].key, Some(1));
         t.set_pinned(&[]);
         t.rebuild();
-        assert_eq!(names(&t), ["", &root_name]);
+        assert_eq!(names(&t), ["", "", &root_name]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

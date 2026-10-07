@@ -103,7 +103,12 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("S", tr!("Add to / remove from the favorites", "Добавить в избранное / убрать из него")),
                 ("Delete", tr!("Move to the Recycle Bin", "Переместить в корзину")),
                 ("F2", tr!("Rename the file", "Переименовать файл")),
-                ("Ctrl+Z", tr!("Undo the last rename or save", "Отменить последнее переименование или сохранение")),
+                (
+                    "Alt+1 … Alt+9",
+                    tr!("Move the file into the pinned folder with that key", "Переместить файл в закреплённую папку с этой клавишей"),
+                ),
+                ("Shift+Alt+1 … 9", tr!("Copy it into that folder", "Копировать файл в эту папку")),
+                ("Ctrl+Z", tr!("Undo the last rename, move, copy or save", "Отменить последнее переименование, перемещение, копирование или сохранение")),
                 ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
                 ("Ctrl+Shift+C", tr!("Copy the image as shown", "Копировать картинку, как она показана")),
                 (
@@ -125,6 +130,8 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             tr!("Window", "Окно"),
             vec![
                 (tr!("F  Ctrl+Shift+F  Middle click", "F  Ctrl+Shift+F  Средняя кнопка"), tr!("Full screen", "Полный экран")),
+                ("Shift+F", tr!("Slideshow in full screen: start / stop", "Слайд-шоу на полном экране: начать / остановить")),
+                (tr!("Space  Esc", "Space  Esc"), tr!("In a slideshow: pause / stop", "В слайд-шоу: пауза / стоп")),
                 ("T  B", tr!("Show or hide the toolbar / status bar", "Панель инструментов / строка состояния")),
                 ("I", tr!("Show or hide the information panel (EXIF)", "Панель сведений (EXIF)")),
                 ("F1", tr!("This list", "Этот список")),
@@ -145,6 +152,7 @@ impl App {
     pub(crate) fn dialogs(&mut self, ctx: &egui::Context) {
         self.confirm_delete_dialog(ctx);
         self.confirm_clear_favorites_dialog(ctx);
+        self.confirm_unpin_all_dialog(ctx);
         self.confirm_edit_dialog(ctx);
         self.rename_dialog(ctx);
         self.batch_rename_dialog(ctx);
@@ -579,6 +587,51 @@ impl App {
             self.confirm_clear_favorites = false;
             if clear {
                 self.clear_favorites(ctx);
+            }
+        }
+    }
+
+    /// Unpin every folder from Quick Access? Enter unpins, Esc cancels.
+    fn confirm_unpin_all_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_unpin_all {
+            return;
+        }
+        let mut decision = None;
+        let modal = egui::Modal::new(egui::Id::new("confirm_unpin_all")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading(tr!("Unpin All", "Открепление всех папок"));
+            ui.add_space(6.0);
+            let n = self.pinned.len();
+            ui.label(tr!(
+                format!("Unpin all {n} folders from Quick Access, with their keys? The folders stay where they are."),
+                format!("Открепить от панели быстрого доступа все папки ({n}) вместе с их клавишами? Сами папки останутся на месте.")
+            ));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let text = |s: &str| RichText::new(s).size(16.0);
+                let unpin = egui::Button::new(text(tr!("Unpin", "Открепить")).color(egui::Color32::WHITE))
+                    .fill(super::DANGER)
+                    .min_size(egui::vec2(160.0, 34.0));
+                if ui.add(unpin).clicked() {
+                    decision = Some(true);
+                }
+                if ui.add(egui::Button::new(text(tr!("Cancel", "Отмена"))).min_size(egui::vec2(100.0, 34.0))).clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        if decision.is_none() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter)) {
+                decision = Some(true);
+            } else if modal.should_close() {
+                decision = Some(false);
+            }
+        }
+        if let Some(unpin) = decision {
+            self.confirm_unpin_all = false;
+            if unpin {
+                self.unpin_all();
             }
         }
     }

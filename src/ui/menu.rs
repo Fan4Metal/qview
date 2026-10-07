@@ -86,6 +86,9 @@ impl App {
         self.item(ui, self.undo_label().into(), "Ctrl+Z", Cmd::Undo, undo);
         self.delete_item(ui, e.file);
         ui.separator();
+        self.transfer_menu(ui, false, e.file && self.crop.is_none());
+        self.transfer_menu(ui, true, e.file && self.crop.is_none());
+        ui.separator();
         self.item(ui, tr!("File Associations…", "Сопоставление файлов…").into(), "", Cmd::Associations, true);
         ui.separator();
         self.item(ui, tr!("Exit", "Выход").into(), "Ctrl+W", Cmd::Close, true);
@@ -108,6 +111,7 @@ impl App {
         self.animation_items(ui);
         ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
+        ui.menu_button(tr!("Slideshow", "Слайд-шоу"), |ui| self.slideshow_menu(ui));
         self.check_item(ui, tr!("Toolbar", "Панель инструментов").into(), "T", Cmd::ToggleToolbar, self.show_toolbar);
         self.check_item(ui, tr!("Status Bar", "Строка состояния").into(), "B", Cmd::ToggleStatusBar, self.show_status_bar);
         self.check_item(ui, tr!("Information", "Сведения").into(), "I", Cmd::Info, self.show_info);
@@ -165,6 +169,23 @@ impl App {
         }
         self.item(ui, tr!("Next Frame", "Следующий кадр").into(), ".", Cmd::NextFrame, playing);
         self.item(ui, tr!("Previous Frame", "Предыдущий кадр").into(), ",", Cmd::PrevFrame, playing);
+    }
+
+    /// Start or stop the slideshow, its interval and whether it loops.
+    fn slideshow_menu(&mut self, ui: &mut Ui) {
+        let running = self.slideshow.is_some();
+        let text = if running { tr!("Stop", "Остановить") } else { tr!("Start", "Начать") };
+        self.item(ui, text.into(), "Shift+F", Cmd::Slideshow, running || self.current.is_some());
+        ui.separator();
+        for seconds in [1u32, 2, 3, 5, 10, 15, 30, 60] {
+            let text = tr!(format!("{seconds} s"), format!("{seconds} с"));
+            if ui.add(Button::new(text).selected(self.slideshow_seconds == seconds)).clicked() {
+                self.clicked.push(Cmd::SlideshowInterval(seconds));
+                ui.close();
+            }
+        }
+        ui.separator();
+        self.check_item(ui, tr!("Loop", "По кругу").into(), "", Cmd::SlideshowLoop, self.slideshow_loop);
     }
 
     fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {
@@ -238,35 +259,70 @@ impl App {
         self.favorite_item(ui, e.file);
         self.item(ui, tr!("Show Favorites", "Показать избранное").into(), "", Cmd::Favorites, true);
         self.go_to_folder_item(ui);
+        ui.separator();
+        self.favorites_items(ui);
+        self.clear_favorites_item(ui);
+        ui.separator();
+        self.item(ui, tr!("Show Quick Access", "Показать быстрый доступ").into(), "", Cmd::QuickAccess, true);
         match self.pinnable_dir() {
             Some(dir) => self.pin_item(ui, dir, true),
             None => {
                 ui.add_enabled(false, Button::new(tr!("Pin This Folder", "Закрепить эту папку")));
             }
         }
-        ui.separator();
-        self.favorites_items(ui);
-        ui.separator();
-        self.clear_favorites_item(ui);
+        self.unpin_all_item(ui);
     }
 
-    /// Pin `dir` to the favourites, or unpin it; `this`: it is the folder
+    /// Unpin every folder from Quick Access, after a confirmation.
+    pub(super) fn unpin_all_item(&mut self, ui: &mut Ui) {
+        let any = self.pinned.len() > 0;
+        self.item(ui, tr!("Unpin All…", "Открепить все…").into(), "", Cmd::UnpinAll, any);
+    }
+
+    /// Pin `dir` to Quick Access, or unpin it; `this`: it is the folder
     /// listed ("This Folder"), otherwise a sub-folder's cell.
     pub(super) fn pin_item(&mut self, ui: &mut Ui, dir: PathBuf, this: bool) {
         let text = match (self.pinned.contains(&dir), this) {
             (false, true) => tr!("Pin This Folder", "Закрепить эту папку"),
             (true, true) => tr!("Unpin This Folder", "Открепить эту папку"),
-            (false, false) => tr!("Pin to Favorites", "Закрепить в избранном"),
-            (true, false) => tr!("Unpin from Favorites", "Открепить от избранного"),
+            (false, false) => tr!("Pin to Quick Access", "Закрепить на панели быстрого доступа"),
+            (true, false) => tr!("Unpin from Quick Access", "Открепить от панели быстрого доступа"),
         };
         let button = ui.add(Button::new(text)).on_hover_text(tr!(
-            "Pinned folders are shown under Favorites in the tree and as cells among the favorites",
-            "Закреплённые папки показываются под «Избранным» в дереве и ячейками в избранном"
+            "Pinned folders are shown under Quick Access in the tree; given a key there, a folder takes the image with Alt+1…9",
+            "Закреплённые папки показываются в дереве под «Быстрым доступом»; папка с назначенной там клавишей принимает изображение по Alt+1…9"
         ));
         if button.clicked() {
             self.toggle_pin(dir);
             ui.close();
         }
+    }
+
+    /// Move the current image, or those chosen, into a pinned folder with
+    /// a key (Alt+1 to Alt+9), or with `copy` copy them there.
+    pub(super) fn transfer_menu(&mut self, ui: &mut Ui, copy: bool, enabled: bool) {
+        let text = match (copy, self.several()) {
+            (false, Some(n)) => tr!(format!("Move {n} Files to Folder"), format!("Переместить файлы ({n}) в папку")),
+            (false, None) => tr!("Move to Folder", "Переместить в папку").into(),
+            (true, Some(n)) => tr!(format!("Copy {n} Files to Folder"), format!("Копировать файлы ({n}) в папку")),
+            (true, None) => tr!("Copy to Folder", "Копировать в папку").into(),
+        };
+        let keyed = self.pinned.keyed();
+        ui.add_enabled_ui(enabled && !self.in_archive(), |ui| {
+            ui.menu_button(text, |ui| {
+                if keyed.is_empty() {
+                    ui.weak(tr!(
+                        "Give a pinned folder a key: the Key item of its context menu in Quick Access",
+                        "Назначьте закреплённой папке клавишу: пункт «Клавиша» её контекстного меню в быстром доступе"
+                    ));
+                }
+                for (k, dir) in keyed {
+                    let shortcut = if copy { format!("Shift+Alt+{k}") } else { format!("Alt+{k}") };
+                    let cmd = if copy { Cmd::CopyTo(k) } else { Cmd::MoveTo(k) };
+                    self.item(ui, crate::app::folder_label(&dir), &shortcut, cmd, true);
+                }
+            })
+        });
     }
 
     /// Clear the favourites, after a confirmation.
@@ -444,9 +500,11 @@ impl App {
         self.copy_item(ui, enabled);
         self.copy_image_item(ui, enabled);
         self.rename_item(ui, enabled);
+        self.transfer_menu(ui, false, enabled && self.crop.is_none());
         self.open_in_editor_item(ui, enabled);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, enabled);
         ui.menu_button(tr!("More", "Ещё"), |ui| {
+            self.transfer_menu(ui, true, enabled && self.crop.is_none());
             self.convert_menu(ui);
             self.print_item(ui, enabled);
             self.wallpaper_item(ui, enabled);

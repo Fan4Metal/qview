@@ -36,6 +36,14 @@ impl App {
             fields.push(tr!(format!("Selected: {chosen}"), format!("Выбрано: {chosen}")));
         }
         let Some(current) = &self.current else { return fields };
+        if let Some(show) = &self.slideshow {
+            let s = self.slideshow_seconds;
+            fields.push(if show.paused {
+                tr!("Slideshow paused".into(), "Слайд-шоу: пауза".into())
+            } else {
+                tr!(format!("Slideshow: {s} s"), format!("Слайд-шоу: {s} с"))
+            });
+        }
         fields.push(self.display_name(current));
         if self.favorites.contains(current) {
             fields.push(tr!("★ Favorite", "★ Избранное").into());

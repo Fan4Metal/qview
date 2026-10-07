@@ -69,6 +69,12 @@ pub enum Cmd {
     /// Full screen without leaving the gallery (Ctrl+Shift+F there; F
     /// shows the image in full screen).
     WindowFullScreen,
+    /// Start a slideshow in full screen, or stop it (Shift+F).
+    Slideshow,
+    /// Seconds each image of a slideshow stays (View → Slideshow).
+    SlideshowInterval(u32),
+    /// A slideshow starts over after the last image, or stops.
+    SlideshowLoop,
     /// Leaves full screen, or closes the viewer.
     Escape,
     Close,
@@ -140,9 +146,33 @@ pub enum Cmd {
     CopyFavoritesTo,
     /// Forget them all, once the user says so.
     ClearFavorites,
+    /// Unpin every folder from Quick Access, once the user says so.
+    UnpinAll,
     /// List the folder of the current image alone, from the favourites or
     /// the sub-folders, the image staying current.
     GoToFolder,
+    /// Show Quick Access, the pinned folders, in the gallery.
+    QuickAccess,
+    /// Move the current image, or those chosen, into the pinned folder
+    /// with this key (Alt+1 to Alt+9), or copy them there (Shift+Alt).
+    MoveTo(u8),
+    CopyTo(u8),
+}
+
+/// The digit of a number key, 1 to 9.
+fn digit(key: Key) -> Option<u8> {
+    Some(match key {
+        Key::Num1 => 1,
+        Key::Num2 => 2,
+        Key::Num3 => 3,
+        Key::Num4 => 4,
+        Key::Num5 => 5,
+        Key::Num6 => 6,
+        Key::Num7 => 7,
+        Key::Num8 => 8,
+        Key::Num9 => 9,
+        _ => return None,
+    })
 }
 
 /// The command of a key press with `m` held, if any. `repeat` is set for
@@ -152,6 +182,13 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
     // Shift is part of typing `+` or `*`, so it is ignored for symbols.
     let plain = !m.ctrl && !m.alt;
     let letter = plain && !m.shift;
+    // Alt+1 to Alt+9 move the image into a pinned folder, with Shift copy
+    // it (not Ctrl+Alt, which is AltGr in some layouts).
+    if m.alt && !m.ctrl && !repeat
+        && let Some(n) = digit(key)
+    {
+        return Some(if m.shift { CopyTo(n) } else { MoveTo(n) });
+    }
     let cmd = match key {
         Key::ArrowRight if m.ctrl && m.alt => RotateRight,
         Key::ArrowLeft if m.ctrl && m.alt => RotateLeft,
@@ -182,6 +219,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::Period if letter => NextFrame,
         Key::Comma if letter => PrevFrame,
         Key::F if m.ctrl && !m.shift && !m.alt => Find,
+        Key::F if plain && m.shift => Slideshow,
         Key::F if letter || (m.ctrl && m.shift && !m.alt) => FullScreen,
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
@@ -256,6 +294,14 @@ pub fn folder_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
     }
 }
 
+/// The viewer's keys during a slideshow: Space pauses and resumes it.
+pub fn slideshow_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
+    match key {
+        Key::Space if !m.ctrl && !m.alt && !m.shift => (!repeat).then_some(Cmd::Pause),
+        _ => command(key, m, repeat),
+    }
+}
+
 pub fn crop_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
     match key {
         Key::Enter if !m.ctrl && !m.alt && !m.shift => (!repeat).then_some(Cmd::Save),
@@ -272,6 +318,8 @@ pub enum Mode {
     /// open it, not the image.
     GalleryFolder,
     Crop,
+    /// A slideshow: Space pauses it instead of browsing.
+    Slideshow,
 }
 
 /// Commands of this frame's key presses in `mode`.
@@ -282,6 +330,7 @@ pub fn keys(ctx: &egui::Context, mode: Mode) -> Vec<Cmd> {
         Mode::Gallery => gallery_command,
         Mode::GalleryFolder => folder_command,
         Mode::Crop => crop_command,
+        Mode::Slideshow => slideshow_command,
     };
     ctx.input(|i| {
         i.events
@@ -372,6 +421,13 @@ mod tests {
         assert_eq!(command(Key::Num3, NONE, false), Some(Cmd::Fill));
         assert_eq!(command(Key::Num4, NONE, false), Some(Cmd::Cover));
         assert_eq!(command(Key::Num1, CTRL, false), None);
+        // Into the pinned folders, in the gallery too; not when held.
+        assert_eq!(command(Key::Num1, ALT, false), Some(Cmd::MoveTo(1)));
+        assert_eq!(command(Key::Num9, ALT | SHIFT, false), Some(Cmd::CopyTo(9)));
+        assert_eq!(gallery_command(Key::Num5, ALT, false), Some(Cmd::MoveTo(5)));
+        assert_eq!(command(Key::Num1, ALT, true), None);
+        assert_eq!(command(Key::Num1, CTRL | ALT, false), None);
+        assert_eq!(command(Key::Num0, ALT, false), None);
         assert_eq!(command(Key::OpenBracket, NONE, false), Some(Cmd::RotateLeft));
         assert_eq!(command(Key::H, NONE, false), Some(Cmd::FlipHorizontal));
         assert_eq!(command(Key::V, NONE, false), Some(Cmd::FlipVertical));
@@ -379,6 +435,10 @@ mod tests {
         assert_eq!(command(Key::P, NONE, false), Some(Cmd::Pause));
         assert_eq!(command(Key::P, CTRL, false), Some(Cmd::Print));
         assert_eq!(command(Key::I, NONE, false), Some(Cmd::Info));
+        assert_eq!(command(Key::F, SHIFT, false), Some(Cmd::Slideshow));
+        assert_eq!(slideshow_command(Key::Space, NONE, false), Some(Cmd::Pause));
+        assert_eq!(slideshow_command(Key::Space, NONE, true), None);
+        assert_eq!(slideshow_command(Key::PageDown, NONE, false), Some(Cmd::Next));
         assert_eq!(command(Key::Slash, NONE, false), Some(Cmd::Actual));
         assert_eq!(gallery_command(Key::Slash, NONE, false), Some(Cmd::Find));
         assert_eq!(command(Key::F, CTRL, false), Some(Cmd::Find));
@@ -386,7 +446,7 @@ mod tests {
         assert_eq!(command(Key::Comma, NONE, true), Some(Cmd::PrevFrame));
         assert_eq!(command(Key::F, NONE, false), Some(Cmd::FullScreen));
         assert_eq!(command(Key::F, CTRL | SHIFT, false), Some(Cmd::FullScreen));
-        assert_eq!(command(Key::F, SHIFT, false), None);
+        assert_eq!(command(Key::F, SHIFT, false), Some(Cmd::Slideshow));
         assert_eq!(command(Key::E, SHIFT, false), None);
         assert_eq!(command(Key::Delete, SHIFT, false), None);
         assert_eq!(command(Key::G, NONE, false), Some(Cmd::Gallery));

@@ -6,9 +6,11 @@
 //!
 //! The gallery lists them in place of a folder: `App::dir` is then [`DIR`].
 //!
-//! The folders pinned to the favourites are kept the same way, in
-//! [`PINNED_FILE`]: the tree shows them under the favourites, and the
-//! gallery as cells before the favourite images.
+//! The folders pinned to Quick Access (as in Explorer) are kept the same
+//! way, in [`PINNED_FILE`]: the tree shows them under Quick Access, whose
+//! grid ([`PINNED_DIR`]) is their cells. A pinned folder may have a key,
+//! 1 to 9 (`key=3` after the tab): Alt+3 moves the current image into it,
+//! Shift+Alt+3 copies it there.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -22,10 +24,54 @@ pub const PINNED_FILE: &str = "pinned.txt";
 /// path (a colon), and as a path it keys the gallery's per-folder state,
 /// the history and the tree's selection like any folder.
 pub const DIR: &str = "::favorites";
+/// `App::dir` while Quick Access, the pinned folders, is shown.
+pub const PINNED_DIR: &str = "::pinned";
+
+/// The field of a pinned folder's key.
+const KEY_FIELD: &str = "key";
+/// The keys a pinned folder may have: Alt+1 to Alt+9.
+pub const KEYS: std::ops::RangeInclusive<u8> = 1..=9;
 
 /// Whether `dir` is [`DIR`].
 pub fn is_dir(dir: &Path) -> bool {
     dir.as_os_str() == DIR
+}
+
+/// Whether `dir` is [`PINNED_DIR`].
+pub fn is_pinned_dir(dir: &Path) -> bool {
+    dir.as_os_str() == PINNED_DIR
+}
+
+/// Whether `dir` is a list of qview's shown in place of a folder: the
+/// favourites or Quick Access.
+pub fn is_virtual(dir: &Path) -> bool {
+    is_dir(dir) || is_pinned_dir(dir)
+}
+
+/// The value of the field `name` among the tab-separated `name=value`
+/// fields of `rest`.
+fn field<'a>(rest: &'a str, name: &str) -> Option<&'a str> {
+    rest.split('\t').filter_map(|f| f.split_once('=')).find(|(n, _)| n.trim() == name).map(|(_, v)| v.trim())
+}
+
+/// `rest` with the field `name` set to `value`, or taken out with None;
+/// the other fields stay as they are.
+fn with_field(rest: &str, name: &str, value: Option<&str>) -> String {
+    let mut out = String::new();
+    for f in rest.split('\t').skip(1).filter(|f| !f.trim().is_empty()) {
+        if f.split_once('=').is_some_and(|(n, _)| n.trim() == name) {
+            continue;
+        }
+        out.push('\t');
+        out.push_str(f);
+    }
+    if let Some(value) = value {
+        out.push('\t');
+        out.push_str(name);
+        out.push('=');
+        out.push_str(value);
+    }
+    out
 }
 
 struct Entry {
@@ -156,6 +202,50 @@ impl Favorites {
         Ok(added)
     }
 
+    /// The key of the pinned folder `path`, if it has one.
+    pub fn key(&self, path: &Path) -> Option<u8> {
+        let k = key(path);
+        let e = self.entries.iter().find(|e| key(&e.path) == k)?;
+        field(&e.rest, KEY_FIELD)?.parse().ok().filter(|n| KEYS.contains(n))
+    }
+
+    /// The pinned folder with the key `n`.
+    pub fn with_key(&self, n: u8) -> Option<PathBuf> {
+        self.entries.iter().find(|e| field(&e.rest, KEY_FIELD).and_then(|v| v.parse().ok()) == Some(n)).map(|e| e.path.clone())
+    }
+
+    /// The pinned folders with a key, by key.
+    pub fn keyed(&self) -> Vec<(u8, PathBuf)> {
+        let mut keyed: Vec<(u8, PathBuf)> = self.entries.iter().filter_map(|e| Some((self.key(&e.path)?, e.path.clone()))).collect();
+        keyed.sort_by_key(|(k, _)| *k);
+        keyed
+    }
+
+    /// Each pinned folder with its key, in the order pinned.
+    pub fn entries(&self) -> Vec<(PathBuf, Option<u8>)> {
+        self.entries.iter().map(|e| (e.path.clone(), self.key(&e.path))).collect()
+    }
+
+    /// Give the pinned folder `path` the key `n` (taken from the folder
+    /// that had it), or no key with None.
+    pub fn set_key(&mut self, path: &Path, n: Option<u8>) -> Result<(), String> {
+        let k = key(path);
+        if !self.keys.contains(&k) {
+            return Ok(());
+        }
+        for e in &mut self.entries {
+            let value = if key(&e.path) == k {
+                n.map(|n| n.to_string())
+            } else if n.is_some() && field(&e.rest, KEY_FIELD).and_then(|v| v.parse().ok()) == n {
+                None
+            } else {
+                continue;
+            };
+            e.rest = with_field(&e.rest, KEY_FIELD, value.as_deref());
+        }
+        self.save()
+    }
+
     /// `old` is now called `new`.
     pub fn renamed(&mut self, pairs: &[(PathBuf, PathBuf)]) -> Result<(), String> {
         // One lookup per entry: a new name may be another pair's old one.
@@ -232,6 +322,36 @@ mod tests {
         assert_eq!(p.toggle(Path::new(r"D:\Фото")), Ok(true));
         assert!(p.contains(Path::new(r"D:\Фото\")));
         assert!(Favorites::load_pinned(Some(pinned)).contains(Path::new(r"d:\фото")));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(is_pinned_dir(Path::new(PINNED_DIR)) && is_virtual(Path::new(DIR)) && !is_virtual(Path::new(r"C:\pinned")));
+    }
+
+    #[test]
+    fn pinned_folders_keep_their_keys() {
+        let dir = std::env::temp_dir().join(format!("qview_pinned_{}", std::process::id()));
+        let file = dir.join(PINNED_FILE);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Fields of other kinds are kept, a key out of range is none.
+        std::fs::write(&file, "D:\\a\tcolor=red\tkey=2\nD:\\b\tkey=12\nD:\\c\n").unwrap();
+        let mut p = Favorites::load_pinned(Some(file.clone()));
+        assert_eq!(p.key(Path::new(r"d:\A\")), Some(2));
+        assert_eq!(p.key(Path::new(r"D:\b")), None);
+        assert_eq!(p.with_key(2), Some(PathBuf::from(r"D:\a")));
+        assert_eq!(p.with_key(3), None);
+        // A key given to another folder is taken from the one that had it.
+        p.set_key(Path::new(r"D:\c"), Some(2)).unwrap();
+        p.set_key(Path::new(r"D:\b"), Some(1)).unwrap();
+        assert_eq!(p.keyed(), [(1, PathBuf::from(r"D:\b")), (2, PathBuf::from(r"D:\c"))]);
+        assert_eq!(p.key(Path::new(r"D:\a")), None);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "D:\\a\tcolor=red\nD:\\b\tkey=1\nD:\\c\tkey=2\n");
+        // No key; a folder not pinned gets none.
+        p.set_key(Path::new(r"D:\b"), None).unwrap();
+        p.set_key(Path::new(r"D:\x"), Some(5)).unwrap();
+        assert_eq!(p.keyed(), [(2, PathBuf::from(r"D:\c"))]);
+        assert_eq!(p.entries(), [(PathBuf::from(r"D:\a"), None), (PathBuf::from(r"D:\b"), None), (PathBuf::from(r"D:\c"), Some(2))]);
+        // Unpinned, the key goes with it.
+        assert_eq!(p.toggle(Path::new(r"D:\c")), Ok(false));
+        assert_eq!(p.with_key(2), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
