@@ -234,6 +234,10 @@ pub struct App {
     /// Scroll the gallery to the current image once the listing is in:
     /// it moved when the order changed.
     centre_after_scan: bool,
+    /// The sub-folder whose cell gets the cursor once the listing is in:
+    /// the one returned from (Back, Up, the folder above chosen in the
+    /// tree), so that a long list of folders is not scrolled through again.
+    refocus: Option<PathBuf>,
     /// The file the user is on.
     pub current: Option<PathBuf>,
     /// Position of `current` in `files`, once the folder is listed.
@@ -590,6 +594,7 @@ impl App {
             },
             place: None,
             centre_after_scan: false,
+            refocus: None,
             current: None,
             index: None,
             current_since: Instant::now(),
@@ -748,19 +753,31 @@ impl App {
         }
         self.leave_for(&dir);
         self.set_current(None);
+        // The folder above chosen (in the tree): the one left has the
+        // cursor there, as with Up.
+        let left = self.dir.clone().filter(|d| d.parent().is_some_and(|p| folder::same_path(p, &dir)));
         self.start_scan(ctx, dir, deep, None);
+        if left.is_some()
+            && let Some(gallery) = &mut self.gallery
+        {
+            gallery.scroll = Some(Scroll::Centre);
+        }
+        self.refocus = left;
     }
 
     /// The folder on screen as Back would return to it.
     fn here(&self) -> Option<Place> {
         let dir = self.dir.clone()?;
-        // Where the current image's row is on screen, once the grid shows
-        // this listing.
-        let below = match (&self.gallery, self.index) {
-            (Some(g), Some(i)) if self.gallery_open && self.scan.is_none() => Some(g.layout.cell_pos(i).y - g.top),
+        // The sub-folder with the cursor, if any.
+        let folder = self.focused_folder().filter(|_| self.gallery_open);
+        // Where the row of the cell with the cursor is on screen, once the
+        // grid shows this listing.
+        let below = match (&self.gallery, self.folder_focus.filter(|_| folder.is_some()), self.index) {
+            (Some(g), Some(k), _) if self.scan.is_none() => Some(g.layout.folder_pos(k).y - g.top),
+            (Some(g), None, Some(i)) if self.gallery_open && self.scan.is_none() => Some(g.layout.cell_pos(i).y - g.top),
             _ => None,
         };
-        Some(Place { dir, deep: self.deep, current: self.current.clone(), below })
+        Some(Place { dir, deep: self.deep, current: self.current.clone(), folder, below })
     }
 
     /// Remember the folder on screen when `dir` is to replace it.
@@ -778,6 +795,7 @@ impl App {
         let keep = place.current.filter(|p| crate::archive::is_file(p));
         self.set_current(keep.clone());
         self.start_scan(ctx, place.dir.clone(), place.deep, keep);
+        self.refocus = place.folder;
         if let Some(gallery) = &mut self.gallery {
             gallery.tree.reveal(&crate::archive::tree_folder(&place.dir));
             gallery.scroll = Some(place.below.map_or(Scroll::Centre, Scroll::Keep));
@@ -817,7 +835,10 @@ impl App {
         if keep.is_none() {
             self.set_current(None);
         }
+        // The folder left has the cursor there, as in Explorer.
+        let left = self.dir.clone();
         self.start_scan(ctx, parent.clone(), self.deep, keep);
+        self.refocus = left;
         if let Some(gallery) = &mut self.gallery {
             gallery.tree.reveal(&parent);
             gallery.scroll = Some(Scroll::Centre);
@@ -1008,6 +1029,8 @@ impl App {
     fn start_scan(&mut self, ctx: &egui::Context, dir: PathBuf, deep: bool, keep: Option<PathBuf>) {
         let same = self.deep == deep && self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir));
         self.place = self.index.filter(|_| same);
+        // Set again after this by those returning to a folder.
+        self.refocus = None;
         if !same {
             self.selection.clear();
         }
@@ -1442,6 +1465,10 @@ impl App {
         self.files = self.filtered();
         self.folders = self.filtered_folders();
         self.folder_focus = self.folder_focus.filter(|&k| k < self.folders.len());
+        // Back in a folder from one of its sub-folders: that one's cell.
+        if let Some(left) = self.refocus.take().filter(|_| !self.folders_folded) {
+            self.folder_focus = self.folders.iter().position(|f| folder::same_path(f, &left)).or(self.folder_focus);
+        }
         // Nothing listed (the last favourites cleared or gone): nothing is
         // current, and the status bar is empty.
         // Opened, an archive shows its first image: none to show.
@@ -1482,8 +1509,10 @@ impl App {
             None => {
                 self.go(0);
                 // A folder opened: from its top, its sub-folders first,
-                // not scrolled down to its first image.
+                // not scrolled down to its first image; returned to, the
+                // sub-folder left keeps the scroll asked for.
                 if !self.folders.is_empty()
+                    && self.folder_focus.is_none()
                     && let Some(gallery) = &mut self.gallery
                 {
                     gallery.scroll = None;

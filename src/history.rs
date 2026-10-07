@@ -14,8 +14,11 @@ pub struct Place {
     pub deep: bool,
     /// The image that was current.
     pub current: Option<PathBuf>,
-    /// How far below the top of the grid the current image's row was, when
-    /// it was left in the gallery.
+    /// The sub-folder whose cell had the gallery's cursor (the one opened,
+    /// usually), which then has it again.
+    pub folder: Option<PathBuf>,
+    /// How far below the top of the grid the row of the cell with the
+    /// cursor was, when it was left in the gallery.
     pub below: Option<f32>,
 }
 
@@ -72,7 +75,7 @@ mod tests {
     use super::*;
 
     fn at(dir: &str) -> Place {
-        Place { dir: dir.into(), deep: false, current: None, below: None }
+        Place { dir: dir.into(), deep: false, current: None, folder: None, below: None }
     }
 
     #[test]
