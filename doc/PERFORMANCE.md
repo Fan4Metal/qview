@@ -135,6 +135,42 @@ A 6000×4000 test image on a 2827×1652 image area (4.7 million screen pixels), 
 - Pixel-art scalers (xBR, ScaleFX, MMPX) and Lanczos were considered: the former are long shaders for a niche use, the latter is barely distinguishable from Catmull-Rom for enlargement and rings more.
 - Better mip levels (Lanczos or Kaiser instead of the 2×2 box) would sharpen Bilinear's reduction too, at an estimated 15–30 ms more decoding time per 15 MP photo on the worker.
 
+## Histogram
+
+The information panel's Histogram section counts the levels of red, green, blue and luma of the current image (`src/histogram.rs`). Folded, it costs nothing: no pixel is counted and nothing is kept, only a flag is stored once per frame. Open, the decoder threads count every image they decode (`Meta::histogram`, 4 KB per image), and an image decoded before the section was opened is read again and counted on a thread of its own.
+
+### Measured
+
+Two 5120×2880 (14.7 MP) images, a photo (JPEG) and a smooth gradient (PNG), counted from the decoder's premultiplied BGRA:
+
+| Counting | Photo | Gradient |
+|---|---|---|
+| One set of counts, any channel at 0 or 255 counted per pixel | 23–26 ms | — |
+| One set of counts, clipping read from the end levels | 15–23 ms | 65 ms |
+| Four sets of counts for alternate pixels, one thread | 18–20 ms | 19–20 ms |
+| The same in up to four parts on threads (as used) | 7–9.6 ms | 6–9.5 ms |
+
+What the panel adds to opening an image:
+
+| | Photo | Gradient | 49.8 MP JPEG (1520×32768, shrunk to 12.5 MP) |
+|---|---|---|---|
+| Decoding, folded | 104–107 ms | 56–58 ms | 325–338 ms |
+| Decoding, open (counted beside the mip levels) | 109–113 ms | 61–67 ms | 330–337 ms |
+| Read again and counted, when opened on an image already decoded | 80 + 6 ms | 34–41 + 6–7 ms | 135 + 17–22 ms |
+| Building the graph (three translucent areas of 512 vertices and three lines), per painted frame | 6–9 µs | | |
+
+- Open, decoding takes 3–10 ms longer, about 5%; in the 49.8 MP case the difference is within the noise. The image appears that much later; neighbours are decoded ahead anyway.
+- The figures of one run of the same test vary by about 20%, since the processor's cores differ (performance and efficiency cores) and run at changing clocks.
+
+### Decisions
+
+- **Counted on the decoder thread, not on the UI thread, and not from the texture.** Reading pixels back from the GPU would wait for the driver; the decoder has them at hand.
+- **Counted while the mip levels are made.** The histogram is counted on other threads while the decoder thread makes the levels (~5 ms for 14.7 MP), so only the difference delays the image; counted after them, it would add all of its 7–10 ms.
+- **Four sets of counts.** Neighbouring pixels of a smooth area are often equal, and adding to the count just written waits for that write: a gradient took 65 ms with one set, 20 ms with four.
+- **Clipping per channel.** Counting the pixels with any channel at 0 or 255 took half as long again as the four histograms; the share of each channel at 0 and 255 is read from the end levels instead.
+- **From the full image, not from a mip level.** A level of 512 pixels would be counted in well under a millisecond, but averaging smooths the peaks, those at 0 and 255 in particular, which are what a histogram is looked at for.
+- **One reading again at a time.** As for the panel's other data, while browsing fast with the section open only the image stopped at is read again; images decoded with the section open need no reading.
+
 ## Measuring
 
 | What | How |
@@ -144,6 +180,9 @@ A 6000×4000 test image on a 2827×1652 image area (4.7 million screen pixels), 
 | Gallery thumbnails of a folder | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release thumbnail_timings -- --ignored --nocapture` |
 | One file through WIC | `$env:QVIEW_WIC_FILE="<file>"; cargo test --release wic_file -- --ignored --nocapture` |
 | HEIC through libheif and WIC | `$env:QVIEW_HEIF_FILE="<heic>"; cargo test --release heif_file -- --ignored --nocapture` |
+| Histogram counting of one file, and decoding with and without it | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release histogram_timings -- --ignored --nocapture` |
+| A histogram read again (the section opened on a decoded image) | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release read_again_timings -- --ignored --nocapture` |
+| Building the histogram's graph | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release graph_timings -- --ignored --nocapture` |
 | Header reading of a folder, qview's against the `image` crate's | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release header_timings -- --ignored --nocapture` |
 
 A GUI program started from PowerShell gets no console; with `Start-Process -RedirectStandardError <log>` the trace goes to a file.

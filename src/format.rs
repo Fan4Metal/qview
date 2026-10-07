@@ -176,6 +176,25 @@ pub fn metres(m: f64) -> String {
     tr!(format!("{sign}{v} m"), format!("{sign}{v} м"))
 }
 
+/// A share of 0 to 1 as a percentage: `0.42%`, `12.5%`, `0%`, `<0.01%`;
+/// in Russian `0,42 %`.
+pub fn percent(share: f64) -> String {
+    percent_in(lang(), share)
+}
+
+pub fn percent_in(lang: Lang, share: f64) -> String {
+    let p = share * 100.0;
+    let v = if p > 0.0 && p < 0.01 {
+        format!("<{}", decimal_in(lang, 0.01, 2))
+    } else {
+        decimal_in(lang, p, if p < 10.0 { 2 } else { 1 })
+    };
+    match lang {
+        Lang::En => format!("{v}%"),
+        Lang::Ru => format!("{v}\u{a0}%"),
+    }
+}
+
 /// A camera's name from the EXIF Make and Model: the model alone when it
 /// names the maker already (`Canon EOS R6`, `NIKON D850` for "NIKON
 /// CORPORATION"), else both (`Apple iPhone 13`).
@@ -192,6 +211,16 @@ pub fn camera(make: Option<&str>, model: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn percentages() {
+        assert_eq!(percent_in(Lang::En, 0.0042), "0.42%");
+        assert_eq!(percent_in(Lang::En, 0.125), "12.5%");
+        assert_eq!(percent_in(Lang::En, 0.0), "0%");
+        assert_eq!(percent_in(Lang::En, 1.0), "100%");
+        assert_eq!(percent_in(Lang::En, 0.000_01), "<0.01%");
+        assert_eq!(percent_in(Lang::Ru, 0.0042), "0,42\u{a0}%");
+    }
 
     #[test]
     fn camera_values() {

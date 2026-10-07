@@ -12,11 +12,13 @@
 use std::collections::VecDeque;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 use std::time::Instant;
 
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, metadata::Orientation};
+
+use crate::histogram::Histogram;
 
 /// Decoder allocation limit: a 20000 x 20000 RGBA image fits, a corrupt
 /// header claiming more does not take the machine's memory.
@@ -38,6 +40,10 @@ pub struct Meta {
     /// A GIF or WebP of more than one frame (see `anim`); the pixels are
     /// its first frame.
     pub animated: bool,
+    /// Counted by the decoder thread while the information panel's
+    /// histogram is open (`Loader::set_histograms`); of the first frame of
+    /// an animation.
+    pub histogram: Option<Arc<Histogram>>,
 }
 
 /// An image as the GPU takes it: premultiplied BGRA, 8 bits per channel,
@@ -73,6 +79,8 @@ struct Shared {
     wake: Condvar,
     /// Largest texture side the GPU takes; larger images are shrunk.
     max_side: AtomicUsize,
+    /// Count each image's histogram (`Meta::histogram`).
+    histograms: AtomicBool,
     ctx: OnceLock<egui::Context>,
 }
 
@@ -90,6 +98,7 @@ impl Loader {
             // Every Windows GPU of the last decade takes 16384; corrected
             // from the real limit on the first frame.
             max_side: AtomicUsize::new(16384),
+            histograms: AtomicBool::new(false),
             ctx: OnceLock::new(),
         });
         let (tx, rx) = mpsc::channel();
@@ -111,6 +120,11 @@ impl Loader {
 
     pub fn set_max_side(&self, side: usize) {
         self.shared.max_side.store(side, Relaxed);
+    }
+
+    /// Count the histogram of the images decoded from now on, or not.
+    pub fn set_histograms(&self, on: bool) {
+        self.shared.histograms.store(on, Relaxed);
     }
 
     /// Decode `paths`, in this order, instead of whatever was wanted before
@@ -164,9 +178,11 @@ fn worker(shared: &Shared, tx: &mpsc::Sender<Decoded>) {
             }
         };
         let start = Instant::now();
-        let result = decode(&path, shared.max_side.load(Relaxed));
+        let count = shared.histograms.load(Relaxed);
+        let result = decode(&path, shared.max_side.load(Relaxed), count);
         let took = start.elapsed();
-        log::debug!("decoded {} in {:.1} ms", path.display(), took.as_secs_f64() * 1e3);
+        let with = if count { " with its histogram" } else { "" };
+        log::debug!("decoded {}{with} in {:.1} ms", path.display(), took.as_secs_f64() * 1e3);
         // Marked done before it is sent, so the UI never sees the file as
         // neither busy, nor done, nor received, and asks for it again.
         {
@@ -201,8 +217,9 @@ fn format_name(format: ImageFormat) -> &'static str {
 }
 
 /// Read and decode `path`, turned upright by its EXIF orientation and
-/// shrunk to `max_side` if larger.
-pub fn decode(path: &Path, max_side: usize) -> Result<(Pixels, Meta), String> {
+/// shrunk to `max_side` if larger; with `count`, its histogram counted
+/// too (`Meta::histogram`), while the mip levels are made.
+pub fn decode(path: &Path, max_side: usize, count: bool) -> Result<(Pixels, Meta), String> {
     let shrink = |img: DynamicImage| {
         if img.width() as usize > max_side || img.height() as usize > max_side {
             img.thumbnail(max_side as u32, max_side as u32)
@@ -211,17 +228,24 @@ pub fn decode(path: &Path, max_side: usize) -> Result<(Pixels, Meta), String> {
         }
     };
     let first = match (!crate::wic::takes(path)).then(|| read_image(path)) {
-        Some(Ok((img, meta))) => return Ok((to_pixels(shrink(img)), meta)),
+        Some(Ok((img, mut meta))) => {
+            let img = shrink(img);
+            let (width, height) = (img.width(), img.height());
+            let (pixels, histogram) = with_levels(to_bgra(img), width, height, count);
+            meta.histogram = histogram.map(Arc::new);
+            return Ok((pixels, meta));
+        }
         Some(Err(e)) => Some(e),
         None => None,
     };
     // Premultiplied BGRA already: turned and shrunk as it is (the image
     // is RGBA only by name), then only the mip levels are made.
-    let (img, meta) = read_wic(path, true).map_err(|e| first.unwrap_or(e))?;
+    let (img, mut meta) = read_wic(path, true).map_err(|e| first.unwrap_or(e))?;
     let img = shrink(img);
     let (width, height) = (img.width(), img.height());
-    let levels = mip_levels(img.into_rgba8().into_raw(), width as usize, height as usize);
-    Ok((Pixels { width, height, levels }, meta))
+    let (pixels, histogram) = with_levels(img.into_rgba8().into_raw(), width, height, count);
+    meta.histogram = histogram.map(Arc::new);
+    Ok((pixels, meta))
 }
 
 /// Read and decode `path`, turned upright by its EXIF orientation: with
@@ -267,6 +291,7 @@ pub fn read_wic(path: &Path, bgra: bool) -> Result<(DynamicImage, Meta), String>
         file_size: file.len(),
         modified: file.last_write_time(),
         animated: false,
+        histogram: None,
     };
     Ok((img, meta))
 }
@@ -306,6 +331,7 @@ fn read_image(path: &Path) -> Result<(DynamicImage, Meta), String> {
         file_size: bytes.len() as u64,
         modified,
         animated,
+        histogram: None,
     };
     Ok((img, meta))
 }
@@ -339,14 +365,44 @@ fn to_bgra(img: DynamicImage) -> Vec<u8> {
     out
 }
 
+/// `base` (`width` x `height` premultiplied BGRA) with its mip levels,
+/// and with `count` its histogram, counted on other threads while the
+/// levels are made here (a 14.7 MP photo: ~5 ms of levels, ~8 ms of
+/// counting in parts, see `histogram`), so that it delays the image little.
+fn with_levels(base: Vec<u8>, width: u32, height: u32, count: bool) -> (Pixels, Option<Histogram>) {
+    let (w, h) = (width as usize, height as usize);
+    let (below, histogram) = if count {
+        std::thread::scope(|s| {
+            let counting = s.spawn(|| Histogram::of_bgra(&base));
+            let below = smaller_levels(&base, w, h);
+            (below, Some(counting.join().expect("histogram thread")))
+        })
+    } else {
+        (smaller_levels(&base, w, h), None)
+    };
+    let mut levels = Vec::with_capacity(below.len() + 1);
+    levels.push(base);
+    levels.extend(below);
+    (Pixels { width, height, levels }, histogram)
+}
+
 /// `base` (`w` x `h` BGRA) followed by its mip levels down to 1x1.
 pub fn mip_levels(base: Vec<u8>, w: usize, h: usize) -> Vec<Vec<u8>> {
-    let mut levels = vec![base];
+    let below = smaller_levels(&base, w, h);
+    let mut levels = Vec::with_capacity(below.len() + 1);
+    levels.push(base);
+    levels.extend(below);
+    levels
+}
+
+/// The mip levels below `base` (`w` x `h` BGRA), down to 1x1.
+fn smaller_levels(base: &[u8], w: usize, h: usize) -> Vec<Vec<u8>> {
+    let mut levels: Vec<Vec<u8>> = Vec::new();
     let (mut w, mut h) = (w, h);
     // No pixels, no levels (and `half` would index an empty slice).
     while (w > 1 || h > 1) && w > 0 && h > 0 {
         let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
-        let next = half(levels.last().expect("base level"), w, h, nw, nh);
+        let next = half(levels.last().map_or(base, Vec::as_slice), w, h, nw, nh);
         levels.push(next);
         (w, h) = (nw, nh);
     }
@@ -431,7 +487,7 @@ mod tests {
         let dir = temp_dir("meta");
         let path = dir.join("a.png");
         image::RgbaImage::from_pixel(30, 20, image::Rgba([255, 0, 0, 128])).save(&path).unwrap();
-        let (pixels, meta) = decode(&path, 16384).unwrap();
+        let (pixels, meta) = decode(&path, 16384, false).unwrap();
         assert_eq!((pixels.width, pixels.height), (30, 20));
         assert_eq!(pixels.levels.len(), 5); // 30x20, 15x10, 7x5, 3x2, 1x1
         // Premultiplied BGRA: red at half opacity.
@@ -444,7 +500,7 @@ mod tests {
         // Content decides, not the extension.
         let jpeg = dir.join("really_a_jpeg.png");
         image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save_with_format(&jpeg, ImageFormat::Jpeg).unwrap();
-        let (_, meta) = decode(&jpeg, 16384).unwrap();
+        let (_, meta) = decode(&jpeg, 16384, false).unwrap();
         assert_eq!((meta.format, meta.bits), ("JPEG", 24));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -454,7 +510,7 @@ mod tests {
         let dir = temp_dir("shrink");
         let path = dir.join("wide.png");
         image::RgbImage::new(400, 100).save(&path).unwrap();
-        let (pixels, meta) = decode(&path, 200).unwrap();
+        let (pixels, meta) = decode(&path, 200, false).unwrap();
         assert_eq!((pixels.width, pixels.height), (200, 50));
         assert_eq!((meta.width, meta.height), (400, 100));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -468,7 +524,7 @@ mod tests {
         let dir = temp_dir("wic");
         let path = dir.join("a.png");
         image::RgbaImage::from_pixel(30, 20, image::Rgba([255, 0, 0, 128])).save(&path).unwrap();
-        let (own, _) = decode(&path, 16384).unwrap();
+        let (own, _) = decode(&path, 16384, false).unwrap();
         let (img, meta) = read_wic(&path, true).unwrap();
         assert_eq!(img.into_rgba8().into_raw(), own.levels[0]);
         assert_eq!((meta.width, meta.height, meta.bits, meta.format), (30, 20, 32, "PNG"));
@@ -482,7 +538,7 @@ mod tests {
         // otherwise what Windows needs.
         let heic = dir.join("broken.heic");
         std::fs::write(&heic, b"not an image").unwrap();
-        let e = decode(&heic, 16384).err().unwrap();
+        let e = decode(&heic, 16384, false).err().unwrap();
         let expected = if crate::heif::takes(&heic) { "libheif" } else { "HEVC" };
         assert!(e.contains(expected), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -510,8 +566,8 @@ mod tests {
         let dir = temp_dir("errors");
         let path = dir.join("broken.jpg");
         std::fs::write(&path, b"not an image").unwrap();
-        assert!(decode(&path, 16384).is_err());
-        assert!(decode(&dir.join("missing.jpg"), 16384).is_err());
+        assert!(decode(&path, 16384, false).is_err());
+        assert!(decode(&dir.join("missing.jpg"), 16384, false).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

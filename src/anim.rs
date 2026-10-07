@@ -367,7 +367,7 @@ mod tests {
     #[ignore]
     fn file_frames() {
         let path = PathBuf::from(std::env::var("QVIEW_ANIM_FILE").expect("QVIEW_ANIM_FILE"));
-        let (pixels, meta) = loader::decode(&path, 16384).unwrap();
+        let (pixels, meta) = loader::decode(&path, 16384, false).unwrap();
         println!("{}x{} {} animated: {}", pixels.width, pixels.height, meta.format, meta.animated);
         let (tx, rx) = mpsc::sync_channel(AHEAD);
         let ctx = egui::Context::default();

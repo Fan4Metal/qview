@@ -98,6 +98,8 @@ const TREE_WIDTH_KEY: &str = "tree_width";
 const INFO_KEY: &str = "info_panel";
 const FOLDERS_KEY: &str = "folders_folded";
 const INFO_WIDTH_KEY: &str = "info_width";
+const HISTOGRAM_KEY: &str = "info_histogram";
+const HISTOGRAM_CHANNELS_KEY: &str = "info_histogram_channels";
 const SLIDESHOW_SECONDS_KEY: &str = "slideshow_seconds";
 const SLIDESHOW_LOOP_KEY: &str = "slideshow_loop";
 const THUMB_FILL_KEY: &str = "thumb_fill";
@@ -355,6 +357,14 @@ pub struct App {
     pub slideshow_loop: bool,
     /// What it shows of the current image, read on a thread.
     pub info: Option<InfoSlot>,
+    /// The panel's Histogram section is open (persisted): only then are
+    /// histograms counted (`update_histogram`).
+    pub show_histogram: bool,
+    /// The channels its graph shows (persisted).
+    pub histogram_channels: crate::histogram::Channels,
+    /// The current image's histogram counted from the file read again,
+    /// when it was decoded before the section was opened.
+    pub histogram: Option<HistogramSlot>,
     /// Copy Image or Paste under way on a thread (`clipboard`).
     clipboard: Option<mpsc::Receiver<Clipped>>,
     /// Set as Wallpaper, or the files for Print, under way on a thread.
@@ -483,6 +493,14 @@ pub struct InfoSlot {
     /// None while it is read.
     pub info: Option<std::sync::Arc<crate::info::Info>>,
     rx: Option<mpsc::Receiver<crate::info::Info>>,
+}
+
+/// The histogram of an image decoded without it (see `App::update_histogram`).
+pub struct HistogramSlot {
+    pub path: PathBuf,
+    /// None while it is counted, or when the file could not be read.
+    pub histogram: Option<Arc<crate::histogram::Histogram>>,
+    rx: Option<mpsc::Receiver<Option<crate::histogram::Histogram>>>,
 }
 
 /// What a thread handing an image to Windows did.
@@ -671,6 +689,13 @@ impl App {
             slideshow_seconds: number(SLIDESHOW_SECONDS_KEY).map_or(5, |s| (s as u32).clamp(1, 3600)),
             slideshow_loop: cc.storage.and_then(|s| s.get_string(SLIDESHOW_LOOP_KEY)).as_deref() != Some("false"),
             info: None,
+            show_histogram: cc.storage.and_then(|s| s.get_string(HISTOGRAM_KEY)).as_deref() == Some("true"),
+            histogram: None,
+            histogram_channels: cc
+                .storage
+                .and_then(|s| s.get_string(HISTOGRAM_CHANNELS_KEY))
+                .and_then(|name| crate::histogram::Channels::from_name(&name))
+                .unwrap_or(crate::histogram::Channels::Rgb),
             thumb_fill: cc.storage.and_then(|s| s.get_string(THUMB_FILL_KEY)).as_deref() == Some("true"),
             thumb_aspect: match cc.storage.and_then(|s| s.get_string(THUMB_ASPECT_KEY)).as_deref() {
                 Some(AUTO) => None,
@@ -1280,6 +1305,9 @@ impl App {
         if self.info.as_ref().is_some_and(|i| paths.contains(&i.path)) {
             self.info = None;
         }
+        if self.histogram.as_ref().is_some_and(|h| paths.contains(&h.path)) {
+            self.histogram = None;
+        }
     }
 
     /// Read the current image's information for the panel, on a thread,
@@ -1312,6 +1340,57 @@ impl App {
         {
             slot.info = Some(std::sync::Arc::new(info));
             slot.rx = None;
+        }
+    }
+
+    /// Histograms are counted while the panel shows its Histogram section
+    /// (`shown`): the decoder threads count one for every image they
+    /// decode from then on (`Meta::histogram`); the current image, when it
+    /// was decoded before, is read again and counted on a thread, one at a
+    /// time as `update_info` reads. Nothing is counted or kept otherwise.
+    pub(crate) fn update_histogram(&mut self, ctx: &egui::Context, shown: bool) {
+        let wanted = shown && self.show_histogram;
+        self.loader.set_histograms(wanted);
+        let Some(path) = self.current.clone().filter(|_| wanted) else {
+            self.histogram = None;
+            return;
+        };
+        if let Some(slot) = &mut self.histogram
+            && let Some(Ok(histogram)) = slot.rx.as_ref().map(mpsc::Receiver::try_recv)
+        {
+            slot.histogram = histogram.map(Arc::new);
+            slot.rx = None;
+        }
+        let counting = self.histogram.as_ref().is_some_and(|h| h.rx.is_some());
+        let without = matches!(self.cache.get(&path), Some(Slot::Ready(p)) if p.meta.histogram.is_none());
+        if !counting && without && self.histogram.as_ref().is_none_or(|h| h.path != path) {
+            let (tx, rx) = mpsc::channel();
+            let (ctx, file) = (ctx.clone(), path.clone());
+            std::thread::spawn(move || {
+                let _com = win::com_init();
+                let start = Instant::now();
+                let histogram = crate::loader::read(&file).ok().map(|(img, _)| crate::histogram::Histogram::of_image(&img));
+                log::debug!("histogram of {} read again in {:.1} ms", file.display(), start.elapsed().as_secs_f64() * 1e3);
+                if tx.send(histogram).is_ok() {
+                    ctx.request_repaint();
+                }
+            });
+            self.histogram = Some(HistogramSlot { path, histogram: None, rx: Some(rx) });
+        }
+    }
+
+    /// The current image's histogram for the panel: None when there is
+    /// none (no image, not decodable), Some(None) while it is counted.
+    pub(crate) fn current_histogram(&self) -> Option<Option<Arc<crate::histogram::Histogram>>> {
+        let path = self.current.as_ref()?;
+        match self.cache.get(path) {
+            Some(Slot::Ready(p)) if p.meta.histogram.is_some() => return Some(p.meta.histogram.clone()),
+            Some(Slot::Failed(_)) => return None,
+            _ => {}
+        }
+        match &self.histogram {
+            Some(h) if h.path == *path && h.rx.is_none() => h.histogram.clone().map(Some),
+            _ => Some(None),
         }
     }
 
@@ -3722,6 +3801,7 @@ impl eframe::App for App {
         // left (`enter_gallery`).
         self.fullscreen = Self::is_fullscreen(&ctx);
         let fullscreen = self.fullscreen && !self.gallery_open;
+        self.update_histogram(&ctx, self.show_info && !fullscreen);
         if !fullscreen {
             self.menu_bar(root_ui);
             if self.show_toolbar {
@@ -3791,6 +3871,8 @@ impl eframe::App for App {
         storage.set_string(INFO_KEY, self.show_info.to_string());
         storage.set_string(FOLDERS_KEY, self.folders_folded.to_string());
         storage.set_string(INFO_WIDTH_KEY, self.info_width.round().to_string());
+        storage.set_string(HISTOGRAM_KEY, self.show_histogram.to_string());
+        storage.set_string(HISTOGRAM_CHANNELS_KEY, self.histogram_channels.name().to_string());
         storage.set_string(SLIDESHOW_SECONDS_KEY, self.slideshow_seconds.to_string());
         storage.set_string(SLIDESHOW_LOOP_KEY, self.slideshow_loop.to_string());
         storage.set_string(THUMB_FILL_KEY, self.thumb_fill.to_string());

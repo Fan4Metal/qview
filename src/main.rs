@@ -19,6 +19,7 @@ mod format;
 mod gallery;
 mod header;
 mod heif;
+mod histogram;
 mod history;
 mod icon;
 mod info;
