@@ -421,7 +421,17 @@ pub fn list_archive(archive: &Path, order: Order, by_folder: bool) -> std::io::R
 
 /// [`list_archive`] on a thread, as [`scan`] lists a folder.
 pub fn scan_archive(archive: PathBuf, order: Order, by_folder: bool, ctx: egui::Context) -> Scan {
-    spawn(ctx, move |_, _| list_archive(&archive, order, by_folder))
+    let up = Arc::new(Mutex::new(None));
+    let above = up.clone();
+    let mut scan = spawn(ctx, move |_, _| {
+        let result = list_archive(&archive, order, by_folder);
+        if result.is_err() && !archive.is_file() {
+            *above.lock().unwrap_or_else(|e| e.into_inner()) = nearest_folder(&archive);
+        }
+        result
+    });
+    scan.up = up;
+    scan
 }
 
 /// Whether `path`, which `metadata` failed on with `e`, is gone from its
@@ -514,6 +524,9 @@ pub struct Scan {
     /// Of a folder listed alone: its sub-folders, set before the listing
     /// is sent.
     folders: Arc<Mutex<Vec<PathBuf>>>,
+    /// The folder (or archive) listed is gone: the nearest folder above it
+    /// that is there, set before the error is sent.
+    up: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl Scan {
@@ -534,6 +547,12 @@ impl Scan {
         std::mem::take(&mut *self.folders.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
+    /// The nearest folder above the one listed that is there, when that
+    /// one is gone (deleted or renamed), once the listing has failed.
+    pub fn take_up(&self) -> Option<PathBuf> {
+        self.up.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
     /// Images found so far when the sub-folders are listed too.
     pub fn found(&self) -> usize {
         self.found.load(Relaxed)
@@ -552,16 +571,31 @@ impl Drop for Scan {
 pub fn scan(dir: PathBuf, depth: Depth, keep: Option<PathBuf>, order: Order, ctx: egui::Context) -> Scan {
     let folders = Arc::new(Mutex::new(Vec::new()));
     let out = folders.clone();
-    let mut scan = spawn(ctx, move |found, cancel| match depth {
-        Depth::Folder => list_with_folders_until(&dir, keep.as_deref(), order, true, cancel).map(|(files, subfolders)| {
-            *out.lock().unwrap_or_else(|e| e.into_inner()) = subfolders;
-            files
-        }),
-        Depth::ByFolder => list_deep(&dir, order, true, found, cancel),
-        Depth::Flat => list_deep(&dir, order, false, found, cancel),
+    let up = Arc::new(Mutex::new(None));
+    let above = up.clone();
+    let mut scan = spawn(ctx, move |found, cancel| {
+        let result = match depth {
+            Depth::Folder => list_with_folders_until(&dir, keep.as_deref(), order, true, cancel).map(|(files, subfolders)| {
+                *out.lock().unwrap_or_else(|e| e.into_inner()) = subfolders;
+                files
+            }),
+            Depth::ByFolder => list_deep(&dir, order, true, found, cancel),
+            Depth::Flat => list_deep(&dir, order, false, found, cancel),
+        };
+        if result.is_err() && !dir.is_dir() {
+            *above.lock().unwrap_or_else(|e| e.into_inner()) = nearest_folder(&dir);
+        }
+        result
     });
     scan.folders = folders;
+    scan.up = up;
     scan
+}
+
+/// The nearest folder above `path` that is there; None when even its
+/// drive cannot be reached (unplugged), when there is nowhere to go.
+pub fn nearest_folder(path: &Path) -> Option<PathBuf> {
+    path.ancestors().skip(1).find(|a| !a.as_os_str().is_empty() && a.is_dir()).map(Path::to_path_buf)
 }
 
 /// [`list_files`] on a thread, as [`scan`] lists a folder.
@@ -595,7 +629,7 @@ fn spawn(
             }
         })
         .expect("spawn folder thread");
-    Scan { rx, found, cancel, gone: Arc::default(), folders: Arc::default() }
+    Scan { rx, found, cancel, gone: Arc::default(), folders: Arc::default(), up: Arc::default() }
 }
 
 #[cfg(test)]
@@ -757,6 +791,32 @@ mod tests {
         assert_eq!(relative(added, false), [r"b2\c.png", r"b10\a.jpg", "z.jpg", r"b2\d.png"]);
         assert_eq!(relative(Order { descending: true, ..added }, false), [r"b2\d.png", "z.jpg", r"b10\a.jpg", r"b2\c.png"]);
         assert_eq!(relative(added, true), ["z.jpg", r"b2\c.png", r"b2\d.png", r"b10\a.jpg"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_gone_leads_up() {
+        let dir = std::env::temp_dir().join(format!("qview_folder_gone_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        // Two levels gone: the nearest that is there.
+        assert_eq!(nearest_folder(&dir.join(r"a\b\c")), Some(dir.join("a")));
+        // A drive that is not there: nowhere.
+        assert_eq!(nearest_folder(Path::new(r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x")), None);
+        // A listing of a folder gone says where to go; one that is there
+        // does not.
+        let ctx = egui::Context::default();
+        let wait = |scan: &Scan| loop {
+            if let Some(result) = scan.poll() {
+                break result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let scan = super::scan(dir.join(r"a\gone"), Depth::Folder, None, Order::default(), ctx.clone());
+        assert!(wait(&scan).is_err());
+        assert_eq!(scan.take_up(), Some(dir.join("a")));
+        let scan = super::scan(dir.join("a"), Depth::Flat, None, Order::default(), ctx);
+        assert!(wait(&scan).is_ok());
+        assert_eq!(scan.take_up(), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

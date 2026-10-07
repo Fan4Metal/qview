@@ -306,6 +306,9 @@ pub struct App {
     /// The favourites gone from their folders, looked for at start-up, so
     /// that their count is right before they are listed.
     favorites_gone: Option<mpsc::Receiver<Vec<PathBuf>>>,
+    /// The pinned folders gone (deleted or renamed outside), looked for at
+    /// start-up and on F5 in the gallery.
+    pinned_gone: Option<mpsc::Receiver<Vec<PathBuf>>>,
     /// Files being copied to a folder by the shell.
     copying: Option<Copying>,
     /// Files being moved to a folder on another drive by the shell.
@@ -634,6 +637,7 @@ impl App {
             confirm_clear_favorites: false,
             confirm_unpin_all: false,
             favorites_gone: None,
+            pinned_gone: None,
             copying: None,
             moving: None,
             listed: Vec::new(),
@@ -695,6 +699,7 @@ impl App {
         if app.favorites.len() > 0 {
             app.favorites_gone = Some(folder::find_gone(app.favorites.paths(), ctx.clone()));
         }
+        app.check_pinned(ctx);
         app
     }
 
@@ -1395,11 +1400,18 @@ impl App {
         self.notice.as_ref().filter(|(_, at)| at.elapsed() < NOTICE_TIME).map(|(t, _)| t.as_str())
     }
 
-    fn poll_scan(&mut self) {
+    fn poll_scan(&mut self, ctx: &egui::Context) {
         let Some(result) = self.scan.as_ref().and_then(Scan::poll) else { return };
         // Favourites whose folder no longer has them are no longer
         // favourites; those of a drive that is not there stay.
         let scan = self.scan.take();
+        // The folder itself is gone: the nearest one above it instead.
+        if result.is_err()
+            && let Some(up) = scan.as_ref().and_then(Scan::take_up)
+        {
+            self.folder_gone(ctx, up);
+            return;
+        }
         let gone = scan.as_ref().map(Scan::take_gone).unwrap_or_default();
         self.listed_folders = scan.as_ref().map(Scan::take_folders).unwrap_or_default();
         // Quick Access: the pinned folders.
@@ -1409,7 +1421,19 @@ impl App {
         drop(scan);
         self.forget_gone_favorites(&gone);
         match result {
-            Ok(files) => self.listed = files,
+            Ok(files) => {
+                self.listed = files;
+                // The tree learns what the folder holds now: a sub-folder
+                // deleted, renamed or made outside.
+                if let (Some(dir), Some(gallery)) = (self.dir.as_deref(), self.gallery.as_mut())
+                    && !self.deep
+                    && !self.archive
+                    && !favorites::is_virtual(dir)
+                {
+                    let names: Vec<String> = self.listed_folders.iter().map(|p| file_name(p)).collect();
+                    gallery.tree.sync(dir, &names);
+                }
+            }
             Err(e) => {
                 self.notice(tr!(format!("Cannot list the folder: {e}"), format!("Не удалось прочитать папку: {e}")));
                 self.listed = self.current.iter().cloned().collect();
@@ -1767,6 +1791,69 @@ impl App {
             )),
             Err(e) => self.notice(e),
         }
+    }
+
+    /// The folder listed (`dir`) is gone, deleted or renamed outside:
+    /// show `up`, the nearest folder above it that is there, in the
+    /// gallery, the tree read again; a pinned folder is unpinned.
+    fn folder_gone(&mut self, ctx: &egui::Context, up: PathBuf) {
+        let name = self.dir.as_deref().map(folder_label).unwrap_or_default();
+        let pinned = self.dir.as_deref().is_some_and(|d| self.pinned.contains(d));
+        if let Some(gone) = self.dir.clone() {
+            self.unpin_gone(&[gone]);
+        }
+        let shown = up.display();
+        self.notice(if pinned {
+            tr!(
+                format!("Folder not found, unpinned: {name}; showing {shown}"),
+                format!("Папка не найдена и откреплена: {name}; показана {shown}")
+            )
+        } else {
+            tr!(format!("Folder not found: {name}; showing {shown}"), format!("Папка не найдена: {name}; показана {shown}"))
+        });
+        self.set_current(None);
+        self.start_scan(ctx, up.clone(), self.deep, None);
+        // Nothing is left to view: the folder above, in the gallery.
+        if !self.gallery_open {
+            self.enter_gallery(ctx);
+        }
+        if let Some(gallery) = &mut self.gallery {
+            gallery.tree.refresh();
+            gallery.tree.reveal(&up);
+            gallery.scroll = Some(Scroll::Centre);
+        }
+    }
+
+    /// Look for the pinned folders gone, on a thread (see `poll_pinned_gone`).
+    fn check_pinned(&mut self, ctx: &egui::Context) {
+        if self.pinned.len() > 0 && self.pinned_gone.is_none() {
+            self.pinned_gone = Some(folder::find_gone(self.pinned.paths(), ctx.clone()));
+        }
+    }
+
+    fn poll_pinned_gone(&mut self) {
+        let Some(Ok(gone)) = self.pinned_gone.as_ref().map(mpsc::Receiver::try_recv) else { return };
+        self.pinned_gone = None;
+        // One may have come back meanwhile.
+        let gone: Vec<PathBuf> = gone.into_iter().filter(|p| !p.exists()).collect();
+        self.unpin_gone(&gone);
+    }
+
+    /// Unpin those of `gone` that are pinned, with a notice; a folder on a
+    /// drive that is not there is never passed here (see `folder::is_gone`).
+    fn unpin_gone(&mut self, gone: &[PathBuf]) {
+        if gone.is_empty() || !gone.iter().any(|g| self.pinned.contains(g)) {
+            return;
+        }
+        match self.pinned.remove_if(|p| gone.iter().any(|g| folder::same_path(g, p))) {
+            Ok(0) => {}
+            Ok(n) => self.notice(tr!(
+                format!("Not found, unpinned from Quick Access: {n}"),
+                format!("Не найдено и откреплено от панели быстрого доступа: {n}")
+            )),
+            Err(e) => self.notice(e),
+        }
+        self.pinned_changed();
     }
 
     /// The favourites found gone at start-up.
@@ -2225,6 +2312,7 @@ impl App {
                     gallery.forget(&self.files);
                     gallery.tree.refresh();
                 }
+                self.check_pinned(ctx);
                 return false;
             }
             _ => return false,
@@ -3421,8 +3509,9 @@ impl eframe::App for App {
             self.cloak = Some(Cloak { until: Instant::now() + UNCLOAK_TIMEOUT, maximized: false, image: true, frame: frame_nr });
             ctx.request_repaint();
         }
-        self.poll_scan();
+        self.poll_scan(&ctx);
         self.poll_favorites_gone();
+        self.poll_pinned_gone();
         self.poll_decoded(&ctx, frame);
         if let Some(gallery) = &mut self.gallery {
             gallery.poll(&self.gl, frame, &ctx);

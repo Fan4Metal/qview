@@ -88,8 +88,9 @@ pub enum Action {
 }
 
 enum Message {
-    /// The sub-folders of a node, sorted.
-    Listed(usize, Vec<String>),
+    /// The sub-folders of a node, sorted, and which of its children
+    /// revealed outside the listing (hidden ones) are still there.
+    Listed(usize, Vec<String>, Vec<String>),
     /// Whether each of them has sub-folders, by name.
     Peeked(usize, Vec<(String, bool)>),
     /// Explorer's name of a top-level node.
@@ -265,16 +266,23 @@ impl Tree {
     /// List the sub-folders of nodes `ids` on a thread, one after another,
     /// then find out which of those have sub-folders.
     fn list(&mut self, ids: Vec<usize>) {
-        let jobs: Vec<(usize, PathBuf)> = ids
-            .into_iter()
-            .filter_map(|id| {
-                let node = &mut self.nodes[id];
-                (!node.listing).then(|| {
-                    node.listing = true;
-                    (id, node.path.clone())
-                })
-            })
-            .collect();
+        let mut jobs: Vec<(usize, PathBuf, Vec<String>)> = Vec::new();
+        for id in ids {
+            if self.nodes[id].listing {
+                continue;
+            }
+            // Revealed children are kept only while they are there.
+            let revealed: Vec<String> = self.nodes[id]
+                .children
+                .iter()
+                .flatten()
+                .filter(|&&c| self.nodes[c].revealed)
+                .map(|&c| self.nodes[c].name.clone())
+                .collect();
+            let node = &mut self.nodes[id];
+            node.listing = true;
+            jobs.push((id, node.path.clone(), revealed));
+        }
         if jobs.is_empty() {
             return;
         }
@@ -283,12 +291,13 @@ impl Tree {
             .name("folder tree".into())
             .spawn(move || {
                 let mut peek = Vec::new();
-                for (id, dir) in jobs {
+                for (id, dir, revealed) in jobs {
                     let names = subfolders(&dir);
+                    let still: Vec<String> = revealed.into_iter().filter(|n| dir.join(n).is_dir()).collect();
                     if names.len() <= PEEK_LIMIT {
                         peek.push((id, dir, names.clone()));
                     }
-                    if tx.send(Message::Listed(id, names)).is_err() {
+                    if tx.send(Message::Listed(id, names, still)).is_err() {
                         return;
                     }
                     ctx.request_repaint();
@@ -322,6 +331,28 @@ impl Tree {
         self.relist();
     }
 
+    /// `dir` has been listed elsewhere (the gallery) with the sub-folders
+    /// `names`: the nodes of `dir` the tree has listed, if they show other
+    /// sub-folders (one deleted, renamed or made since), are listed again.
+    pub fn sync(&mut self, dir: &Path, names: &[String]) {
+        let wanted: std::collections::HashSet<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        let stale: Vec<usize> = (0..self.nodes.len())
+            .filter(|&id| {
+                let node = &self.nodes[id];
+                if node.kind.is_virtual() || node.listing || !same_path(&node.path, dir) {
+                    return false;
+                }
+                let Some(children) = &node.children else { return false };
+                let shown: std::collections::HashSet<String> =
+                    children.iter().map(|&c| self.nodes[c].name.to_lowercase()).collect();
+                shown != wanted
+            })
+            .collect();
+        if !stale.is_empty() {
+            self.list(stale);
+        }
+    }
+
     /// List again the folders listed so far, the visible ones first.
     fn relist(&mut self) {
         let mut ids = Vec::new();
@@ -344,7 +375,7 @@ impl Tree {
     fn poll(&mut self) {
         while let Ok(message) = self.rx.try_recv() {
             match message {
-                Message::Listed(id, names) => {
+                Message::Listed(id, names, still) => {
                     let (parent, depth) = (self.nodes[id].path.clone(), self.nodes[id].depth + 1);
                     // Listed again: the folders still there are kept as
                     // they are (expanded, listed).
@@ -358,9 +389,13 @@ impl Tree {
                             None => self.add(parent.join(&n), n, depth, Kind::Folder),
                         })
                         .collect();
-                    // A hidden folder the tree was taken down to stays.
-                    let kept: Vec<usize> =
-                        old.into_iter().filter(|&c| self.nodes[c].revealed && !children.contains(&c)).collect();
+                    // A hidden folder the tree was taken down to stays,
+                    // while it is there.
+                    let there = |name: &str| still.iter().any(|n| n.to_lowercase() == name.to_lowercase());
+                    let kept: Vec<usize> = old
+                        .into_iter()
+                        .filter(|&c| self.nodes[c].revealed && !children.contains(&c) && there(&self.nodes[c].name))
+                        .collect();
                     children.extend(kept);
                     let node = &mut self.nodes[id];
                     node.children = Some(children);
@@ -744,6 +779,26 @@ mod tests {
         t.relist();
         pump(&mut t, |t| t.nodes.iter().all(|n| !n.listing));
         assert_eq!(names(&t), [&root_name, "a", "b", "c", "b2", "b3", "b10", "hidden"]);
+        // Listed elsewhere with other sub-folders: read again; with the
+        // same ones, not.
+        std::fs::create_dir_all(root.join("a").join("b4")).unwrap();
+        let a = t.nodes.iter().position(|n| n.name == "a").unwrap();
+        let listed = |t: &Tree| t.nodes[a].children.iter().flatten().map(|&c| t.nodes[c].name.clone()).collect::<Vec<_>>();
+        t.sync(&root.join("A"), &listed(&t));
+        assert!(!t.nodes[a].listing);
+        t.sync(&root.join("a"), &["b".into(), "b2".into(), "b3".into(), "b4".into(), "b10".into()]);
+        assert!(t.nodes[a].listing);
+        pump(&mut t, |t| t.nodes.iter().all(|n| !n.listing));
+        assert_eq!(names(&t), [&root_name, "a", "b", "c", "b2", "b3", "b4", "b10", "hidden"]);
+        std::fs::remove_dir(root.join("a").join("b4")).unwrap();
+        // Removed (or renamed) since: read again, it goes.
+        unsafe {
+            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(hidden.as_ptr(), 0x80);
+        }
+        std::fs::remove_dir(root.join("hidden")).unwrap();
+        t.relist();
+        pump(&mut t, |t| t.nodes.iter().all(|n| !n.listing));
+        assert_eq!(names(&t), [&root_name, "a", "b", "c", "b2", "b3", "b10"]);
         // The top-level nodes that are still there are kept.
         let before = t.roots.clone();
         assert!(t.set_roots(vec![(root.clone(), Kind::Folder)]).is_empty());
@@ -753,9 +808,6 @@ mod tests {
         t.reveal(Path::new(r"\\server\share\photos"));
         assert_eq!(t.roots.len(), 2);
         assert_eq!(t.nodes[t.roots[1]].name, r"\\server\share");
-        unsafe {
-            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(hidden.as_ptr(), 0x80);
-        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 
