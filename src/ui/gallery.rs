@@ -177,7 +177,10 @@ impl App {
                     let visuals = ui.visuals_mut();
                     visuals.widgets.inactive.bg_fill = SLIDER_RAIL;
                     visuals.selection.bg_fill = SLIDER_FILL;
-                    let tip = tr!("Thumbnail size (+ and -, Ctrl+Wheel)", "Размер миниатюр (+ и -, Ctrl+колесо)");
+                    let tip = tr!(
+                        "Thumbnail size (+ and -); Ctrl+Wheel over the grid steps between the sizes at which the cells fill the width exactly",
+                        "Размер миниатюр (+ и -); Ctrl+колесо над сеткой ходит по размерам, при которых ячейки заполняют ширину точно"
+                    );
                     size_icon(ui, 12.0);
                     let slider = egui::Slider::new(&mut self.thumb_size, MIN_SIZE..=MAX_SIZE)
                         .show_value(false)
@@ -332,13 +335,17 @@ impl App {
         let ppp = ctx.pixels_per_point();
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, GRID_BG);
-        // Ctrl+Wheel sizes the cells; the wheel alone scrolls.
+        // Ctrl+Wheel sizes the cells, one column more or fewer each notch,
+        // the cells filling the width (`gallery::fit_sizes`); the wheel
+        // alone scrolls.
         let modal_open = self.modal_open();
         if !modal_open && !egui::Popup::is_any_open(&ctx) {
             let (_, zoom) = self.wheel.read(&ctx);
             if zoom != 0 {
+                let aspect = self.thumb_aspect.or_else(|| self.gallery.as_ref().map(|g| g.shown_aspect)).unwrap_or(1.0);
+                let fits = gallery::fit_sizes(rect.width(), aspect);
                 for _ in 0..zoom.unsigned_abs() {
-                    self.thumb_size = gallery::step_size(self.thumb_size, zoom > 0);
+                    self.thumb_size = gallery::step_fit(self.thumb_size, &fits, zoom > 0);
                 }
                 self.thumb_size_changed();
             }

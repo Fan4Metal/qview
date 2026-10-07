@@ -531,6 +531,40 @@ pub fn aspect_name(aspect: f32) -> &'static str {
     ASPECTS.iter().find(|(_, a)| *a == aspect).map_or("1:1", |(n, _)| n)
 }
 
+/// The cell sizes at which the cells of a grid `width` points wide, of
+/// frames of proportions `aspect`, fill the width exactly, with no more
+/// than the padding between them (one more column from the next size down):
+/// from the largest, within the slider's range. Ctrl+Wheel steps along
+/// them.
+pub fn fit_sizes(width: f32, aspect: f32) -> Vec<f32> {
+    let mut sizes = Vec::new();
+    for columns in 1usize.. {
+        let frame_x = width / columns as f32 - 2.0 * PAD;
+        if frame_x <= 0.0 {
+            break;
+        }
+        let size = if aspect >= 1.0 { frame_x } else { frame_x / aspect };
+        if size < MIN_SIZE {
+            break;
+        }
+        if size <= MAX_SIZE {
+            sizes.push(size);
+        }
+    }
+    sizes
+}
+
+/// The next of `fits` ([`fit_sizes`], from the largest) up or down from
+/// `size`; past their ends, the next of the fixed steps ([`step_size`]).
+pub fn step_fit(size: f32, fits: &[f32], up: bool) -> f32 {
+    let next = if up {
+        fits.iter().rev().copied().find(|&m| m > size + 0.5)
+    } else {
+        fits.iter().copied().find(|&m| m < size - 0.5)
+    };
+    next.unwrap_or_else(|| step_size(size, up))
+}
+
 /// The next cell size up or down from `size`.
 pub fn step_size(size: f32, up: bool) -> f32 {
     let next = if up {
@@ -553,7 +587,8 @@ pub struct Grid {
 
 pub fn grid(width: f32, frame: Vec2, count: usize) -> Grid {
     let min = frame.x + 2.0 * PAD;
-    let columns = ((width / min).floor() as usize).max(1);
+    // A frame of exactly a column's share (`fit_sizes`) counts as fitting.
+    let columns = ((width / min + 1e-3).floor() as usize).max(1);
     Grid { columns, rows: count.div_ceil(columns), cell: egui::vec2(width / columns as f32, frame.y + 2.0 * PAD + LABEL) }
 }
 
@@ -769,6 +804,33 @@ mod tests {
         // Narrower than one cell: still one column.
         assert_eq!(grid(50.0, frame_size(160.0, 1.0), 3).columns, 1);
         assert_eq!(grid(1000.0, frame_size(160.0, 1.0), 0).rows, 0);
+        // The sizes that fill the width: one column per size, the cells
+        // just the frames and their padding, the next size up one column
+        // fewer.
+        for aspect in [1.0, 16.0 / 9.0, 9.0 / 16.0] {
+            let sizes = fit_sizes(1000.0, aspect);
+            assert!(!sizes.is_empty() && sizes.windows(2).all(|w| w[0] > w[1]), "{sizes:?}");
+            for (k, &size) in sizes.iter().enumerate() {
+                assert!((MIN_SIZE..=MAX_SIZE).contains(&size), "{size}");
+                let frame = frame_size(size, aspect);
+                let g = grid(1000.0, frame, 1);
+                assert!((g.cell.x - frame.x - 2.0 * PAD).abs() < 0.01, "{aspect} {size}: {g:?}");
+                if k > 0 {
+                    assert_eq!(grid(1000.0, frame_size(sizes[k - 1], aspect), 1).columns + 1, g.columns);
+                }
+            }
+        }
+        // Too narrow for the smallest cell: none.
+        assert!(fit_sizes(50.0, 1.0).is_empty());
+        // Along the sizes that fill the width, the fixed steps past
+        // their ends.
+        let fits = [300.0, 200.0, 100.0];
+        assert_eq!(step_fit(150.0, &fits, true), 200.0);
+        assert_eq!(step_fit(200.0, &fits, true), 300.0);
+        assert_eq!(step_fit(150.0, &fits, false), 100.0);
+        assert_eq!(step_fit(100.2, &fits, false), step_size(100.2, false));
+        assert_eq!(step_fit(300.0, &fits, true), step_size(300.0, true));
+        assert_eq!(step_fit(150.0, &[], true), step_size(150.0, true));
     }
 
     #[test]
