@@ -369,6 +369,33 @@ pub fn local_date_time(filetime: u64) -> Option<String> {
     format_date_time(&local)
 }
 
+/// A FILETIME as a local date alone, in the user's short date format:
+/// `16.04.2012`.
+pub fn local_date(filetime: u64) -> Option<String> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::Globalization::{DATE_SHORTDATE, GetDateFormatEx};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    let ft = FILETIME { dwLowDateTime: filetime as u32, dwHighDateTime: (filetime >> 32) as u32 };
+    let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+    let mut date = [0u16; 128];
+    unsafe {
+        if FileTimeToSystemTime(&ft, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
+            return None;
+        }
+        let d = GetDateFormatEx(
+            std::ptr::null(),
+            DATE_SHORTDATE,
+            &local,
+            std::ptr::null(),
+            date.as_mut_ptr(),
+            date.len() as i32,
+            std::ptr::null(),
+        );
+        // The length counts the terminating NUL.
+        (d > 0).then(|| String::from_utf16_lossy(&date[..d as usize - 1]))
+    }
+}
+
 /// `local` in the user's short date and long time formats.
 fn format_date_time(local: &windows_sys::Win32::Foundation::SYSTEMTIME) -> Option<String> {
     use windows_sys::Win32::Globalization::{DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx};

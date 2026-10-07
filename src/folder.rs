@@ -113,6 +113,8 @@ struct Entry {
     /// FILETIME of the date taken, read only to sort by it (`read_taken`);
     /// the date modified until then.
     taken: u64,
+    /// `taken` is the date the file says it was taken (`read_taken`).
+    dated: bool,
     size: u64,
     /// Its place among the favourites, 0 in a folder.
     added: usize,
@@ -123,7 +125,7 @@ impl Entry {
         use std::os::windows::fs::MetadataExt;
         let name = crate::win::wide(path.file_name().unwrap_or_default());
         let modified = meta.map_or(0, |m| m.last_write_time());
-        Self { name, modified, taken: modified, size: meta.map_or(0, |m| m.len()), added: 0, path }
+        Self { name, modified, taken: modified, dated: false, size: meta.map_or(0, |m| m.len()), added: 0, path }
     }
 }
 
@@ -184,15 +186,98 @@ fn read_taken(files: &mut [Entry], order: Order, cancel: &AtomicBool) {
     });
     for (i, e) in files.iter_mut().enumerate() {
         match (known[i], read[i].load(Relaxed)) {
-            (Some(Some(t)), _) => e.taken = t,
+            (Some(Some(t)), _) => {
+                e.taken = t;
+                e.dated = true;
+            }
             (Some(None), _) => {}
             // Not read (cancelled): not remembered.
             (None, u64::MAX) => {}
             (None, t) => {
                 e.taken = taken[i].load(Relaxed);
+                e.dated = t != 0;
                 cache.insert(key(e), (e.modified, e.size, (t != 0).then_some(t)));
             }
         }
+    }
+}
+
+/// What the information panel says of a folder's images, or of several
+/// images chosen in the gallery.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Stats {
+    pub images: usize,
+    pub bytes: u64,
+    /// The images' dates modified, the oldest and the newest (FILETIMEs).
+    pub modified: Option<(u64, u64)>,
+    /// The dates taken of those whose metadata says (FILETIMEs), and how
+    /// many say.
+    pub taken: Option<(u64, u64)>,
+    pub dated: usize,
+    /// The folders the images are in.
+    pub places: usize,
+    /// Of a folder: its visible sub-folders, and its own dates modified
+    /// and created (FILETIMEs).
+    pub folders: Option<usize>,
+    pub dates: Option<(u64, u64)>,
+}
+
+/// The images directly in `dir` and its sub-folders, counted: their size,
+/// dates modified and dates taken (`read_taken`, its cache shared with the
+/// order by date taken). Stops early, with what it has, when `cancel` is
+/// set.
+pub fn folder_stats(dir: &Path, cancel: &AtomicBool) -> std::io::Result<Stats> {
+    use std::os::windows::fs::MetadataExt;
+    let own = std::fs::metadata(dir)?;
+    let (mut files, folders) = read(dir, true)?;
+    let mut stats = stats_of(&mut files, true, cancel);
+    stats.folders = Some(folders.len());
+    stats.dates = Some((own.last_write_time(), own.creation_time()));
+    Ok(stats)
+}
+
+/// `paths` (files, or images in an archive) counted as `folder_stats`
+/// counts a folder's; the dates taken are not read in an archive.
+pub fn files_stats(paths: &[PathBuf], cancel: &AtomicBool) -> Stats {
+    let mut files = Vec::with_capacity(paths.len());
+    let mut archived = false;
+    for path in paths {
+        if cancel.load(Relaxed) {
+            break;
+        }
+        if crate::archive::inside(path) {
+            archived = true;
+            let mut e = Entry::new(path.clone(), None);
+            if let Some((size, modified)) = crate::archive::metadata(path) {
+                (e.size, e.modified, e.taken) = (size, modified, modified);
+            }
+            files.push(e);
+        } else {
+            files.push(Entry::new(path.clone(), std::fs::metadata(path).ok().as_ref()));
+        }
+    }
+    stats_of(&mut files, !archived, cancel)
+}
+
+fn stats_of(files: &mut [Entry], taken: bool, cancel: &AtomicBool) -> Stats {
+    if taken {
+        read_taken(files, Order { key: SortKey::Taken, descending: false }, cancel);
+    }
+    let range = |dates: &mut dyn Iterator<Item = u64>| {
+        dates.filter(|&d| d != 0).fold(None, |r: Option<(u64, u64)>, d| Some(r.map_or((d, d), |(a, b)| (a.min(d), b.max(d)))))
+    };
+    let mut places: Vec<&Path> = files.iter().filter_map(|e| e.path.parent()).collect();
+    places.sort();
+    places.dedup();
+    Stats {
+        images: files.len(),
+        bytes: files.iter().map(|e| e.size).sum(),
+        modified: range(&mut files.iter().map(|e| e.modified)),
+        taken: range(&mut files.iter().filter(|e| e.dated).map(|e| e.taken)),
+        dated: files.iter().filter(|e| e.dated).count(),
+        places: places.len(),
+        folders: None,
+        dates: None,
     }
 }
 
@@ -411,6 +496,7 @@ pub fn list_archive(archive: &Path, order: Order, by_folder: bool) -> std::io::R
             name: crate::win::wide(i.path.strip_prefix(archive).unwrap_or(&i.path)),
             modified: i.modified,
             taken: i.modified,
+            dated: false,
             size: i.size,
             added: 0,
             path: i.path,
@@ -656,6 +742,44 @@ fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counts_a_folder_and_files() {
+        let dir = std::env::temp_dir().join(format!("qview_stats_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.jpg"), [0u8; 100]).unwrap();
+        std::fs::write(dir.join("b.png"), [0u8; 50]).unwrap();
+        std::fs::write(dir.join("notes.txt"), [0u8; 999]).unwrap();
+        std::fs::write(dir.join("sub").join("c.gif"), [0u8; 7]).unwrap();
+        let stop = AtomicBool::new(false);
+        let st = folder_stats(&dir, &stop).unwrap();
+        // The folder's own images only; nothing in them says when taken.
+        assert_eq!((st.images, st.bytes, st.folders, st.dated, st.taken, st.places), (2, 150, Some(1), 0, None, 1));
+        let (oldest, newest) = st.modified.unwrap();
+        assert!(oldest > 0 && oldest <= newest);
+        assert!(st.dates.is_some_and(|(m, c)| m > 0 && c > 0));
+        let st = files_stats(&[dir.join("a.jpg"), dir.join("sub").join("c.gif")], &stop);
+        assert_eq!((st.images, st.bytes, st.places, st.folders), (2, 107, 2, None));
+        // Cancelled before it starts: nothing counted.
+        assert_eq!(files_stats(&[dir.join("a.jpg")], &AtomicBool::new(true)).images, 0);
+        assert!(folder_stats(&dir.join("missing"), &stop).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release stats_timings -- --ignored --nocapture`:
+    /// what the information panel counts of a folder, the dates taken read
+    /// first (if not cached in this run) and then cached.
+    #[test]
+    #[ignore]
+    fn stats_timings() {
+        let dir = PathBuf::from(std::env::var("QVIEW_THUMB_DIR").expect("QVIEW_THUMB_DIR"));
+        let _com = crate::win::com_init();
+        for round in 0..2 {
+            let t = std::time::Instant::now();
+            let st = folder_stats(&dir, &AtomicBool::new(false)).unwrap();
+            println!("round {round}: {:.1} ms, {st:?}", t.elapsed().as_secs_f64() * 1e3);
+        }
+    }
 
     #[test]
     fn filters_by_words_and_wildcards() {

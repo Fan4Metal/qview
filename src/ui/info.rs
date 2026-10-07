@@ -33,9 +33,14 @@ struct Section {
 
 impl App {
     pub(crate) fn info_panel(&mut self, root_ui: &mut Ui) {
-        let sections = self.info_sections();
+        // In the gallery, a focused folder or several images chosen
+        // instead of the current image.
+        let gathered = self.stats_of().map(|of| self.stats_sections(&of));
+        let image = gathered.is_none();
+        let sections = gathered.unwrap_or_else(|| self.info_sections());
         let reading = self.info.as_ref().is_some_and(|i| i.info.is_none());
-        let gps = self.info.as_ref().and_then(|i| i.info.as_ref()).and_then(|i| i.exif.gps);
+        let gps = self.info.as_ref().and_then(|i| i.info.as_ref()).and_then(|i| i.exif.gps).filter(|_| image);
+        let reading = reading && image;
         let histogram = if self.show_histogram { self.current_histogram() } else { None };
         let mut open = self.show_histogram;
         let mut channels = self.histogram_channels;
@@ -51,7 +56,7 @@ impl App {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     if sections.is_empty() {
                         ui.label(RichText::new(tr!("No image", "Нет изображения")).color(TEXT_WEAK));
-                    } else {
+                    } else if image {
                         histogram_section(ui, &mut open, &mut channels, histogram.as_ref().map(|h| h.as_deref()), marks);
                         colour_section(ui, &mut colour_open, colour);
                     }
@@ -83,6 +88,73 @@ impl App {
             self.show_histogram = open;
             root_ui.ctx().request_repaint();
         }
+    }
+
+    /// What the panel says of the focused folder or the images chosen
+    /// (`App::update_stats`).
+    fn stats_sections(&self, of: &crate::app::StatsOf) -> Vec<Section> {
+        use crate::app::StatsOf;
+        let slot = self.stats.as_ref().filter(|s| s.of == *of);
+        let stats = slot.and_then(|s| s.stats.clone());
+        let counting = stats.is_none();
+        let range = |r: Option<(u64, u64)>| {
+            let (a, b) = r?;
+            let (a, b) = (crate::win::local_date(a)?, crate::win::local_date(b)?);
+            Some(if a == b { a } else { format!("{a} – {b}") })
+        };
+        let mut section = match of {
+            StatsOf::Folder(dir) => {
+                let mut s = Section { title: tr!("Folder", "Папка"), rows: Vec::new() };
+                s.rows.push((tr!("Name", "Имя"), crate::app::file_name(dir)));
+                if let Some(parent) = dir.parent() {
+                    s.rows.push((tr!("Location", "Расположение"), parent.display().to_string()));
+                }
+                s
+            }
+            StatsOf::Files(paths) => {
+                let mut s = Section { title: tr!("Chosen", "Выбрано"), rows: Vec::new() };
+                s.rows.push((tr!("Images", "Изображений"), paths.len().to_string()));
+                s
+            }
+        };
+        match stats {
+            Some(Err(e)) => section.rows.push((tr!("Cannot read", "Не читается"), e)),
+            Some(Ok(st)) => {
+                if let Some(folders) = st.folders {
+                    section.rows.push((tr!("Images", "Изображений"), st.images.to_string()));
+                    section.rows.push((tr!("Sub-folders", "Подпапок"), folders.to_string()));
+                } else if st.places > 1 {
+                    section.rows.push((tr!("In folders", "В папках"), st.places.to_string()));
+                }
+                if st.images > 0 {
+                    section.rows.push((tr!("Size", "Размер"), format::file_size(st.bytes)));
+                }
+                if let Some(taken) = range(st.taken) {
+                    let some = if st.dated < st.images {
+                        tr!(format!(" ({} of {})", st.dated, st.images), format!(" (у {} из {})", st.dated, st.images))
+                    } else {
+                        String::new()
+                    };
+                    section.rows.push((tr!("Taken", "Сняты"), format!("{taken}{some}")));
+                }
+                if let Some(modified) = range(st.modified) {
+                    section.rows.push((tr!("Modified", "Изменены"), modified));
+                }
+                if let Some((modified, created)) = st.dates {
+                    if let Some(d) = crate::win::local_date_time(modified).filter(|_| modified != 0) {
+                        section.rows.push((tr!("Folder modified", "Папка изменена"), d));
+                    }
+                    if let Some(d) = crate::win::local_date_time(created).filter(|_| created != 0) {
+                        section.rows.push((tr!("Folder created", "Папка создана"), d));
+                    }
+                }
+            }
+            None => {}
+        }
+        if counting {
+            section.rows.push(("", tr!("Counting…", "Подсчёт…").to_string()));
+        }
+        vec![section]
     }
 
     /// What the Colour section shows.

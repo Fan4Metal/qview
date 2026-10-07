@@ -373,6 +373,9 @@ pub struct App {
     pub picked: Option<Picked>,
     /// The pixel the image's context menu was opened on.
     pub menu_picked: Option<Picked>,
+    /// What the panel says of the gallery's focused folder or of the
+    /// images chosen, counted on a thread (`update_stats`).
+    pub stats: Option<StatsSlot>,
     /// The current image's histogram counted from the file read again,
     /// when it was decoded before the section was opened.
     pub histogram: Option<HistogramSlot>,
@@ -549,6 +552,30 @@ impl Picked {
     pub fn rgb(&self) -> String {
         let [r, g, b, _] = self.rgba;
         format!("{r}, {g}, {b}")
+    }
+}
+
+/// What the information panel counts in the gallery.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StatsOf {
+    /// The sub-folder with the cursor.
+    Folder(PathBuf),
+    /// The images chosen, more than one.
+    Files(Vec<PathBuf>),
+}
+
+/// `folder::Stats` of a folder or of several images (`App::update_stats`).
+pub struct StatsSlot {
+    pub of: StatsOf,
+    /// None while counted; an error when the folder cannot be read.
+    pub stats: Option<Result<crate::folder::Stats, String>>,
+    rx: Option<mpsc::Receiver<Result<crate::folder::Stats, String>>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for StatsSlot {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -744,6 +771,7 @@ impl App {
             colour_pixels: None,
             picked: None,
             menu_picked: None,
+            stats: None,
             histogram_channels: cc
                 .storage
                 .and_then(|s| s.get_string(HISTOGRAM_CHANNELS_KEY))
@@ -1472,6 +1500,62 @@ impl App {
             });
             self.colour_pixels = Some(PixelSlot { path, image: None, rx: Some(rx) });
         }
+    }
+
+    /// What the panel is about in the gallery besides the current image:
+    /// the folder cell with the cursor, or more than one image chosen.
+    pub(crate) fn stats_of(&self) -> Option<StatsOf> {
+        if !self.gallery_open {
+            return None;
+        }
+        if let Some(k) = self.folder_focus {
+            return self.folders.get(k).cloned().map(StatsOf::Folder);
+        }
+        (self.selection.len() > 1).then(|| StatsOf::Files(self.targets()))
+    }
+
+    /// Count the focused folder's images or the chosen ones on a thread
+    /// while the panel is `shown`. One count at a time: when what is wanted
+    /// changes (a frame dragged over the grid changes it every frame), the
+    /// count under way is cancelled and the next starts once it has
+    /// stopped.
+    pub(crate) fn update_stats(&mut self, ctx: &egui::Context, shown: bool) {
+        let Some(of) = self.stats_of().filter(|_| shown) else {
+            self.stats = None;
+            return;
+        };
+        if let Some(slot) = &mut self.stats
+            && let Some(Ok(stats)) = slot.rx.as_ref().map(mpsc::Receiver::try_recv)
+        {
+            slot.stats = Some(stats);
+            slot.rx = None;
+        }
+        if let Some(slot) = &self.stats {
+            if slot.of == of {
+                return;
+            }
+            if slot.rx.is_some() {
+                slot.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (ctx, what, stop) = (ctx.clone(), of.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            // The dates taken may be read by libheif or the `image` crate.
+            let _com = win::com_init();
+            let start = Instant::now();
+            let stats = match &what {
+                StatsOf::Folder(dir) => crate::folder::folder_stats(dir, &stop).map_err(|e| e.to_string()),
+                StatsOf::Files(paths) => Ok(crate::folder::files_stats(paths, &stop)),
+            };
+            log::debug!("counted {:?} in {:.1} ms", stats.as_ref().map(|s| s.images), start.elapsed().as_secs_f64() * 1e3);
+            if tx.send(stats).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+        self.stats = Some(StatsSlot { of, stats: None, rx: Some(rx), cancel });
     }
 
     /// The pixel of the image on screen under `pointer`, the picture shown
@@ -3924,6 +4008,7 @@ impl eframe::App for App {
         let fullscreen = self.fullscreen && !self.gallery_open;
         self.update_histogram(&ctx, self.show_info && !fullscreen);
         self.update_colour(&ctx, self.show_info && !fullscreen);
+        self.update_stats(&ctx, self.show_info && !fullscreen);
         if !fullscreen {
             self.menu_bar(root_ui);
             if self.show_toolbar {
