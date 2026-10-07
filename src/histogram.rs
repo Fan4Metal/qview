@@ -360,8 +360,13 @@ mod tests {
             top.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
             let top: Vec<String> = top.iter().take(6).map(|&(l, n)| format!("{l}:{:.2}%", n as f64 * 100.0 / h.pixels as f64)).collect();
             let gaps = used.windows(2).filter(|w| w[1].0 - w[0].0 > 1).count();
-            println!("{name}: {} levels from {} to {}, {gaps} gaps, top {}", used.len(), used[0].0, used.last().unwrap().0, top.join(" "));
+            let mean = h.mean(c).unwrap();
+            println!("{name}: mean {mean:.2}, {} levels from {} to {}, {gaps} gaps, top {}", used.len(), used[0].0, used.last().unwrap().0, top.join(" "));
         }
+        // Luma is linear in the channels: its mean is theirs weighted, up
+        // to the rounding of each pixel's luma.
+        let [r, g, b] = [RED, GREEN, BLUE].map(|c| h.mean(c).unwrap());
+        println!("weighted mean of R, G, B: {:.2}", (54.0 * r + 183.0 * g + 19.0 * b) / 256.0);
     }
 
     #[test]
