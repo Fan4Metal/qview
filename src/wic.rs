@@ -22,6 +22,7 @@ use crate::filetypes::{FILE_TYPES, RAW_EXTENSIONS as RAW};
 const CLSID_WIC_IMAGING_FACTORY: GUID = GUID::from_u128(0xcacaf262_9370_4615_a13b_9f5539da4c0a);
 const IID_IWIC_IMAGING_FACTORY: GUID = GUID::from_u128(0xec5ec8a9_c395_4314_9c77_54d7a935ff70);
 const IID_IWIC_PIXEL_FORMAT_INFO: GUID = GUID::from_u128(0xe8eda601_3d48_431a_ab44_69059be88bbe);
+const IID_IWIC_PIXEL_FORMAT_INFO2: GUID = GUID::from_u128(0xa9db33a2_af5f_43c7_b679_74f5984b5aa4);
 const IID_IWIC_BITMAP_CODEC_INFO: GUID = GUID::from_u128(0xe87a44c4_b76e_4c47_8b09_298eb12a2714);
 const PIXEL_FORMAT_32BPP_PBGRA: GUID = GUID::from_u128(0x6fddc324_4e03_4bfe_b185_3d77768dc910);
 const PIXEL_FORMAT_32BPP_RGBA: GUID = GUID::from_u128(0xf5c7ad2d_6a8d_43dd_a7a8_a29935261ae9);
@@ -202,18 +203,29 @@ fn orientation(frame: &Com) -> u16 {
     if (1..=8).contains(&found) { found as u16 } else { 1 }
 }
 
-/// Bits per pixel of the pixel format `format`; 0 if unknown.
-fn bits_per_pixel(factory: &Com, format: &GUID) -> u16 {
+/// Bits per pixel of the pixel format `format` (0 if unknown), and whether
+/// it has an alpha channel (None if unknown).
+fn pixel_format(factory: &Com, format: &GUID) -> (u16, Option<bool>) {
     type CreateComponentInfo = unsafe extern "system" fn(Unknown, *const GUID, *mut Unknown) -> HRESULT;
     type GetBitsPerPixel = unsafe extern "system" fn(Unknown, *mut u32) -> HRESULT;
+    type SupportsTransparency = unsafe extern "system" fn(Unknown, *mut i32) -> HRESULT;
     let mut info = null_mut();
     if unsafe { factory.method::<CreateComponentInfo>(6)(factory.0, format, &mut info) } < 0 || info.is_null() {
-        return 0;
+        return (0, None);
     }
-    let Some(info) = Com(info).query(&IID_IWIC_PIXEL_FORMAT_INFO) else { return 0 };
+    let info = Com(info);
+    let Some(format_info) = info.query(&IID_IWIC_PIXEL_FORMAT_INFO) else { return (0, None) };
     let mut bits = 0;
-    let hr = unsafe { info.method::<GetBitsPerPixel>(13)(info.0, &mut bits) };
-    if hr >= 0 { bits as u16 } else { 0 }
+    let hr = unsafe { format_info.method::<GetBitsPerPixel>(13)(format_info.0, &mut bits) };
+    let bits = if hr >= 0 { bits as u16 } else { 0 };
+    // IWICPixelFormatInfo2 (Windows 7 on): after IWICPixelFormatInfo's
+    // GetChannelMask (15).
+    let alpha = info.query(&IID_IWIC_PIXEL_FORMAT_INFO2).and_then(|info2| {
+        let mut alpha = 0;
+        let hr = unsafe { info2.method::<SupportsTransparency>(16)(info2.0, &mut alpha) };
+        (hr >= 0).then_some(alpha != 0)
+    });
+    (bits, alpha)
 }
 
 /// A decoded image, as stored (not turned by its orientation).
@@ -226,6 +238,8 @@ pub struct Image {
     pub orientation: u16,
     /// Bits per pixel in the file.
     pub bits: u16,
+    /// Whether the file has an alpha channel, when known.
+    pub alpha: Option<bool>,
 }
 
 /// Decode the first frame of `path`: premultiplied BGRA with `bgra`,
@@ -241,7 +255,7 @@ pub fn decode(path: &Path, bgra: bool) -> Result<Image, String> {
     let (width, height) = size_of_source(&frame)?;
     let mut format = GUID::from_u128(0);
     check(unsafe { frame.method::<GetPixelFormat>(4)(frame.0, &mut format) }, "GetPixelFormat")?;
-    let bits = bits_per_pixel(&factory, &format);
+    let (bits, alpha) = pixel_format(&factory, &format);
     let orientation = orientation(&frame);
     let stride = width as usize * 4;
     let len = stride * height as usize;
@@ -261,7 +275,7 @@ pub fn decode(path: &Path, bgra: bool) -> Result<Image, String> {
         converter.method::<CopyPixels>(7)(converter.0, std::ptr::null(), stride as u32, len as u32, pixels.as_mut_ptr())
     };
     check(hr, "CopyPixels")?;
-    Ok(Image { width, height, pixels, orientation, bits })
+    Ok(Image { width, height, pixels, orientation, bits, alpha })
 }
 
 /// The size of the image in `path` as stored and its EXIF orientation,
@@ -424,7 +438,7 @@ pub(crate) mod tests {
         img.put_pixel(1, 0, image::Rgba([0, 0, 255, 255]));
         img.save(&png).unwrap();
         let bgra = decode(&png, true).unwrap();
-        assert_eq!((bgra.width, bgra.height, bgra.orientation, bgra.bits), (3, 2, 1, 32));
+        assert_eq!((bgra.width, bgra.height, bgra.orientation, bgra.bits, bgra.alpha), (3, 2, 1, 32, Some(true)));
         assert_eq!(&bgra.pixels[..8], &[0, 0, 128, 128, 255, 0, 0, 255]);
         let rgba = decode(&png, false).unwrap();
         assert_eq!(&rgba.pixels[..8], &[255, 0, 0, 128, 0, 0, 255, 255]);
@@ -436,7 +450,7 @@ pub(crate) mod tests {
         let turned = dir.join("turned.jpg");
         std::fs::write(&turned, with_orientation(&jpeg, 6)).unwrap();
         let img = decode(&turned, true).unwrap();
-        assert_eq!((img.width, img.height, img.orientation, img.bits), (4, 2, 6, 24));
+        assert_eq!((img.width, img.height, img.orientation, img.bits, img.alpha), (4, 2, 6, 24, Some(false)));
         assert_eq!(size(&turned), Some((4, 2, 6)));
 
         let broken = dir.join("broken.heic");

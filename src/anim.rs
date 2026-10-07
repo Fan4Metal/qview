@@ -207,8 +207,117 @@ fn spawn(path: PathBuf, max_side: usize, from: usize, ctx: egui::Context) -> mps
 
 /// The delay of a frame as shown (see `MIN_DELAY`).
 fn shown_delay(delay: image::Delay) -> Duration {
-    let delay = Duration::from(delay);
+    shown(Duration::from(delay))
+}
+
+fn shown(delay: Duration) -> Duration {
     if delay < MIN_DELAY { DEFAULT_DELAY } else { delay }
+}
+
+/// What the information panel says of an animation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Summary {
+    pub frames: usize,
+    /// One loop, with the delays as shown (`MIN_DELAY`).
+    pub duration: Duration,
+    /// How many times it plays; None: endlessly.
+    pub loops: Option<u32>,
+}
+
+/// The frames of the GIF or WebP `path` (a file, or an image in an
+/// archive), counted from the file's blocks without decoding them; None
+/// for one frame or another format.
+pub fn summary_of(path: &Path) -> Option<Summary> {
+    let format = ImageFormat::from_path(path).ok().filter(|f| matches!(f, ImageFormat::Gif | ImageFormat::WebP))?;
+    let bytes = crate::archive::read(path).ok()?;
+    let format = image::guess_format(&bytes).ok().filter(|&f| f == format)?;
+    summary(&bytes, format)
+}
+
+fn summary(bytes: &[u8], format: ImageFormat) -> Option<Summary> {
+    let delays = match format {
+        ImageFormat::Gif => gif_delays(bytes)?,
+        ImageFormat::WebP => webp_delays(bytes)?,
+        _ => return None,
+    };
+    if delays.len() < 2 {
+        return None;
+    }
+    // As the player takes them (`play`).
+    let loops = match frames(bytes, format).ok()?.2 {
+        LoopCount::Infinite => None,
+        LoopCount::Finite(n) => Some(n.get()),
+    };
+    let duration = delays.iter().map(|&ms| shown(Duration::from_millis(ms))).sum();
+    Some(Summary { frames: delays.len(), duration, loops })
+}
+
+/// The delay of every frame of a GIF, in milliseconds, from its blocks:
+/// a Graphic Control Extension before an image gives its delay. A file cut
+/// short gives the frames before the cut.
+fn gif_delays(b: &[u8]) -> Option<Vec<u64>> {
+    if !b.starts_with(b"GIF8") {
+        return None;
+    }
+    // A colour table after a descriptor whose flags say so.
+    let table = |flags: u8| if flags & 0x80 != 0 { 3usize << ((flags & 7) + 1) } else { 0 };
+    // Past a run of sub-blocks, each its length and then that many bytes.
+    let past_blocks = |mut at: usize| -> Option<usize> {
+        loop {
+            let n = *b.get(at)? as usize;
+            at += 1 + n;
+            if n == 0 {
+                return Some(at);
+            }
+        }
+    };
+    let mut at = 13 + table(*b.get(10)?);
+    let (mut delays, mut delay) = (Vec::new(), 0);
+    while let Some(&block) = b.get(at) {
+        let next = match block {
+            0x21 => {
+                if b.get(at + 1) == Some(&0xf9) && b.get(at + 2) == Some(&4) {
+                    let Some(d) = b.get(at + 4..at + 6) else { break };
+                    delay = u16::from_le_bytes([d[0], d[1]]) as u64 * 10;
+                }
+                past_blocks(at + 2)
+            }
+            0x2c => {
+                delays.push(delay);
+                delay = 0;
+                let Some(&flags) = b.get(at + 9) else { break };
+                // The descriptor, its colour table, the LZW code size.
+                past_blocks(at + 10 + table(flags) + 1)
+            }
+            // The trailer, or something else.
+            _ => break,
+        };
+        let Some(next) = next else { break };
+        at = next;
+    }
+    Some(delays)
+}
+
+/// The duration of every frame (ANMF chunk) of a WebP, in milliseconds.
+fn webp_delays(b: &[u8]) -> Option<Vec<u64>> {
+    if b.get(..4)? != b"RIFF" || b.get(8..12)? != b"WEBP" {
+        return None;
+    }
+    let mut at = 12usize;
+    let mut delays = Vec::new();
+    while let Some(head) = b.get(at..at + 8) {
+        let size = u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize;
+        // ANMF: X, Y, width and height (three bytes each), then the
+        // duration (three bytes).
+        if &head[..4] == b"ANMF"
+            && let Some(d) = b.get(at + 20..at + 23)
+        {
+            delays.push(u32::from_le_bytes([d[0], d[1], d[2], 0]) as u64);
+        }
+        // Chunks are padded to an even length.
+        at = at.saturating_add(8).saturating_add(size).saturating_add(size & 1);
+    }
+    Some(delays)
 }
 
 /// Whether the GIF or WebP `bytes` has more than one frame.
@@ -355,6 +464,17 @@ mod tests {
         let got = played(1);
         let summary: Vec<([u8; 4], usize)> = got.iter().map(|f| (f.pixels.levels[0][..4].try_into().unwrap(), f.index)).collect();
         assert_eq!(summary, [&once[1..], &once[..]].concat().iter().map(|&(c, _, i)| (c, i)).collect::<Vec<_>>());
+        // Counted without decoding: three frames of 50, 100 and 70 ms,
+        // played twice.
+        let bytes = std::fs::read(&path).unwrap();
+        let expected = Summary { frames: 3, duration: Duration::from_millis(220), loops: Some(2) };
+        assert_eq!(super::summary(&bytes, ImageFormat::Gif), Some(expected.clone()));
+        assert_eq!(summary_of(&path), Some(expected));
+        // Cut short anywhere: the frames before the cut, and no panic.
+        for n in 11..bytes.len() {
+            assert!(gif_delays(&bytes[..n]).is_some_and(|d| d.len() <= 3));
+        }
+        assert_eq!(super::summary(b"GIF89a", ImageFormat::Gif), None);
         // From the last.
         let got = played(LAST);
         assert_eq!(got.iter().map(|f| f.index).collect::<Vec<_>>(), [2, 0, 1, 2]);

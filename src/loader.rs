@@ -33,6 +33,8 @@ pub struct Meta {
     pub height: u32,
     /// Bits per pixel in the file: 24 for a colour JPEG.
     pub bits: u16,
+    /// Whether the file has an alpha channel, when the decoder says.
+    pub alpha: Option<bool>,
     pub format: &'static str,
     pub file_size: u64,
     /// Last write time as a FILETIME, 0 if unknown.
@@ -287,6 +289,7 @@ pub fn read_wic(path: &Path, bgra: bool) -> Result<(DynamicImage, Meta), String>
         width: img.width(),
         height: img.height(),
         bits: image.bits,
+        alpha: image.alpha,
         format,
         file_size: file.len(),
         modified: file.last_write_time(),
@@ -316,6 +319,7 @@ fn read_image(path: &Path) -> Result<(DynamicImage, Meta), String> {
     let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     let bits = decoder.original_color_type().bits_per_pixel();
+    let alpha = decoder.color_type().has_alpha();
     let mut img = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
     // A GIF whose screen is 0 pixels wide decodes without an error.
     if img.width() == 0 || img.height() == 0 {
@@ -327,6 +331,7 @@ fn read_image(path: &Path) -> Result<(DynamicImage, Meta), String> {
         width: img.width(),
         height: img.height(),
         bits,
+        alpha: Some(alpha),
         format: format_name(format),
         file_size: bytes.len() as u64,
         modified,

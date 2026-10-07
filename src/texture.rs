@@ -80,6 +80,12 @@ impl Texture {
         Ok(Self { gl, native, id, size, base_level: Cell::new(first), smooth: Cell::new(true) })
     }
 
+    /// Width and height of the full-size level: smaller than the image's
+    /// when the GPU could not hold it.
+    pub fn size(&self) -> (u32, u32) {
+        (self.size.0, self.size.1)
+    }
+
     pub fn id(&self) -> egui::TextureId {
         self.id
     }

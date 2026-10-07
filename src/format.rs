@@ -224,6 +224,88 @@ pub fn ratio(v: f64) -> String {
     format!("{}×", decimal_in(lang(), v, 1))
 }
 
+/// The proportions of `width` x `height`: `3:2`, `16:10`, `≈16:9`
+/// when within 1% of a common one, else `2.35:1`.
+pub fn aspect(width: u32, height: u32) -> String {
+    aspect_in(lang(), width, height)
+}
+
+pub fn aspect_in(lang: Lang, width: u32, height: u32) -> String {
+    if width == 0 || height == 0 {
+        return String::new();
+    }
+    let gcd = |mut a: u32, mut b: u32| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    let g = gcd(width, height);
+    let (a, b) = (width / g, height / g);
+    // 16:10 is named so, not 8:5.
+    let named = |a: u32, b: u32| match (a, b) {
+        (8, 5) => "16:10".to_string(),
+        (5, 8) => "10:16".to_string(),
+        (a, b) => format!("{a}:{b}"),
+    };
+    if a <= 32 && b <= 32 {
+        return named(a, b);
+    }
+    const COMMON: [(u32, u32); 12] =
+        [(1, 1), (5, 4), (4, 3), (7, 5), (3, 2), (8, 5), (5, 3), (16, 9), (2, 1), (21, 9), (32, 9), (3, 1)];
+    let r = width as f64 / height as f64;
+    for (x, y) in COMMON {
+        for (x, y) in [(x, y), (y, x)] {
+            if (r / (x as f64 / y as f64) - 1.0).abs() < 0.01 {
+                return format!("≈{}", named(x, y));
+            }
+        }
+    }
+    if r >= 1.0 { format!("{}:1", decimal_in(lang, r, 2)) } else { format!("1:{}", decimal_in(lang, 1.0 / r, 2)) }
+}
+
+/// The size `width` x `height` pixels print at, at `dpi`:
+/// `33.9 × 25.4 cm`.
+pub fn print_size(width: u32, height: u32, dpi: f64) -> String {
+    print_size_in(lang(), width, height, dpi)
+}
+
+pub fn print_size_in(lang: Lang, width: u32, height: u32, dpi: f64) -> String {
+    let cm = |px: u32| decimal_in(lang, px as f64 / dpi * 2.54, 1);
+    match lang {
+        Lang::En => format!("{} × {} cm", cm(width), cm(height)),
+        Lang::Ru => format!("{} × {} см", cm(width), cm(height)),
+    }
+}
+
+/// Dots per inch: `300 dpi`, `72 × 96 dpi`.
+pub fn dpi(x: f64, y: f64) -> String {
+    let (x, y) = (decimal_in(lang(), x, 0), decimal_in(lang(), y, 0));
+    if x == y { format!("{x} dpi") } else { format!("{x} × {y} dpi") }
+}
+
+/// A duration: `2.4 s`, `1:05 min`; in Russian `2,4 с`, `1:05 мин`.
+pub fn seconds(d: std::time::Duration) -> String {
+    seconds_in(lang(), d)
+}
+
+pub fn seconds_in(lang: Lang, d: std::time::Duration) -> String {
+    let s = d.as_secs_f64();
+    if s < 60.0 {
+        let v = decimal_in(lang, s, 1);
+        return match lang {
+            Lang::En => format!("{v} s"),
+            Lang::Ru => format!("{v} с"),
+        };
+    }
+    let whole = s.round() as u64;
+    let v = format!("{}:{:02}", whole / 60, whole % 60);
+    match lang {
+        Lang::En => format!("{v} min"),
+        Lang::Ru => format!("{v} мин"),
+    }
+}
+
 /// A share of 0 to 1 as a percentage: `0.42%`, `12.5%`, `0%`, `<0.01%`;
 /// in Russian `0,42 %`.
 pub fn percent(share: f64) -> String {
@@ -259,6 +341,21 @@ pub fn camera(make: Option<&str>, model: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_values() {
+        assert_eq!(aspect_in(Lang::En, 6000, 4000), "3:2");
+        assert_eq!(aspect_in(Lang::En, 1920, 1200), "16:10");
+        assert_eq!(aspect_in(Lang::En, 4032, 3024), "4:3");
+        assert_eq!(aspect_in(Lang::En, 3024, 4032), "3:4");
+        assert_eq!(aspect_in(Lang::En, 1366, 768), "≈16:9");
+        assert_eq!(aspect_in(Lang::Ru, 7680, 3215), "2,39:1");
+        assert_eq!(aspect_in(Lang::En, 3215, 7680), "1:2.39");
+        assert_eq!(print_size_in(Lang::En, 4000, 3000, 300.0), "33.9 × 25.4 cm");
+        assert_eq!(print_size_in(Lang::Ru, 3000, 3000, 300.0), "25,4 × 25,4 см");
+        assert_eq!(seconds_in(Lang::En, std::time::Duration::from_millis(2400)), "2.4 s");
+        assert_eq!(seconds_in(Lang::Ru, std::time::Duration::from_millis(65_200)), "1:05 мин");
+    }
 
     #[test]
     fn shooting_values() {

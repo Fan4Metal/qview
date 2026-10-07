@@ -261,7 +261,7 @@ fn decode_with(lib: &'static Lib, path: &Path, bgra: bool) -> Result<Image, Stri
         }
     }
     let bits = luma * if alpha { 4 } else { 3 };
-    Ok(Image { width: width as u32, height: height as u32, pixels, orientation: 1, bits })
+    Ok(Image { width: width as u32, height: height as u32, pixels, orientation: 1, bits, alpha: Some(alpha) })
 }
 
 /// Straight RGBA `src` to premultiplied BGRA in `out`, of the same length.

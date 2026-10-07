@@ -84,6 +84,50 @@ pub struct Exif {
     pub distance: Option<f64>,
     /// DigitalZoomRatio, when above 1.
     pub zoom: Option<f64>,
+    /// XResolution and YResolution in dots per inch.
+    pub dpi: Option<(f64, f64)>,
+}
+
+/// How a JPEG is compressed: its SOF marker and the sampling factors of
+/// its components.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JpegCoding {
+    /// The SOF marker less 0xc0: 0 baseline, 1 extended, 2 progressive, 3
+    /// lossless; 9 to 11 the same with arithmetic coding.
+    pub process: u8,
+    /// Horizontal and vertical sampling factors of each component.
+    pub sampling: Vec<(u8, u8)>,
+}
+
+impl JpegCoding {
+    pub fn progressive(&self) -> bool {
+        matches!(self.process, 2 | 6 | 10 | 14)
+    }
+
+    pub fn lossless(&self) -> bool {
+        matches!(self.process, 3 | 7 | 11 | 15)
+    }
+
+    pub fn arithmetic(&self) -> bool {
+        self.process >= 9
+    }
+
+    /// The chroma subsampling, `4:2:0`; None for a grey image.
+    pub fn subsampling(&self) -> Option<String> {
+        let (&(h1, v1), &(h2, v2)) = (self.sampling.first()?, self.sampling.get(1)?);
+        if h2 == 0 || v2 == 0 || h1 % h2 != 0 || v1 % v2 != 0 {
+            return Some(format!("{h1}x{v1}, {h2}x{v2}"));
+        }
+        Some(match (h1 / h2, v1 / v2) {
+            (1, 1) => "4:4:4".into(),
+            (2, 1) => "4:2:2".into(),
+            (2, 2) => "4:2:0".into(),
+            (1, 2) => "4:4:0".into(),
+            (4, 1) => "4:1:1".into(),
+            (4, 2) => "4:1:0".into(),
+            _ => format!("{h1}x{v1}, {h2}x{v2}"),
+        })
+    }
 }
 
 /// What the panel shows of a file besides what the decoder found.
@@ -98,6 +142,12 @@ pub struct Info {
     pub exif: Exif,
     /// The ICC profile's description ("sRGB IEC61966-2.1", "Display P3").
     pub profile: Option<String>,
+    /// Dots per inch the file asks to be printed at: EXIF's, else a
+    /// JPEG's JFIF density, else a PNG's pHYs.
+    pub dpi: Option<(f64, f64)>,
+    pub jpeg: Option<JpegCoding>,
+    /// Of an animated GIF or WebP.
+    pub animation: Option<crate::anim::Summary>,
 }
 
 /// Read what is known of `path` (a file, or an image in an archive): its
@@ -112,8 +162,69 @@ pub fn read(path: &Path) -> Info {
     };
     let size = crate::header::read(path).map(crate::header::Size::upright);
     let (exif, icc) = metadata(path);
+    let exif = exif.unwrap_or_default();
     let profile = icc.as_deref().and_then(icc_description);
-    Info { file_size, modified, created, size, exif: exif.unwrap_or_default(), profile }
+    let (density, jpeg) = if crate::archive::inside(path) {
+        crate::archive::read(path).map_or((None, None), |bytes| coding(&bytes[..]))
+    } else {
+        File::open(path).map_or((None, None), |file| coding(&file))
+    };
+    let dpi = exif.dpi.or(density);
+    let animation = crate::anim::summary_of(path);
+    Info { file_size, modified, created, size, exif, profile, dpi, jpeg, animation }
+}
+
+/// A JPEG's JFIF density and its coding, or a PNG's pHYs density, read
+/// from the segments or chunks before the image data.
+fn coding<S: At + ?Sized>(src: &S) -> (Option<(f64, f64)>, Option<JpegCoding>) {
+    let Some(head) = src.at(0, 8) else { return (None, None) };
+    if head.starts_with(&[0xff, 0xd8]) {
+        let (mut density, mut jpeg) = (None, None);
+        for (marker, at, len) in segments(src) {
+            match marker {
+                0xe0 if density.is_none() => {
+                    let Some(d) = src.at(at, len.min(14) as usize) else { continue };
+                    if d.len() == 14 && d.starts_with(b"JFIF\0") {
+                        let (x, y) = (u16::from_be_bytes([d[8], d[9]]) as f64, u16::from_be_bytes([d[10], d[11]]) as f64);
+                        // Units 0: only the pixels' proportions.
+                        let per_inch = match d[7] {
+                            1 => Some(1.0),
+                            2 => Some(2.54),
+                            _ => None,
+                        };
+                        density = per_inch.filter(|_| x > 0.0 && y > 0.0).map(|k| (x * k, y * k));
+                    }
+                }
+                // SOFn, but DHT, JPG and DAC, which share the range.
+                0xc0..=0xcf if !matches!(marker, 0xc4 | 0xc8 | 0xcc) && jpeg.is_none() => {
+                    let Some(d) = src.at(at, len.min(6 + 3 * 4) as usize) else { continue };
+                    let count = d.get(5).copied().unwrap_or(0) as usize;
+                    let sampling = (0..count).filter_map(|i| d.get(6 + 3 * i + 1)).map(|&hv| (hv >> 4, hv & 15)).collect();
+                    jpeg = Some(JpegCoding { process: marker - 0xc0, sampling });
+                }
+                _ => {}
+            }
+        }
+        return (density, jpeg);
+    }
+    if head == *b"\x89PNG\r\n\x1a\n" {
+        let mut at = 8u64;
+        while let Some(chunk) = src.at(at, 8) {
+            let len = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as u64;
+            match &chunk[4..] {
+                b"pHYs" => {
+                    let Some(d) = src.at(at + 8, 9) else { break };
+                    let (x, y) = (u32::from_be_bytes([d[0], d[1], d[2], d[3]]), u32::from_be_bytes([d[4], d[5], d[6], d[7]]));
+                    // Unit 1: per metre; 0 only the proportions.
+                    let dpi = (d[8] == 1 && x > 0 && y > 0).then_some((x as f64 * 0.0254, y as f64 * 0.0254));
+                    return (dpi, None);
+                }
+                b"IDAT" | b"IEND" => break,
+                _ => at += 12 + len,
+            }
+        }
+    }
+    (None, None)
 }
 
 /// When the photo in `path` was taken, as a FILETIME (its local time on
@@ -176,6 +287,28 @@ fn from_image<R: std::io::BufRead + std::io::Seek>(reader: R) -> Option<Raw> {
 fn jpeg<S: At + ?Sized>(src: &S) -> (Option<Exif>, Option<Vec<u8>>) {
     let mut exif = None;
     let mut icc: Vec<(u8, Vec<u8>)> = Vec::new();
+    for (marker, at, len) in segments(src) {
+        if (marker == 0xe1 && exif.is_none()) || marker == 0xe2 {
+            let data = src.at(at, len as usize).unwrap_or_default();
+            if let Some(tiff) = data.strip_prefix(b"Exif\0\0") {
+                exif = Tiff::new(tiff).map(|t| t.exif());
+            } else if let Some(chunk) = data.strip_prefix(b"ICC_PROFILE\0")
+                && chunk.len() > 2
+            {
+                // Its number, then how many there are.
+                icc.push((chunk[0], chunk[2..].to_vec()));
+            }
+        }
+    }
+    icc.sort_by_key(|(n, _)| *n);
+    let icc = (!icc.is_empty()).then(|| icc.into_iter().flat_map(|(_, c)| c).collect());
+    (exif, icc)
+}
+
+/// The segments of a JPEG before its image data: each marker's second
+/// byte, where its data starts and how long it is.
+fn segments<S: At + ?Sized>(src: &S) -> Vec<(u8, u64, u64)> {
+    let mut found = Vec::new();
     let mut at = 2u64;
     while let Some(marker) = src.at(at, 2) {
         if marker[0] != 0xff {
@@ -199,22 +332,10 @@ fn jpeg<S: At + ?Sized>(src: &S) -> (Option<Exif>, Option<Vec<u8>>) {
         if len < 2 {
             break;
         }
-        if (marker[1] == 0xe1 && exif.is_none()) || marker[1] == 0xe2 {
-            let data = src.at(at + 4, (len - 2) as usize).unwrap_or_default();
-            if let Some(tiff) = data.strip_prefix(b"Exif\0\0") {
-                exif = Tiff::new(tiff).map(|t| t.exif());
-            } else if let Some(chunk) = data.strip_prefix(b"ICC_PROFILE\0")
-                && chunk.len() > 2
-            {
-                // Its number, then how many there are.
-                icc.push((chunk[0], chunk[2..].to_vec()));
-            }
-        }
+        found.push((marker[1], at + 4, len - 2));
         at += 2 + len;
     }
-    icc.sort_by_key(|(n, _)| *n);
-    let icc = (!icc.is_empty()).then(|| icc.into_iter().flat_map(|(_, c)| c).collect());
-    (exif, icc)
+    found
 }
 
 /// Bytes read at an offset: of a file, or of data in memory.
@@ -398,8 +519,12 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
                 *field = value;
             }
         };
+        let (mut x_res, mut y_res, mut unit) = (None, None, 2);
         for e in self.ifd(self.first) {
             match e.tag {
+                0x011a => x_res = self.rational(&e, 0),
+                0x011b => y_res = self.rational(&e, 0),
+                0x0128 => unit = self.number(&e).unwrap_or(2),
                 0x010e => set(&mut x.title, self.text(&e)),
                 0x010f => x.make = self.text(&e),
                 0x0110 => x.model = self.text(&e),
@@ -418,6 +543,16 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
                 _ => {}
             }
         }
+        // Unit 2: inches, 3: centimetres, 1: none.
+        let per_inch = match unit {
+            2 => Some(1.0),
+            3 => Some(2.54),
+            _ => None,
+        };
+        x.dpi = match (x_res, y_res.or(x_res), per_inch) {
+            (Some(rx), Some(ry), Some(k)) if rx > 0.0 && ry > 0.0 => Some((rx * k, ry * k)),
+            _ => None,
+        };
         let mut lens_make = None;
         for e in exif_ifd.map(|o| self.ifd(o)).unwrap_or_default() {
             match e.tag {
@@ -627,6 +762,9 @@ mod tests {
                 (0x9c9b, 1, "Закат\0".encode_utf16().flat_map(u16::to_le_bytes).collect()),
                 (0x0112, 3, short(6)),
                 (0x4746, 3, short(4)),
+                (0x011a, 5, b.rational(300, 1)),
+                (0x011b, 5, b.rational(300, 1)),
+                (0x0128, 3, short(2)),
             ],
             vec![
                 (0x829a, 5, b.rational(1, 250)),
@@ -686,6 +824,7 @@ mod tests {
             assert_eq!((x.orientation, x.rating, x.program, x.metering), (Some(6), Some(4), Some(3), Some(5)));
             // A zoom ratio of 0 is no digital zoom.
             assert_eq!((x.white_balance, x.distance, x.zoom), (Some(0), Some(2.5), None));
+            assert_eq!(x.dpi, Some((300.0, 300.0)));
         }
     }
 
@@ -705,6 +844,19 @@ mod tests {
         segment(&mut jpeg, 0xe2, &[b"ICC_PROFILE\0\x01\x02".as_slice(), b"abc"].concat());
         jpeg.extend([0xff, 0xda, 0, 2, 0xff, 0xd9]);
         let (exif, icc) = found_in(&jpeg[..], || None, || None);
+        // Before them a JFIF density and a progressive SOF of 4:2:0.
+        let mut coded = vec![0xff, 0xd8];
+        segment(&mut coded, 0xe0, b"JFIF\0\x01\x02\x02\x00\x76\x00\x76\0\0");
+        segment(&mut coded, 0xc2, &[8, 0, 16, 0, 16, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+        coded.extend([0xff, 0xda, 0, 2, 0xff, 0xd9]);
+        let (dpi, coding) = coding(&coded[..]);
+        let dpi = dpi.unwrap();
+        assert!((dpi.0 - 118.0 * 2.54).abs() < 1e-9 && dpi.0 == dpi.1);
+        let coding = coding.unwrap();
+        assert!(coding.progressive() && !coding.arithmetic() && !coding.lossless());
+        assert_eq!(coding.subsampling().as_deref(), Some("4:2:0"));
+        assert_eq!(JpegCoding { process: 0, sampling: vec![(1, 1)] }.subsampling(), None);
+        assert_eq!(JpegCoding { process: 0, sampling: vec![(2, 1), (1, 1), (1, 1)] }.subsampling().as_deref(), Some("4:2:2"));
         assert_eq!(exif.unwrap().iso, Some(400));
         assert_eq!(icc.as_deref(), Some(&b"abcdef"[..]));
         // The TIFF as a file on disk, read where its tags point.
@@ -739,6 +891,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("camera.png");
         std::fs::write(&path, &png).unwrap();
+        // No pHYs from this encoder: no density.
+        assert_eq!(coding(&png[..]), (None, None));
+        let mut dense = png[..33].to_vec();
+        dense.extend(9u32.to_be_bytes());
+        dense.extend(b"pHYs");
+        dense.extend([0, 0, 0x0b, 0x13, 0, 0, 0x0b, 0x13, 1, 0, 0, 0, 0]);
+        dense.extend(&png[33..]);
+        let dpi = coding(&dense[..]).0.unwrap();
+        assert!((dpi.0 - 2835.0 * 0.0254).abs() < 1e-9);
         assert_eq!(metadata(&path).0.unwrap().model.as_deref(), Some("Canon EOS R6"));
         assert!(taken(&path).is_some());
         std::fs::remove_dir_all(&dir).unwrap();

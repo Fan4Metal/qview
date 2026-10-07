@@ -81,7 +81,8 @@ impl App {
         let Some(path) = &self.current else { return Vec::new() };
         let info = self.info.as_ref().filter(|i| i.path == *path).and_then(|i| i.info.clone());
         // What the decoder found, when the image is on screen.
-        let meta = self.shown.as_ref().filter(|(p, _)| p == path).map(|(_, picture)| &picture.meta);
+        let picture = self.shown.as_ref().filter(|(p, _)| p == path).map(|(_, picture)| picture);
+        let meta = picture.map(|picture| &picture.meta);
         let mut file = Section { title: tr!("File", "Файл"), rows: Vec::new() };
         file.rows.push((tr!("Name", "Имя"), crate::app::file_name(path)));
         if let Some(parent) = path.parent() {
@@ -105,10 +106,35 @@ impl App {
         let mut image = Section { title: tr!("Image", "Изображение"), rows: Vec::new() };
         if let Some((w, h)) = meta.map(|m| (m.width, m.height)).or(info.size) {
             image.rows.push((tr!("Dimensions", "Размеры"), format::dimensions(w, h)));
+            image.rows.push((tr!("Proportions", "Пропорции"), format::aspect(w, h)));
+            image.rows.push((tr!("Print at 300 dpi", "Отпечаток при 300 dpi"), format::print_size(w, h, 300.0)));
+        }
+        if let Some((dx, dy)) = info.dpi {
+            image.rows.push((tr!("Resolution", "Разрешение"), format::dpi(dx, dy)));
         }
         if let Some(m) = meta {
             let animated = if m.animated { tr!(", animated", ", анимация") } else { "" };
             image.rows.push((tr!("Format", "Формат"), tr!(format!("{}, {}-bit{animated}", m.format, m.bits), format!("{}, {} бит{animated}", m.format, m.bits))));
+            if let Some(alpha) = m.alpha {
+                image.rows.push((tr!("Alpha channel", "Альфа-канал"), if alpha { tr!("yes", "есть") } else { tr!("no", "нет") }.into()));
+            }
+        }
+        if let Some(jpeg) = &info.jpeg {
+            image.rows.push((tr!("JPEG compression", "Сжатие JPEG"), jpeg_coding(jpeg)));
+        }
+        if let Some(a) = &info.animation {
+            image.rows.push((tr!("Frames", "Кадров"), a.frames.to_string()));
+            image.rows.push((tr!("Duration", "Длительность"), format::seconds(a.duration)));
+            let plays = a.loops.map_or_else(|| tr!("endlessly", "бесконечно").to_string(), |n| n.to_string());
+            image.rows.push((tr!("Plays", "Проигрываний"), plays));
+        }
+        // The texture is smaller when the GPU cannot hold the image.
+        if let Some(picture) = picture {
+            let (tw, th) = picture.texture.size();
+            if tw < picture.meta.width || th < picture.meta.height {
+                let shown = tr!(format!("{tw} × {th}, the GPU's limit"), format!("{tw} × {th}, предел видеокарты"));
+                image.rows.push((tr!("Shown at", "Показано"), shown));
+            }
         }
         if let Some(o) = x.orientation.filter(|&o| o != 1) {
             image.rows.push((tr!("Orientation", "Ориентация"), orientation(o)));
@@ -217,6 +243,25 @@ fn orientation(o: u32) -> String {
         _ => tr!("turned 90° anticlockwise", "поворот на 90° против часовой"),
     };
     format!("{o}: {what}")
+}
+
+/// How a JPEG is compressed: `progressive, 4:2:0`.
+fn jpeg_coding(jpeg: &crate::info::JpegCoding) -> String {
+    let kind = if jpeg.lossless() {
+        tr!("lossless", "без потерь")
+    } else if jpeg.progressive() {
+        tr!("progressive", "прогрессивное")
+    } else if jpeg.process % 8 == 1 {
+        tr!("extended", "расширенное")
+    } else {
+        tr!("baseline", "базовое")
+    };
+    let mut parts = vec![kind.to_string()];
+    if jpeg.arithmetic() {
+        parts.push(tr!("arithmetic coding", "арифметическое кодирование").into());
+    }
+    parts.push(jpeg.subsampling().unwrap_or_else(|| tr!("greyscale", "оттенки серого").into()));
+    parts.join(", ")
 }
 
 /// The EXIF ExposureProgram `p` (1 to 8).
