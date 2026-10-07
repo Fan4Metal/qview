@@ -6,6 +6,24 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
+/// Text of a file whose encoding is not said (an EXIF ASCII field): as
+/// UTF-8 when it is valid UTF-8, otherwise in this computer's ANSI code
+/// page, which programs such as ACDSee wrote it in (Windows-1251 on a
+/// Russian system).
+pub fn legacy_text(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_owned();
+    }
+    let Ok(len) = i32::try_from(bytes.len()) else { return String::from_utf8_lossy(bytes).into_owned() };
+    let mut out = vec![0u16; bytes.len()];
+    let n = unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, out.as_mut_ptr(), len) };
+    if n <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    String::from_utf16_lossy(&out[..n as usize])
+}
+
 /// `s` as a NUL-terminated UTF-16 string for Win32.
 pub fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(std::iter::once(0)).collect()
@@ -704,6 +722,21 @@ pub fn local_stamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_text_in_the_ansi_code_page() {
+        // UTF-8 as it is, whatever the code page.
+        assert_eq!(legacy_text("Фото ACD".as_bytes()), "Фото ACD");
+        assert_eq!(legacy_text(b"Canon"), "Canon");
+        // Not UTF-8: the ANSI code page's, which on a Russian system is
+        // Windows-1251.
+        let cp1251 = b"\xcf\xf0\xee\xe3\xf0\xe0\xec\xec\xe0 ACD";
+        let text = legacy_text(cp1251);
+        assert!(!text.contains('\u{fffd}'), "{text}");
+        if unsafe { windows_sys::Win32::Globalization::GetACP() } == 1251 {
+            assert_eq!(text, "Программа ACD");
+        }
+    }
 
     #[test]
     fn explorer_order() {

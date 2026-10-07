@@ -305,12 +305,13 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
         self.src.at(self.u32(&e.field) as u64, size as usize)
     }
 
-    /// The text of `e`: ASCII (UTF-8 in practice), up to its first NUL,
-    /// trimmed; None when empty.
+    /// The text of `e`: ASCII (UTF-8 in practice, or the ANSI code page of
+    /// the program that wrote it, see `win::legacy_text`), up to its first
+    /// NUL, trimmed; None when empty.
     fn text(&self, e: &Entry) -> Option<String> {
         let data = self.data(e, MAX_VALUE)?;
         let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-        nonempty(String::from_utf8_lossy(&data[..end]).into_owned())
+        nonempty(crate::win::legacy_text(&data[..end]))
     }
 
     /// The text of a Windows field (XPTitle and the like): UTF-16LE, in
@@ -330,7 +331,7 @@ impl<'a, S: At + ?Sized> Tiff<'a, S> {
                 let unit = |&c: &[u8; 2]| if self.big { u16::from_be_bytes(c) } else { u16::from_le_bytes(c) };
                 String::from_utf16_lossy(&text.as_chunks::<2>().0.iter().map(unit).take_while(|&u| u != 0).collect::<Vec<_>>())
             }
-            _ => String::from_utf8_lossy(text.split(|&b| b == 0).next().unwrap_or_default()).into_owned(),
+            _ => crate::win::legacy_text(text.split(|&b| b == 0).next().unwrap_or_default()),
         };
         nonempty(text)
     }
@@ -491,7 +492,7 @@ pub fn icc_description(icc: &[u8]) -> Option<String> {
         b"desc" => {
             let len = at(8)?;
             let ascii = tag.get(12..12usize.checked_add(len)?)?;
-            String::from_utf8_lossy(ascii.split(|&b| b == 0).next().unwrap_or_default()).into_owned()
+            crate::win::legacy_text(ascii.split(|&b| b == 0).next().unwrap_or_default())
         }
         b"mluc" => {
             let (records, record) = (at(8)?, at(12)?);
