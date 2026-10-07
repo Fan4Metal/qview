@@ -86,6 +86,9 @@ pub enum Action {
     SetKey(PathBuf, Option<u8>),
     /// Open a folder shown under Quick Access where it is in the tree.
     ShowInTree(PathBuf),
+    /// Ask for a new name of a folder, or to delete it.
+    Rename(PathBuf),
+    Delete(PathBuf),
     ShowInExplorer(PathBuf),
 }
 
@@ -595,6 +598,7 @@ impl Tree {
                     let path = node.path.clone();
                     let pinned_as = pinned.iter().find(|(p, _)| same_path(p, &path)).map(|(_, k)| *k);
                     let in_quick = quick.as_ref().is_some_and(|q| q.contains(&row));
+                    let changeable = node.kind == Kind::Folder && node.depth > 0;
                     response.context_menu(|ui| {
                         if in_quick && ui.button(tr!("Show in Tree", "Отобразить в дереве")).clicked() {
                             action = Some(Action::ShowInTree(path.clone()));
@@ -617,6 +621,19 @@ impl Tree {
                         if ui.button(tr!("Show in Explorer", "Показать в Проводнике")).clicked() {
                             action = Some(Action::ShowInExplorer(path.clone()));
                             ui.close();
+                        }
+                        // A folder, not a drive nor a top-level one
+                        // (Pictures, Desktop).
+                        if changeable {
+                            ui.separator();
+                            if ui.add(Button::new(tr!("Rename…", "Переименовать…")).shortcut_text("F2")).clicked() {
+                                action = Some(Action::Rename(path.clone()));
+                                ui.close();
+                            }
+                            if ui.add(Button::new(tr!("Delete…", "Удалить…")).shortcut_text("Delete")).clicked() {
+                                action = Some(Action::Delete(path.clone()));
+                                ui.close();
+                            }
                         }
                     });
                 }

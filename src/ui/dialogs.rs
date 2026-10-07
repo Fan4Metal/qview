@@ -454,7 +454,15 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("confirm_delete")).show(ctx, |ui| {
             ui.set_width(380.0);
             let n = paths.len();
-            if n == 1 {
+            if n == 1 && paths[0].is_dir() {
+                ui.heading(tr!("Delete Folder", "Удаление папки"));
+                ui.add_space(6.0);
+                let name = file_name(&paths[0]);
+                ui.label(tr!(
+                    format!("Move the folder \"{name}\" with everything in it to the Recycle Bin?"),
+                    format!("Переместить папку «{name}» со всем содержимым в корзину?")
+                ));
+            } else if n == 1 {
                 ui.heading(tr!("Delete File", "Удаление файла"));
                 ui.add_space(6.0);
                 let name = file_name(&paths[0]);
@@ -651,7 +659,8 @@ impl App {
                 edit.request_focus();
             }
             if std::mem::take(&mut rename.select) {
-                select_stem(ctx, id, &rename.name);
+                // A folder's name is selected whole.
+                select_stem(ctx, id, &rename.name, rename.path.is_dir());
             }
             if edit.changed() {
                 rename.error = None;
@@ -794,10 +803,10 @@ impl App {
 }
 
 /// Select `name` in the text field `id` up to its extension.
-fn select_stem(ctx: &egui::Context, id: egui::Id, name: &str) {
+fn select_stem(ctx: &egui::Context, id: egui::Id, name: &str, whole: bool) {
     use egui::text::{CCursor, CCursorRange};
     if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
-        let stem = name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len());
+        let stem = name.rfind('.').filter(|&i| i > 0 && !whole).unwrap_or(name.len());
         let end = name[..stem].chars().count();
         state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(end))));
         state.store(ctx, id);

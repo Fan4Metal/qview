@@ -381,6 +381,8 @@ pub struct App {
     /// The update check (off unless enabled in About).
     pub updates: crate::update::Updates,
     deleting: Option<mpsc::Receiver<Deleted>>,
+    /// The folders among the paths being deleted (known before they go).
+    deleting_folders: Vec<PathBuf>,
     pub dialog: Option<Dialog>,
     /// `dialog` was opened this frame.
     pub dialog_fresh: bool,
@@ -680,6 +682,7 @@ impl App {
                 cc.storage.and_then(|s| s.get_string(LAST_UPDATE_CHECK_KEY)).and_then(|v| v.parse().ok()).unwrap_or(0),
             ),
             deleting: None,
+            deleting_folders: Vec::new(),
             dialog: None,
             dialog_fresh: false,
             notice: None,
@@ -1342,7 +1345,7 @@ impl App {
     fn move_file(&mut self, ctx: &egui::Context, path: &Path, new: &Path) -> Result<(), String> {
         // A change of case only is a rename too.
         if !folder::same_path(new, path) && new.exists() {
-            return Err(tr!("A file with this name already exists", "Файл с таким именем уже существует").into());
+            return Err(tr!("A file or folder with this name already exists", "Файл или папка с таким именем уже существует").into());
         }
         std::fs::rename(path, new).map_err(|e| tr!(format!("Cannot rename: {e}"), format!("Не удалось переименовать: {e}")))?;
         self.moved(&[(path.to_path_buf(), new.to_path_buf())]);
@@ -1356,6 +1359,15 @@ impl App {
     /// Every old name is taken out before any new one goes in, since in a
     /// batch (01 to 02, 02 to 03) a new name may be another pair's old one.
     fn moved(&mut self, pairs: &[(PathBuf, PathBuf)]) {
+        // A folder renamed: everything known in it goes with it.
+        let folders: Vec<(PathBuf, PathBuf)> = pairs.iter().filter(|(_, new)| new.is_dir()).cloned().collect();
+        let expanded;
+        let pairs = if folders.is_empty() {
+            pairs
+        } else {
+            expanded = self.within_folders(pairs, &folders);
+            &expanded[..]
+        };
         self.selection.renamed(pairs);
         let places: Vec<(usize, &PathBuf)> =
             pairs.iter().filter_map(|(old, new)| folder::position(&self.files, old).map(|i| (i, new))).collect();
@@ -1384,6 +1396,64 @@ impl App {
         }
         if let Err(e) = self.favorites.renamed(pairs) {
             self.notice(e);
+        }
+        if !folders.is_empty() {
+            self.folders_moved(&folders);
+        }
+    }
+
+    /// `pairs` with each path known (listed, decoded, a favourite) under
+    /// one of the folders `folders` (old, new) paired with its new path.
+    fn within_folders(&self, pairs: &[(PathBuf, PathBuf)], folders: &[(PathBuf, PathBuf)]) -> Vec<(PathBuf, PathBuf)> {
+        let to = |p: &Path| folders.iter().find_map(|(old, new)| folder::rebase(p, old, new));
+        let favorites = self.favorites.paths();
+        let mut known: Vec<&PathBuf> = self.files.iter().chain(&self.listed).chain(&favorites).collect();
+        known.extend([self.current.as_ref(), self.shown.as_ref().map(|(p, _)| p), self.reloading.as_ref()].into_iter().flatten());
+        known.extend(self.cache.keys().chain(self.partial.keys()));
+        if let Some(gallery) = &self.gallery {
+            known.extend(gallery.cache.keys());
+        }
+        let mut out = pairs.to_vec();
+        let mut seen: std::collections::HashSet<PathBuf> = pairs.iter().map(|(old, _)| old.clone()).collect();
+        for path in known {
+            if seen.insert(path.clone())
+                && let Some(new) = to(path)
+            {
+                out.push((path.clone(), new));
+            }
+        }
+        out
+    }
+
+    /// The folders `folders` (old, new) are renamed: the folder shown, its
+    /// sub-folders, the history and the pinned folders follow; the tree is
+    /// read again.
+    fn folders_moved(&mut self, folders: &[(PathBuf, PathBuf)]) {
+        let to = |p: &Path| folders.iter().find_map(|(old, new)| folder::rebase(p, old, new));
+        let dir = self.dir.as_deref().and_then(to);
+        if let Some(dir) = &dir {
+            self.dir = Some(dir.clone());
+        }
+        for list in [&mut self.listed_folders, &mut self.folders] {
+            for path in list.iter_mut() {
+                if let Some(new) = to(path) {
+                    *path = new;
+                }
+            }
+        }
+        self.history.rebase(to);
+        let pinned: Vec<(PathBuf, PathBuf)> = self.pinned.paths().into_iter().filter_map(|p| to(&p).map(|n| (p, n))).collect();
+        if !pinned.is_empty() {
+            if let Err(e) = self.pinned.renamed(&pinned) {
+                self.notice(e);
+            }
+            self.pinned_changed();
+        }
+        if let Some(gallery) = &mut self.gallery {
+            gallery.tree.refresh();
+            if let Some(dir) = &dir {
+                gallery.tree.reveal(dir);
+            }
         }
     }
 
@@ -1903,7 +1973,13 @@ impl App {
         if let Err(e) = result
             && e != "cancelled"
         {
-            self.notice(tr!(format!("Cannot delete the file: {e}"), format!("Не удалось удалить файл: {e}")));
+            self.notice(tr!(format!("Cannot delete: {e}"), format!("Не удалось удалить: {e}")));
+        }
+        let folders: Vec<PathBuf> =
+            std::mem::take(&mut self.deleting_folders).into_iter().filter(|f| gone.iter().any(|g| folder::same_path(g, f))).collect();
+        if !folders.is_empty() {
+            self.folders_deleted(ctx, &folders);
+            return;
         }
         if gone.is_empty() {
             return;
@@ -1920,6 +1996,58 @@ impl App {
         // A listing begun before would bring them back.
         if self.scan.is_some() {
             self.list_again(ctx);
+        }
+    }
+
+    /// `folders` have gone to the Recycle Bin: the favourites and pinned
+    /// folders in them are forgotten, the folder shown, if it was one of
+    /// them or in one, gives way to the nearest folder above, otherwise it
+    /// is listed again (its folder cells); the tree is read again.
+    fn folders_deleted(&mut self, ctx: &egui::Context, folders: &[PathBuf]) {
+        let within = |p: &Path| folders.iter().any(|f| folder::is_within(p, f));
+        if let Err(e) = self.favorites.remove_if(within) {
+            self.notice(e);
+        }
+        match self.pinned.remove_if(within) {
+            Ok(0) => {}
+            Ok(_) => self.pinned_changed(),
+            Err(e) => self.notice(e),
+        }
+        let name = folder_label(&folders[0]);
+        self.notice(match folders.len() {
+            1 => tr!(format!("Folder moved to the Recycle Bin: {name}"), format!("Папка перемещена в корзину: {name}")),
+            n => tr!(format!("Folders moved to the Recycle Bin: {n}"), format!("Папок перемещено в корзину: {n}")),
+        });
+        let up = self.dir.as_deref().filter(|d| within(d)).and_then(folder::nearest_folder);
+        if let Some(up) = up {
+            self.set_current(None);
+            self.start_scan(ctx, up.clone(), self.deep, None);
+            if let Some(gallery) = &mut self.gallery {
+                gallery.tree.reveal(&up);
+                gallery.scroll = Some(Scroll::Centre);
+            }
+        } else {
+            self.list_again(ctx);
+        }
+        if let Some(gallery) = &mut self.gallery {
+            gallery.tree.refresh();
+        }
+    }
+
+    /// Ask to move the folder `dir` to the Recycle Bin (its context menu,
+    /// Delete on its cell).
+    pub fn ask_delete_folder(&mut self, dir: PathBuf) {
+        if self.deleting.is_none() && dir.is_dir() {
+            self.confirm_delete = Some(vec![dir]);
+        }
+    }
+
+    /// Ask for a new name of the folder `dir` (its context menu, F2 on its
+    /// cell).
+    pub fn ask_rename_folder(&mut self, dir: PathBuf) {
+        if dir.is_dir() && dir.parent().is_some() {
+            let name = file_name(&dir);
+            self.rename = Some(Rename { path: dir, name, error: None, focus: true, select: true });
         }
     }
 
@@ -1960,6 +2088,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         let owner = self.hwnd;
+        self.deleting_folders = paths.iter().filter(|p| p.is_dir()).cloned().collect();
         std::thread::spawn(move || {
             let result = win::recycle(&paths, owner);
             let _ = tx.send((paths, result));
@@ -2249,9 +2378,15 @@ impl App {
                     win::show_in_explorer(&dir);
                     return true;
                 }
-                Cmd::Delete
-                | Cmd::Rename
-                | Cmd::Copy
+                Cmd::Delete => {
+                    self.ask_delete_folder(dir);
+                    return true;
+                }
+                Cmd::Rename => {
+                    self.ask_rename_folder(dir);
+                    return true;
+                }
+                Cmd::Copy
                 | Cmd::CopyImage
                 | Cmd::ConvertTo(_)
                 | Cmd::Edit

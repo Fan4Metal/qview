@@ -54,6 +54,18 @@ impl History {
         Some(to)
     }
 
+    /// Paths changed (a folder renamed or moved): `to` gives the new path
+    /// of one, None for one unchanged.
+    pub fn rebase(&mut self, to: impl Fn(&std::path::Path) -> Option<PathBuf>) {
+        for place in self.back.iter_mut().chain(self.forward.iter_mut()) {
+            for path in [Some(&mut place.dir), place.current.as_mut(), place.folder.as_mut()].into_iter().flatten() {
+                if let Some(new) = to(path) {
+                    *path = new;
+                }
+            }
+        }
+    }
+
     pub fn can_go_back(&self) -> bool {
         !self.back.is_empty()
     }

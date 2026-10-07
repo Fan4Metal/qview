@@ -139,6 +139,8 @@ impl App {
                 }
             }
             Some(Action::ShowInExplorer(dir)) => crate::win::show_in_explorer(&dir),
+            Some(Action::Rename(dir)) => self.ask_rename_folder(dir),
+            Some(Action::Delete(dir)) => self.ask_delete_folder(dir),
             None => {}
         }
         self.gallery_bar(root_ui);
@@ -777,6 +779,9 @@ impl App {
     fn folder_menu(&mut self, ui: &mut Ui) {
         self.item(ui, tr!("Open", "Открыть").into(), "Enter", Cmd::OpenFolder, true);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
+        ui.separator();
+        self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, true);
+        self.item(ui, tr!("Delete…", "Удалить…").into(), "Delete", Cmd::Delete, true);
         if let Some(dir) = self.focused_folder() {
             ui.separator();
             self.pin_item(ui, dir.clone(), false);

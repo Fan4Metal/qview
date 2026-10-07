@@ -592,6 +592,27 @@ pub fn scan(dir: PathBuf, depth: Depth, keep: Option<PathBuf>, order: Order, ctx
     scan
 }
 
+/// `path` once the folder `old` is called `new`: `new` for `old` itself,
+/// the same place under `new` for what is under it, None for any other
+/// path. Case is ignored, as Windows does.
+pub fn rebase(path: &Path, old: &Path, new: &Path) -> Option<PathBuf> {
+    let lower = |c: std::path::Component| c.as_os_str().to_string_lossy().to_lowercase();
+    let mut rest = path.components();
+    for c in old.components() {
+        if rest.next().map(lower) != Some(lower(c)) {
+            return None;
+        }
+    }
+    let mut out = new.to_path_buf();
+    out.extend(rest);
+    Some(out)
+}
+
+/// Whether `path` is the folder `dir` or under it.
+pub fn is_within(path: &Path, dir: &Path) -> bool {
+    rebase(path, dir, dir).is_some()
+}
+
 /// The nearest folder above `path` that is there; None when even its
 /// drive cannot be reached (unplugged), when there is nowhere to go.
 pub fn nearest_folder(path: &Path) -> Option<PathBuf> {
@@ -792,6 +813,17 @@ mod tests {
         assert_eq!(relative(Order { descending: true, ..added }, false), [r"b2\d.png", "z.jpg", r"b10\a.jpg", r"b2\c.png"]);
         assert_eq!(relative(added, true), ["z.jpg", r"b2\c.png", r"b2\d.png", r"b10\a.jpg"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn paths_follow_a_folder_renamed() {
+        let (old, new) = (Path::new(r"D:\Фото\Лето"), Path::new(r"D:\Фото\Лето 2025"));
+        assert_eq!(rebase(Path::new(r"d:\фото\лето\a\1.jpg"), old, new), Some(PathBuf::from(r"D:\Фото\Лето 2025\a\1.jpg")));
+        assert_eq!(rebase(old, old, new), Some(new.to_path_buf()));
+        // A name that only starts the same is another folder.
+        assert_eq!(rebase(Path::new(r"D:\Фото\Летом\1.jpg"), old, new), None);
+        assert_eq!(rebase(Path::new(r"D:\Фото"), old, new), None);
+        assert!(is_within(Path::new(r"D:\Фото\Лето\x"), old) && !is_within(Path::new(r"D:\Фото\x"), old));
     }
 
     #[test]
