@@ -84,6 +84,8 @@ pub enum Action {
     Unpin(PathBuf),
     /// Give a pinned folder this key, or none.
     SetKey(PathBuf, Option<u8>),
+    /// Open a folder shown under Quick Access where it is in the tree.
+    ShowInTree(PathBuf),
     ShowInExplorer(PathBuf),
 }
 
@@ -530,6 +532,11 @@ impl Tree {
         let mut toggled = None;
         let mut action = None;
         let pinned = &self.pinned;
+        // The rows under Quick Access: up to the next top-level node.
+        let quick = self.rows.iter().position(|&r| self.nodes[r].kind == Kind::Pinned).map(|start| {
+            let end = self.rows[start + 1..].iter().position(|&r| self.nodes[r].depth == 0).map_or(self.rows.len(), |k| start + 1 + k);
+            start + 1..end
+        });
         let out = area.show_rows(ui, ROW_HEIGHT, self.rows.len(), |ui, range| {
             for row in range {
                 let id = self.rows[row];
@@ -587,7 +594,12 @@ impl Tree {
                 if !node.kind.is_virtual() {
                     let path = node.path.clone();
                     let pinned_as = pinned.iter().find(|(p, _)| same_path(p, &path)).map(|(_, k)| *k);
+                    let in_quick = quick.as_ref().is_some_and(|q| q.contains(&row));
                     response.context_menu(|ui| {
+                        if in_quick && ui.button(tr!("Show in Tree", "Отобразить в дереве")).clicked() {
+                            action = Some(Action::ShowInTree(path.clone()));
+                            ui.close();
+                        }
                         let (text, asked) = if pinned_as.is_some() {
                             (tr!("Unpin from Quick Access", "Открепить от панели быстрого доступа"), Action::Unpin(path.clone()))
                         } else {

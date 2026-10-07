@@ -131,6 +131,13 @@ impl App {
         match self.gallery.as_mut().and_then(|g| g.tree.take_action()) {
             Some(Action::Pin(dir) | Action::Unpin(dir)) => self.toggle_pin(dir),
             Some(Action::SetKey(dir, key)) => self.set_pin_key(dir, key),
+            // Opened where it is, the tree taken down to it.
+            Some(Action::ShowInTree(dir)) => {
+                self.open_folder(&ctx, dir.clone(), self.deep);
+                if let Some(gallery) = &mut self.gallery {
+                    gallery.tree.reveal(&dir);
+                }
+            }
             Some(Action::ShowInExplorer(dir)) => crate::win::show_in_explorer(&dir),
             None => {}
         }
