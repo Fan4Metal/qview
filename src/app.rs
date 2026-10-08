@@ -92,6 +92,7 @@ const STATUS_BAR_KEY: &str = "status_bar";
 const BACKGROUND_KEY: &str = "background";
 const CHECKER_KEY: &str = "checker";
 const FILTER_KEY: &str = "filter";
+const LINEAR_MIPS_KEY: &str = "linear_mips";
 const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
 const TREE_WIDTH_KEY: &str = "tree_width";
@@ -283,6 +284,9 @@ pub struct App {
     pub background: Color32,
     /// A checkerboard behind the image, seen where it is transparent.
     pub checker: bool,
+    /// The mip levels averaged in linear light (`loader::set_linear_mips`;
+    /// read by `main` before the first image is decoded).
+    pub linear_mips: bool,
     /// Its texture, made when first painted.
     checker_texture: Option<TextureHandle>,
     /// How the image is filtered when not at 100% (View → Filtering).
@@ -785,6 +789,7 @@ impl App {
                 .unwrap_or(DEFAULT_BACKGROUND),
             checker: flag(CHECKER_KEY),
             checker_texture: None,
+            linear_mips: flag(LINEAR_MIPS_KEY),
             filter: cc
                 .storage
                 .and_then(|s| s.get_string(FILTER_KEY))
@@ -2731,6 +2736,19 @@ impl App {
             Cmd::Info => self.show_info = !self.show_info,
             Cmd::SortBy(key) => self.sort_by(ctx, Order { key, ..self.order() }),
             Cmd::SortDescending => self.sort_by(ctx, Order { descending: !self.order().descending, ..self.order() }),
+            Cmd::LinearMips => {
+                self.linear_mips = !self.linear_mips;
+                crate::loader::set_linear_mips(self.linear_mips);
+                // Decoded again with the other levels; the picture on
+                // screen stays until its new texture comes.
+                let decoded: Vec<PathBuf> = self.cache.keys().chain(self.partial.keys()).cloned().chain(self.pending.iter().map(|d| d.path.clone())).collect();
+                self.forget_files(&decoded);
+                self.notice(if self.linear_mips {
+                    tr!("Reduced in linear light".into(), "Уменьшение в линейном свете".into())
+                } else {
+                    tr!("Reduced from the stored values".into(), "Уменьшение по хранимым значениям".into())
+                });
+            }
             Cmd::KeepZoom => {
                 self.view.keep = !self.view.keep;
                 self.notice(if self.view.keep {
@@ -4395,6 +4413,7 @@ impl eframe::App for App {
         storage.set_string(STATUS_BAR_KEY, self.show_status_bar.to_string());
         storage.set_string(BACKGROUND_KEY, background_to_hex(self.background));
         storage.set_string(CHECKER_KEY, self.checker.to_string());
+        storage.set_string(LINEAR_MIPS_KEY, self.linear_mips.to_string());
         storage.set_string(FILTER_KEY, self.filter.name().to_string());
         storage.set_string(ZOOM_KEY, self.view.mode.name().unwrap_or("fit").to_string());
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());

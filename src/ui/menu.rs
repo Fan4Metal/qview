@@ -155,6 +155,16 @@ impl App {
                     ui.close();
                 }
             }
+            ui.separator();
+            let text = tr!("Reduce in Linear Light", "Уменьшать в линейном свете");
+            let tip = tr!(
+                "Reduced images keep their light: fine bright detail, such as leaves against a dark crown, does not darken. Off, the stored values are averaged, as most viewers do, and the open images are decoded again.",
+                "Уменьшенные изображения сохраняют свет: мелкие светлые детали, например листья на фоне тёмной кроны, не темнеют. Выключено: усредняются хранимые значения, как в большинстве просмотрщиков; открытые изображения декодируются заново."
+            );
+            if ui.add(Button::new(text).selected(self.linear_mips)).on_hover_text(tip).clicked() {
+                self.clicked.push(Cmd::LinearMips);
+                ui.close();
+            }
         });
     }
 

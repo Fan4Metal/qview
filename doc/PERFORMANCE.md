@@ -42,10 +42,12 @@ Measured for a 14.7 MP JPEG on a decoder thread:
 |---|---|
 | Decoding | ~80 ms |
 | Conversion to premultiplied BGRA | ~14 ms |
-| All mip levels (2x2 box, packed-byte averages) | ~5 ms |
+| All mip levels, in linear light (sRGB decoded through a table, averaged, encoded again; the default) | ~12 ms |
+| All mip levels, of the stored values (2x2 box, packed-byte averages; View → Filtering → Reduce in Linear Light off) | ~4 ms |
 
 - Two or three worker threads take files from a priority queue that the UI replaces as a whole, so files the user has skipped are never decoded.
 - Everything the GPU needs (BGRA in the driver's native order and every mip level) is prepared on the worker; the UI thread converts nothing.
+- A level of a million pixels or more (the first two of a 14.7 MP photo) is made in bands of rows on up to four threads: in one thread the levels took 5 ms of the stored values and 20 ms in linear light. `cargo test --release mip_timings -- --ignored --nocapture` measures both ways on a synthetic 14.7 MP image.
 - `cargo test --release phase_timings -- --ignored --nocapture` with `QVIEW_BENCH_FILE` measures these phases for any file.
 
 ### HEIC and HEIF
@@ -144,13 +146,16 @@ A 6000×4000 test image on a 2827×1652 image area (4.7 million screen pixels), 
 - **Bicubic reduction samples one mip level, not two.** Trilinear filtering blends a level with one of half its size, which softens images shown between 50% and 100%. Bicubic instead takes the largest level with at most two image pixels per screen pixel and stretches a Catmull-Rom kernel over the screen pixel's footprint (up to 8×8 reads).
 - **At 100% Bicubic is drawn as a mesh.** Its result there equals the image's pixels, and the mesh does it for a sixteenth of the work.
 - **A program is built in the frame after the one that first wants it.** The image is drawn as a mesh in that first frame, so a start-up with Bicubic chosen shows the image as soon as before; the 8–85 ms of building follow once it is on screen.
+- **The mip levels are averaged in linear light.** Averaging sRGB values as stored darkens a reduced image wherever bright and dark pixels meet: thin bright lines, fine texture and halftones lose weight at 25–70%, where levels 1 and 2 are shown. Each level is now made from the one above with its bytes decoded to linear light through a table, averaged and encoded again (opaque pixels take the short way; a half-transparent pixel is unpremultiplied first, so its colour is weighted by its alpha). It costs ~7 ms more per 14.7 MP photo on the worker, and can be turned off in View → Filtering (the decoded images are decoded again) to compare, or for the old look.
 - **Nothing is repainted without a reason.** egui draws a frame only on input, animation or loading, so a filter's cost is paid while panning, zooming, browsing or playing an animation, not while an image is merely shown.
 
 ### Possible further work
 
 - Bicubic enlargement with 9 bilinear reads instead of 16 point reads, and reduction with part of its reads through hardware filtering: about half the cost. Worthwhile only for weak GPUs.
 - Pixel-art scalers (xBR, ScaleFX, MMPX) and Lanczos were considered: the former are long shaders for a niche use, the latter is barely distinguishable from Catmull-Rom for enlargement and rings more.
-- Better mip levels (Lanczos or Kaiser instead of the 2×2 box) would sharpen Bilinear's reduction too, at an estimated 15–30 ms more decoding time per 15 MP photo on the worker.
+- A better kernel for the mip levels (Lanczos or Kaiser instead of the 2×2 box) would sharpen Bilinear's reduction too, at an estimated 15–30 ms more decoding time per 15 MP photo on the worker (the linear-light averaging already takes 7 ms of it).
+- A negative `GL_TEXTURE_LOD_BIAS` (about −0.3…−0.5) would make Bilinear's trilinear blend between 50% and 100% favour the larger level, sharper at no decoding cost, with some aliasing on regular textures.
+- The integrated-GPU figures above are estimates, not measurements; the test machine has no integrated GPU.
 
 ## Histogram
 

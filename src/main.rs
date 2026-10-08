@@ -71,6 +71,21 @@ pub fn settings_dir() -> Option<PathBuf> {
     portable_dir().or_else(|| eframe::storage_dir(APP_ID))
 }
 
+/// A flag of the settings file, true unless saved as `false` (eframe's
+/// RON of string pairs, `"key": "false"`), for what is needed before
+/// `App::new` reads them.
+fn setting_flag(key: &str) -> bool {
+    let Some(text) = settings_dir().and_then(|d| std::fs::read_to_string(d.join(SETTINGS_FILE)).ok()) else {
+        return true;
+    };
+    let Some(at) = text.find(&format!("\"{key}\"")) else {
+        return true;
+    };
+    let rest = &text[at + key.len() + 2..];
+    let value = rest.trim_start().strip_prefix(':').map(str::trim_start).and_then(|v| v.strip_prefix('"'));
+    value.is_none_or(|v| !v.starts_with("false"))
+}
+
 /// When the process started, for the start-up timings in the log.
 pub static START: OnceLock<Instant> = OnceLock::new();
 
@@ -145,6 +160,8 @@ fn main() -> eframe::Result {
     // Decoding starts now, while the window is being created.
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 3));
     let loader = loader::Loader::new(workers);
+    // The one setting the first decoding needs, read before it starts.
+    loader::set_linear_mips(setting_flag("linear_mips"));
     if let Some(path) = initial.as_ref().filter(|p| p.is_file()) {
         loader.want([path.clone()]);
     }

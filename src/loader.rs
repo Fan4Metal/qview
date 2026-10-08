@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, mpsc};
 use std::time::Instant;
 
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, metadata::Orientation};
@@ -348,6 +348,21 @@ pub fn to_pixels(img: DynamicImage) -> Pixels {
     Pixels { width, height, levels }
 }
 
+/// Whether the mip levels are averaged in linear light (`set_linear_mips`).
+static LINEAR_MIPS: AtomicBool = AtomicBool::new(true);
+
+/// Average the mip levels of the images decoded from now on in linear
+/// light (sRGB decoded, averaged, encoded again; View → Filtering → Reduce
+/// in Linear Light), or as stored. Averaging sRGB values as they are
+/// darkens thin bright lines and fine texture in a reduced image.
+pub fn set_linear_mips(on: bool) {
+    LINEAR_MIPS.store(on, Relaxed);
+}
+
+pub fn linear_mips() -> bool {
+    LINEAR_MIPS.load(Relaxed)
+}
+
 /// Premultiplied BGRA of `img`.
 fn to_bgra(img: DynamicImage) -> Vec<u8> {
     let n = img.width() as usize * img.height() as usize;
@@ -376,14 +391,15 @@ fn to_bgra(img: DynamicImage) -> Vec<u8> {
 /// counting in parts, see `histogram`), so that it delays the image little.
 fn with_levels(base: Vec<u8>, width: u32, height: u32, count: bool) -> (Pixels, Option<Histogram>) {
     let (w, h) = (width as usize, height as usize);
+    let linear = linear_mips();
     let (below, histogram) = if count {
         std::thread::scope(|s| {
             let counting = s.spawn(|| Histogram::of_bgra(&base));
-            let below = smaller_levels(&base, w, h);
+            let below = smaller_levels(&base, w, h, linear);
             (below, Some(counting.join().expect("histogram thread")))
         })
     } else {
-        (smaller_levels(&base, w, h), None)
+        (smaller_levels(&base, w, h, linear), None)
     };
     let mut levels = Vec::with_capacity(below.len() + 1);
     levels.push(base);
@@ -391,9 +407,15 @@ fn with_levels(base: Vec<u8>, width: u32, height: u32, count: bool) -> (Pixels, 
     (Pixels { width, height, levels }, histogram)
 }
 
-/// `base` (`w` x `h` BGRA) followed by its mip levels down to 1x1.
+/// `base` (`w` x `h` BGRA) followed by its mip levels down to 1x1,
+/// averaged as chosen with `set_linear_mips`.
 pub fn mip_levels(base: Vec<u8>, w: usize, h: usize) -> Vec<Vec<u8>> {
-    let below = smaller_levels(&base, w, h);
+    mip_levels_with(base, w, h, linear_mips())
+}
+
+/// `mip_levels`, averaged in linear light or as stored.
+pub fn mip_levels_with(base: Vec<u8>, w: usize, h: usize, linear: bool) -> Vec<Vec<u8>> {
+    let below = smaller_levels(&base, w, h, linear);
     let mut levels = Vec::with_capacity(below.len() + 1);
     levels.push(base);
     levels.extend(below);
@@ -401,43 +423,143 @@ pub fn mip_levels(base: Vec<u8>, w: usize, h: usize) -> Vec<Vec<u8>> {
 }
 
 /// The mip levels below `base` (`w` x `h` BGRA), down to 1x1.
-fn smaller_levels(base: &[u8], w: usize, h: usize) -> Vec<Vec<u8>> {
+fn smaller_levels(base: &[u8], w: usize, h: usize, linear: bool) -> Vec<Vec<u8>> {
     let mut levels: Vec<Vec<u8>> = Vec::new();
     let (mut w, mut h) = (w, h);
     // No pixels, no levels (and `half` would index an empty slice).
     while (w > 1 || h > 1) && w > 0 && h > 0 {
         let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
-        let next = half(levels.last().map_or(base, Vec::as_slice), w, h, nw, nh);
+        let next = half(levels.last().map_or(base, Vec::as_slice), w, h, nw, nh, linear);
         levels.push(next);
         (w, h) = (nw, nh);
     }
     levels
 }
 
+/// A level of this many pixels or more is made in bands of rows on
+/// several threads (a 14.7 MP photo: its first two levels).
+const BAND_PIXELS: usize = 1 << 20;
+
 /// `src` (`w` x `h` BGRA) at half size: every pixel the average of a 2x2
-/// block, as `glGenerateMipmap` makes it. An odd last row or column is
-/// dropped; a side of 1 is kept.
-fn half(src: &[u8], w: usize, h: usize, nw: usize, nh: usize) -> Vec<u8> {
+/// block, as `glGenerateMipmap` makes it, in linear light or of the
+/// stored values. An odd last row or column is dropped; a side of 1 is
+/// kept.
+fn half(src: &[u8], w: usize, h: usize, nw: usize, nh: usize, linear: bool) -> Vec<u8> {
     let src = src.as_chunks::<4>().0;
-    let px = |p: [u8; 4]| u32::from_ne_bytes(p);
-    // Per-channel (a + b) / 2 on four packed bytes at once.
-    let avg = |a: u32, b: u32| (a & b) + (((a ^ b) & 0xfefe_fefe) >> 1);
     let mut out = vec![0u8; nw * nh * 4];
     let dst = out.as_chunks_mut::<4>().0;
     if w >= 2 && h >= 2 {
-        // Row pairs and pixel pairs, so the loop has no bounds to check.
-        for (rows, dst) in src.chunks_exact(2 * w).zip(dst.chunks_exact_mut(nw)) {
-            let (r0, r1) = rows.split_at(w);
-            for ((a, b), d) in r0.as_chunks::<2>().0.iter().zip(r1.as_chunks::<2>().0).zip(dst) {
-                *d = avg(avg(px(a[0]), px(a[1])), avg(px(b[0]), px(b[1]))).to_ne_bytes();
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4);
+        let bands = if nw * nh >= BAND_PIXELS { threads } else { 1 };
+        let rows = nh.div_ceil(bands);
+        // An odd last row of `src` falls into a chunk of its own, which
+        // `zip` leaves out, or into a band, which drops it.
+        let pairs = src.chunks(2 * rows * w).zip(dst.chunks_mut(rows * nw));
+        if bands == 1 {
+            for (src, dst) in pairs {
+                half_rows(src, dst, w, nw, linear);
             }
+        } else {
+            std::thread::scope(|s| {
+                for (src, dst) in pairs {
+                    s.spawn(move || half_rows(src, dst, w, nw, linear));
+                }
+            });
         }
     } else {
         // A single row or column: pairs along it.
         for (i, d) in dst.iter_mut().enumerate() {
             let (a, b) = (src[(2 * i).min(w * h - 1)], src[(2 * i + 1).min(w * h - 1)]);
-            *d = avg(px(a), px(b)).to_ne_bytes();
+            *d = if linear { avg4_linear([a, a, b, b]) } else { avg2(a, b) };
         }
+    }
+    out
+}
+
+/// Rows of `src` (`w` wide) in pairs into rows of `dst` (`nw` wide).
+fn half_rows(src: &[[u8; 4]], dst: &mut [[u8; 4]], w: usize, nw: usize, linear: bool) {
+    // Row pairs and pixel pairs, so the loop has no bounds to check.
+    for (rows, dst) in src.chunks_exact(2 * w).zip(dst.chunks_exact_mut(nw)) {
+        let (r0, r1) = rows.split_at(w);
+        let blocks = r0.as_chunks::<2>().0.iter().zip(r1.as_chunks::<2>().0).zip(dst);
+        if linear {
+            for ((a, b), d) in blocks {
+                *d = avg4_linear([a[0], a[1], b[0], b[1]]);
+            }
+        } else {
+            for ((a, b), d) in blocks {
+                *d = avg2(avg2(a[0], a[1]), avg2(b[0], b[1]));
+            }
+        }
+    }
+}
+
+/// Per-channel (a + b) / 2 of the stored values, on four packed bytes at
+/// once (rounded down).
+fn avg2(a: [u8; 4], b: [u8; 4]) -> [u8; 4] {
+    let (a, b) = (u32::from_ne_bytes(a), u32::from_ne_bytes(b));
+    ((a & b) + (((a ^ b) & 0xfefe_fefe) >> 1)).to_ne_bytes()
+}
+
+/// sRGB to linear light and back, for `avg4_linear`.
+struct Tables {
+    /// The sRGB byte's linear light, 0..=65535.
+    linear: [u16; 256],
+    /// The sRGB byte nearest to linear light `i * 8 + 4` (8192 entries:
+    /// the darkest sRGB steps are ~20 apart in these units, so every step
+    /// gets an entry of its own).
+    srgb: [u8; 8192],
+}
+
+static TABLES: LazyLock<Tables> = LazyLock::new(|| {
+    let linear = std::array::from_fn(|i| {
+        let c = i as f64 / 255.0;
+        let l = if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        (l * 65535.0).round() as u16
+    });
+    let srgb = std::array::from_fn(|i| {
+        let l = (i as f64 * 8.0 + 4.0) / 65535.0;
+        let c = if l <= 0.0031308 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
+        (c * 255.0).round().clamp(0.0, 255.0) as u8
+    });
+    Tables { linear, srgb }
+});
+
+/// The average of four premultiplied BGRA pixels in linear light: each
+/// channel decoded from sRGB, averaged and encoded again, the alpha
+/// averaged as it is. Opaque pixels (nearly all) take the short way; the
+/// others are unpremultiplied first, so that the colour under a
+/// half-transparent edge is averaged with its own weight.
+fn avg4_linear(p: [[u8; 4]; 4]) -> [u8; 4] {
+    let t = &*TABLES;
+    if p.iter().all(|q| q[3] == 255) {
+        let mut out = [0, 0, 0, 255];
+        for c in 0..3 {
+            let sum: u32 = p.iter().map(|q| u32::from(t.linear[usize::from(q[c])])).sum();
+            out[c] = t.srgb[(((sum + 2) / 4) >> 3) as usize];
+        }
+        return out;
+    }
+    let total: u32 = p.iter().map(|q| u32::from(q[3])).sum();
+    if total == 0 {
+        return [0; 4];
+    }
+    let alpha = (total + 2) / 4;
+    let mut out = [0, 0, 0, alpha as u8];
+    for c in 0..3 {
+        // Linear light (0..=65535) weighted by alpha (0..=255).
+        let mut sum = 0u64;
+        for q in p {
+            let a = u32::from(q[3]);
+            // A transparent pixel adds nothing (and has no colour to divide by).
+            if let Some(stored) = (u32::from(q[c]) * 255 + a / 2).checked_div(a) {
+                sum += u64::from(t.linear[stored.min(255) as usize]) * u64::from(a);
+            }
+        }
+        // The alpha-weighted mean colour, encoded and premultiplied again.
+        let mean = ((sum + u64::from(total) / 2) / u64::from(total)) as u32;
+        let stored = u32::from(t.srgb[(mean >> 3) as usize]);
+        out[c] = ((stored * alpha + 127) / 255) as u8;
     }
     out
 }
@@ -553,17 +675,88 @@ mod tests {
     fn mip_levels_average_blocks() {
         // 3x2 pixels, one channel varied: the odd column is dropped.
         let base: Vec<u8> = [10u8, 20, 99, 30, 40, 99].iter().flat_map(|&v| [v, 0, 0, 255]).collect();
-        let levels = mip_levels(base, 3, 2);
+        let levels = mip_levels_with(base, 3, 2, false);
         assert_eq!(levels.len(), 2);
         assert_eq!(levels[1], vec![25, 0, 0, 255]);
         // A single row keeps its height.
         let row: Vec<u8> = [0u8, 100, 200, 250].iter().flat_map(|&v| [v, v, v, 255]).collect();
-        let levels = mip_levels(row, 4, 1);
+        let levels = mip_levels_with(row, 4, 1, false);
         assert_eq!(levels.iter().map(Vec::len).collect::<Vec<_>>(), vec![16, 8, 4]);
         assert_eq!(&levels[1][..4], &[50, 50, 50, 255]);
         assert_eq!(&levels[2][..4], &[137, 137, 137, 255]);
         // No pixels (a GIF with a screen 0 wide): no levels, no panic.
-        assert_eq!(mip_levels(Vec::new(), 0, 5).len(), 1);
+        assert_eq!(mip_levels_with(Vec::new(), 0, 5, false).len(), 1);
+    }
+
+    #[test]
+    fn mip_levels_in_linear_light() {
+        // The tables invert each other at every byte.
+        let t = &*TABLES;
+        for v in 0..=255u8 {
+            assert_eq!(t.srgb[(usize::from(t.linear[usize::from(v)])) >> 3], v, "{v}");
+        }
+        // Black and white average to the sRGB middle grey (188), not 127.
+        let square = |a: [u8; 4], b: [u8; 4]| {
+            let base = [a, b, b, a].concat();
+            mip_levels_with(base, 2, 2, true)[1].clone()
+        };
+        assert_eq!(square([0, 0, 0, 255], [255, 255, 255, 255]), [188, 188, 188, 255]);
+        // Equal pixels stay as they are, in every channel.
+        assert_eq!(square([10, 20, 30, 255], [10, 20, 30, 255]), [10, 20, 30, 255]);
+        // A row and a column as well, and equal values stay in them.
+        let row: Vec<u8> = [0u8, 255, 200, 200].iter().flat_map(|&v| [v, v, v, 255]).collect();
+        let levels = mip_levels_with(row.clone(), 4, 1, true);
+        assert_eq!(&levels[1][..8], &[188, 188, 188, 255, 200, 200, 200, 255]);
+        assert_eq!(&mip_levels_with(row, 1, 4, true)[1][..8], &[188, 188, 188, 255, 200, 200, 200, 255]);
+        // Premultiplied: a white pixel at half alpha (stored 128) beside a
+        // transparent one is white at a quarter alpha, not a dark grey:
+        // the colour is weighted by alpha, not averaged with the nothing.
+        let clear = [0, 0, 0, 0];
+        assert_eq!(square([128, 128, 128, 128], clear), [64, 64, 64, 64]);
+        // Half-transparent black beside opaque white: the mean colour in
+        // linear light is 2/3 white (sRGB 213), premultiplied by alpha 192.
+        assert_eq!(square([0, 0, 0, 128], [255, 255, 255, 255]), [160, 160, 160, 192]);
+        assert_eq!(square(clear, clear), clear);
+        // A level large enough for the bands equals one made in one piece.
+        let (w, h) = (2600, 1700);
+        let mut seed = 7u32;
+        let base: Vec<u8> = (0..w * h * 4)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            })
+            .collect();
+        let banded = half(&base, w, h, w / 2, h / 2, true);
+        let mut whole = vec![0u8; w * h];
+        half_rows(base.as_chunks::<4>().0, whole.as_chunks_mut::<4>().0, w, w / 2, true);
+        assert!(banded == whole);
+    }
+
+    /// Timings of the mip levels of a 14.7 MP image, averaged as stored
+    /// and in linear light, printed with `--nocapture`.
+    #[test]
+    #[ignore]
+    fn mip_timings() {
+        let (w, h) = (4700, 3130);
+        let mut seed = 1u32;
+        let base: Vec<u8> = (0..w * h)
+            .flat_map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let [b, g, r, _] = seed.to_le_bytes();
+                [b, g, r, 255]
+            })
+            .collect();
+        for linear in [false, true] {
+            let mut best = f64::MAX;
+            for _ in 0..7 {
+                let base = base.clone();
+                let t = Instant::now();
+                let levels = mip_levels_with(base, w, h, linear);
+                best = best.min(t.elapsed().as_secs_f64() * 1e3);
+                assert_eq!(levels.len(), 13);
+            }
+            println!("{w}x{h}, linear {linear}: all levels {best:.1} ms (best of 7)");
+        }
     }
 
     #[test]

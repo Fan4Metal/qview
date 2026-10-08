@@ -116,6 +116,9 @@ pub enum Cmd {
     Info,
     /// The next images keep the zoom and the panning, or no longer do.
     KeepZoom,
+    /// Average the mip levels in linear light, or as stored (View →
+    /// Filtering); the decoded images are decoded again.
+    LinearMips,
     /// Sort the folder by this (View → Sort), in the same direction.
     SortBy(crate::folder::SortKey),
     /// Reverse the order of the folder.
