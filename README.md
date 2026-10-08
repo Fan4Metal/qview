@@ -52,7 +52,7 @@ The installer and the portable archive are published on the [Releases](https://g
 
 The installer, `qview_<version>_Setup.exe`, needs no administrator rights: the program is placed in `%LOCALAPPDATA%\Programs\qview`. The "Register qview for image files" option, selected by default, registers the supported file types (see [File associations](#file-associations)); the last page of the installer then offers to open Windows Settings, where qview is chosen as the default program. Uninstallation removes the registration.
 
-The portable archive, `qview_<version>_portable.zip`, contains the program in a `qview` folder and runs without installation; the file types are registered from File → File Associations… if needed. In both cases the settings are kept in `%APPDATA%\qview`.
+The portable archive, `qview_<version>_portable.zip`, contains the program in a `qview` folder and runs without installation; the file types are registered from File → File Associations… if needed. The installed program keeps its settings in `%APPDATA%\qview`. The portable archive also contains an empty `app.ron` file: while it lies beside `qview.exe`, the settings, the favorites and the pinned folders are kept in that folder, so the program can be carried on a removable drive (the folder must be writable); without it they are kept in `%APPDATA%\qview`, as for the installed program. About shows where the settings are kept.
 
 ## Controls
 

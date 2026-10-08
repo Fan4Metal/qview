@@ -50,6 +50,26 @@ use std::time::Instant;
 pub const VERSION: &str = env!("QVIEW_VERSION");
 /// eframe app id; also names the settings folder in `%APPDATA%`.
 pub const APP_ID: &str = "qview";
+/// The settings file; one beside the exe (the portable archive ships it
+/// empty) keeps everything there instead of in `%APPDATA%`.
+pub const SETTINGS_FILE: &str = "app.ron";
+
+/// The folder beside the exe when it holds `SETTINGS_FILE`: the program
+/// is portable and keeps its settings, favourites and pinned folders there.
+pub fn portable_dir() -> Option<PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+        dir.join(SETTINGS_FILE).is_file().then_some(dir)
+    })
+    .clone()
+}
+
+/// Where the settings, favourites and pinned folders are kept: beside the
+/// exe when portable, otherwise eframe's folder in the user profile.
+pub fn settings_dir() -> Option<PathBuf> {
+    portable_dir().or_else(|| eframe::storage_dir(APP_ID))
+}
 
 /// When the process started, for the start-up timings in the log.
 pub static START: OnceLock<Instant> = OnceLock::new();
@@ -131,7 +151,8 @@ fn main() -> eframe::Result {
     // Which formats Windows' codecs add, before the folder is listed.
     let _ = std::thread::Builder::new().name("codecs".into()).spawn(|| wic::extensions().len());
 
-    let has_saved = eframe::storage_dir(APP_ID).is_some_and(|d| d.join("app.ron").is_file());
+    // The portable archive's file is empty until the first run saves.
+    let has_saved = settings_dir().and_then(|d| std::fs::metadata(d.join(SETTINGS_FILE)).ok()).is_some_and(|m| m.len() > 0);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("qview")
@@ -162,6 +183,7 @@ fn main() -> eframe::Result {
             }
             builder
         })),
+        persistence_path: portable_dir().map(|d| d.join(SETTINGS_FILE)),
         ..Default::default()
     };
     log::debug!("run_native at {:.0} ms", since_start_ms());

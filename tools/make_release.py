@@ -193,10 +193,12 @@ def check_prerequisites() -> tuple[str, Path]:
 
 
 def make_portable_zip(version: str) -> Path:
-    """Archive with the exe, libheif and the licenses in the PORTABLE_DIR folder (the documentation is on GitHub)."""
+    """Archive with the exe, libheif and the licenses in the PORTABLE_DIR folder (the documentation is on GitHub),
+    plus an empty app.ron: with it beside the exe, qview keeps its settings, favourites and pinned folders there."""
     archive = DIST_DIR / f"qview_{version}_portable.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         z.write(EXE, f"{PORTABLE_DIR}/{EXE.name}")
+        z.writestr(f"{PORTABLE_DIR}/app.ron", "")
         z.write(ROOT / "LICENSE", f"{PORTABLE_DIR}/LICENSE")
         for name in build_heif.FILES:
             path = EXE.parent / name

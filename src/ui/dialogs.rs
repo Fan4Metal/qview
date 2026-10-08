@@ -245,9 +245,13 @@ impl App {
                 if !LICENSE.is_empty() {
                     ui.weak(tr!(format!("{LICENSE} License"), format!("Лицензия {LICENSE}")));
                 }
-                let place = ui.weak(tr!("Settings: in the user profile", "Настройки: в профиле пользователя"));
-                match eframe::storage_dir(crate::APP_ID) {
-                    Some(dir) => place.on_hover_text(dir.join("app.ron").display().to_string()),
+                let place = if crate::portable_dir().is_some() {
+                    ui.weak(tr!("Settings: beside the program (portable)", "Настройки: рядом с программой (портативная версия)"))
+                } else {
+                    ui.weak(tr!("Settings: in the user profile", "Настройки: в профиле пользователя"))
+                };
+                match crate::settings_dir() {
+                    Some(dir) => place.on_hover_text(dir.join(crate::SETTINGS_FILE).display().to_string()),
                     None => place.on_hover_text(tr!("Settings are not saved", "Настройки не сохраняются")),
                 };
                 ui.add_space(4.0);
