@@ -20,6 +20,11 @@ raw-window-handle = "0.6"
 log = "0.4"
 env_logger = "0.11"
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+# RAR and CBR: RARLab's UnRAR source, compiled in (with the static C
+# runtime of .cargo/config.toml it needs no MSVCP140.dll), ~280 KB; its C
+# API directly (src/archive.rs): the unrar-ng wrapper pulls in regex with
+# its Unicode tables, ~360 KB more.
+unrar-ng-sys = { version = "0.7.7", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

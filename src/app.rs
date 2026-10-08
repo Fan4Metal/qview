@@ -1215,6 +1215,7 @@ impl App {
         // Set again after this by those returning to a folder.
         self.refocus = None;
         self.sibling_folders = None;
+        crate::archive::release_unless(&dir);
         if !same {
             self.selection.clear();
         }

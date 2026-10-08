@@ -145,6 +145,15 @@ def licenses() -> None:
         shutil.copy2(SRC / name / "COPYING", folder / f"{name}-COPYING.txt")
         lines.append(f"{name} {tag.lstrip('v')}, source: {url}/tree/{tag}")
     lines += ["", "Built by tools/build_heif.py of qview: https://github.com/Fan4Metal/qview", ""]
+    # Not libheif's, but shipped in the same folder: qview.exe reads RAR
+    # archives with RARLab's UnRAR source compiled in (crate unrar-ng-sys).
+    shutil.copy2(Path(__file__).with_name("unrar-license.txt"), folder / "unrar-license.txt")
+    lines += [
+        "qview reads RAR archives (CBR comic books) with the UnRAR source code by",
+        "Alexander Roshal, compiled into qview.exe unmodified; its licence is in",
+        "unrar-license.txt.",
+        "",
+    ]
     (folder / "README.txt").write_text("\r\n".join(lines), encoding="utf-8", newline="")
 
 

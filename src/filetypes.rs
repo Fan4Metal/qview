@@ -208,6 +208,17 @@ pub const FILE_TYPES: &[FileType] = &[
         ink: [0xff, 0xff, 0xff],
         kind: Kind::Archive,
     },
+    FileType {
+        id: "cbr",
+        label: "CBR",
+        extensions: &["cbr"],
+        name_en: "Comic Book Archive (RAR)",
+        name_ru: "Архив комикса (RAR)",
+        // violet, apart from ICO's purple
+        band: [0x60, 0x30, 0xd0],
+        ink: [0xff, 0xff, 0xff],
+        kind: Kind::Archive,
+    },
 ];
 
 /// Resource ID of the icon of `FILE_TYPES[i]` in the executable (the app

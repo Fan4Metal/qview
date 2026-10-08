@@ -61,6 +61,21 @@ Measured for a 14.7 MP JPEG on a decoder thread:
 - Releasing the last HEIF decoder of WIC shut its HEVC pipeline down (~260 ms), so each thread keeps one decoder of every container it has used.
 - libheif with 8 decoding threads is preferred for HEIC/HEIF; WIC remains the fallback.
 
+### RAR archives
+
+Measured with `archive_timings` on a real comic book (RAR 1.5-4, stored, 68 pages of ~0.7 MB) and on 120 pages of 2.9 MB packed by WinRAR 7 as RAR 5, ordinary and solid.
+
+| Archive | List | Page 1 | Middle page | Last page | All in order | All, 3 threads |
+|---|---|---|---|---|---|---|
+| Comic book, 68 pages | 0.9 ms | 3.5 ms | 2.7 ms | 2.9 ms | 165 ms | 84 ms |
+| RAR 5, 120 pages | 0.5 ms | 10 ms | 8.4 ms | 8.1 ms | 1067 ms | 409 ms |
+| RAR 5 solid, 120 pages, without the cursor | 0.6 ms | 8.8 ms | 300 ms | 571 ms | ~35 s (estimate) | |
+| RAR 5 solid, 120 pages | 0.5 ms | 9.2 ms | 311 ms | 303 ms (after the middle one) | 778 ms | 757 ms |
+
+- An entry is found by reading the headers before it; in an ordinary archive their data is skipped, so any page costs about the same. The format is told by the first 6 bytes (~0.07 ms).
+- In a solid archive every page before the one wanted is unpacked, so without help the last page cost ~570 ms and the gallery's thumbnails about half a minute. The archive read last keeps an UnRAR cursor after the page read last and the pages unpacked on the way (up to 256 MB): reading on costs only the pages between, the thumbnails of the whole book about one unpacking, and threads wait for the one that unpacks instead of each starting over.
+- UnRAR adds ~290 KB to the exe (with the static C runtime it needs no `MSVCP140.dll`), the CBR file type's icon ~306 KB more. The `unrar-ng` wrapper was tried first: it depends on `regex` with its default features, which put `regex`'s Unicode tables into the exe (~360 KB), so UnRAR's C API is called directly through `unrar-ng-sys`.
+
 ## Texture upload
 
 | Method | UI thread time per 15 MP photo |
