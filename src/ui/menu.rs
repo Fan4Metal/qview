@@ -342,6 +342,9 @@ impl App {
                     let cmd = if copy { Cmd::CopyToListed(0) } else { Cmd::MoveToListed(0) };
                     self.folder_item(ui, &parent, "↑ ", "", cmd);
                     folders.push(parent);
+                    if !subfolders.is_empty() {
+                        ui.separator();
+                    }
                 }
                 if !subfolders.is_empty() {
                     let row = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
