@@ -241,9 +241,9 @@ mod rar {
         }
 
         /// Encrypted (no password is asked for), or the part of a file
-        /// continued from another volume: not readable here.
+        /// continued from or into another volume: not readable here.
         pub fn unreadable(&self) -> bool {
-            self.flags & (ffi::RHDF_ENCRYPTED | ffi::RHDF_SPLITBEFORE) != 0
+            self.flags & (ffi::RHDF_ENCRYPTED | ffi::RHDF_SPLITBEFORE | ffi::RHDF_SPLITAFTER) != 0
         }
     }
 
@@ -337,7 +337,10 @@ mod rar {
         /// The contents of the entry whose header was read last.
         pub fn read(&mut self, size: u64) -> std::io::Result<Vec<u8>> {
             self.sink.clear();
-            self.sink.reserve(size.min(1 << 30) as usize);
+            // Room for the size the header claims, which a damaged header
+            // may overstate: when it cannot be had, the sink grows as the
+            // data comes.
+            let _ = self.sink.try_reserve(size.min(256 << 20) as usize);
             self.process(ffi::RAR_TEST)?;
             Ok(std::mem::take(&mut *self.sink))
         }
@@ -442,10 +445,15 @@ mod rar {
     /// thumbnails, which ask for the pages nearly in order from several
     /// threads, unpack the archive about once. One thread at a time reads
     /// it; the others wait, then find their pages kept.
+    ///
+    /// UnRAR holds the file open without sharing deletion, so the archive
+    /// stays open only while it is the one shown (`release_unless` names
+    /// it): a cover read for the archive's cell in another folder leaves
+    /// it closed, and it can be renamed, deleted or replaced.
     mod solid {
         use std::collections::HashMap;
         use std::path::{Path, PathBuf};
-        use std::sync::{Arc, Mutex};
+        use std::sync::{Arc, Mutex, TryLockError};
 
         use super::{Open, key};
 
@@ -465,6 +473,15 @@ mod rar {
         }
 
         static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+        /// The folder or archive shown (`release_unless`): only this
+        /// archive is kept open after a read. Apart from `STATE`, which a
+        /// reading thread holds for a whole pass.
+        static SHOWN: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+        fn is_shown(archive: &Path) -> bool {
+            SHOWN.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(archive)
+        }
 
         fn stamp(archive: &Path) -> Option<(u64, u64)> {
             use std::os::windows::fs::MetadataExt;
@@ -515,10 +532,21 @@ mod rar {
         }
 
         /// Read the entry `wanted` (`key`) of the solid `archive`, `fresh`
-        /// just opened: from the place kept, or from the start.
+        /// just opened: from the place kept, or from the start. The
+        /// archive stays open afterwards only if it is the one shown.
         pub fn read(archive: &Path, wanted: &str, fresh: Open) -> std::io::Result<Vec<u8>> {
             let mut slot = STATE.lock().unwrap_or_else(|e| e.into_inner());
-            let state = state(&mut slot, archive).ok_or(std::io::ErrorKind::NotFound)?;
+            let result = read_on(&mut slot, archive, wanted, fresh);
+            // Another folder is shown (or came to be shown during the
+            // read, `release_unless` not waiting): closed, nothing kept.
+            if !is_shown(archive) {
+                *slot = None;
+            }
+            result
+        }
+
+        fn read_on(slot: &mut Option<State>, archive: &Path, wanted: &str, fresh: Open) -> std::io::Result<Vec<u8>> {
+            let state = state(slot, archive).ok_or(std::io::ErrorKind::NotFound)?;
             // Another thread may have passed it meanwhile.
             if let Some(bytes) = state.take(wanted) {
                 return Ok(bytes);
@@ -556,10 +584,17 @@ mod rar {
             }
         }
 
-        /// Let go of the archive kept unless it is `dir` (another folder or
-        /// archive is shown): its pages and UnRAR's dictionary.
+        /// `dir` (a folder or an archive) is shown now: let go of the
+        /// archive kept unless it is `dir`, its pages, UnRAR's dictionary
+        /// and the file. Without waiting (the UI thread calls it): a thread
+        /// reading it now lets go when its read is done (`read`).
         pub fn release_unless(dir: &Path) {
-            let mut slot = STATE.lock().unwrap_or_else(|e| e.into_inner());
+            *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.to_path_buf());
+            let mut slot = match STATE.try_lock() {
+                Ok(slot) => slot,
+                Err(TryLockError::Poisoned(e)) => e.into_inner(),
+                Err(TryLockError::WouldBlock) => return,
+            };
             if slot.as_ref().is_some_and(|s| s.archive != dir) {
                 *slot = None;
             }
@@ -682,8 +717,10 @@ mod tests {
             let paths: Vec<&Path> = items.iter().map(|i| i.path.as_path()).collect();
             assert_eq!(paths, [cbr.join("a.png"), cbr.join("ch1").join("b.png")], "{name}");
             assert!(items.iter().all(|i| i.size > 0 && i.modified > 0));
-            // The last first, then the first: a solid archive goes on from
-            // its place, then starts over (or finds it kept).
+            // Shown, as when opened: a solid archive stays open after the
+            // page read last. The last first, then the first: it goes on
+            // from its place, then starts over (or finds it kept).
+            release_unless(&cbr);
             assert_eq!(size(read(&items[1].path).unwrap()), (8, 2));
             assert_eq!(size(read(&cbr.join("A.PNG")).unwrap()), (4, 3));
             assert_eq!(size(read(&items[1].path).unwrap()), (8, 2));
@@ -691,6 +728,14 @@ mod tests {
             assert!(read(&cbr.join("missing.png")).is_err());
             assert!(read(&cbr.join("notes.txt")).is_ok());
             assert_eq!(split(&items[0].path), Some((cbr.clone(), "a.png".into())));
+            // Its folder shown instead: closed, so it can be renamed (the
+            // solid one was held open by UnRAR, which shares no deletion).
+            release_unless(&dir);
+            let moved = dir.join(format!("moved_{name}"));
+            std::fs::rename(&cbr, &moved).unwrap();
+            // A cover read for its cell in that folder leaves it closed.
+            assert_eq!(size(read(&moved.join("a.png")).unwrap()), (4, 3));
+            std::fs::remove_file(&moved).unwrap();
         }
         // Many .cbr files are ZIPs: told by their contents.
         let zip = dir.join("zip.cbr");
@@ -709,6 +754,8 @@ mod tests {
     fn archive_timings() {
         let Some(file) = std::env::var_os("QVIEW_ARCHIVE_FILE").map(PathBuf::from) else { return };
         let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+        // Shown, as when opened: a solid archive keeps its cursor.
+        release_unless(&file);
         let t = std::time::Instant::now();
         let format = format(&file).unwrap();
         println!("{format:?}: signature read in {:.2} ms", ms(t));
@@ -735,8 +782,10 @@ mod tests {
         let t = std::time::Instant::now();
         read(&items[0].path).unwrap();
         println!("image 1 again: {:.1} ms", ms(t));
-        // From several threads at once, after letting go of what is kept.
+        // From several threads at once, after letting go of what is kept
+        // (another folder shown, then the archive again).
         release_unless(Path::new(""));
+        release_unless(&file);
         let t = std::time::Instant::now();
         std::thread::scope(|s| {
             for w in 0..3 {
