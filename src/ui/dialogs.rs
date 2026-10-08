@@ -110,6 +110,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("Shift+Alt+1 … 9", tr!("Copy it into that folder", "Копировать файл в эту папку")),
                 ("Alt+N", tr!("Move the file into a new folder", "Переместить файл в новую папку")),
                 ("Shift+Alt+N", tr!("Copy it into a new folder", "Копировать файл в новую папку")),
+                ("Ctrl+Shift+N", tr!("Make a folder in the folder shown (gallery)", "Создать папку в показанной папке (галерея)")),
                 ("Ctrl+Z", tr!("Undo the last rename, move, copy or save", "Отменить последнее переименование, перемещение, копирование или сохранение")),
                 ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
                 ("Ctrl+Shift+C", tr!("Copy the image as shown", "Копировать картинку, как она показана")),
@@ -710,9 +711,9 @@ impl App {
 }
 
 impl App {
-    /// The name of a folder to make beside the image and move it, or the
-    /// chosen images, into (Alt+N), or copy them into (Shift+Alt+N);
-    /// Enter does it, Esc cancels.
+    /// The name of a folder to make: in the folder shown, or beside the
+    /// image to move it, or the chosen images, into (Alt+N), or copy them
+    /// into (Shift+Alt+N); Enter does it, Esc cancels.
     fn new_folder_dialog(&mut self, ctx: &egui::Context) {
         let Some(new) = self.new_folder.as_mut() else { return };
         let id = egui::Id::new("new_folder_name");
@@ -744,7 +745,11 @@ impl App {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let text = |s: &str| RichText::new(s).size(16.0);
-                let go = if new.copy { tr!("Copy", "Копировать") } else { tr!("Move", "Переместить") };
+                let go = match new.transfer {
+                    None => tr!("Create", "Создать"),
+                    Some(false) => tr!("Move", "Переместить"),
+                    Some(true) => tr!("Copy", "Копировать"),
+                };
                 if ui.add(egui::Button::new(text(go)).min_size(egui::vec2(160.0, 34.0))).clicked() {
                     decision = Some(true);
                 }
@@ -758,8 +763,8 @@ impl App {
         }
         match decision {
             Some(true) => {
-                let (parent, name, copy) = (new.parent.clone(), new.name.clone(), new.copy);
-                match self.make_folder_and_transfer(ctx, &parent, &name, copy) {
+                let (parent, name, transfer) = (new.parent.clone(), new.name.clone(), new.transfer);
+                match self.make_folder(ctx, &parent, &name, transfer) {
                     Ok(()) => self.new_folder = None,
                     Err(e) => {
                         if let Some(new) = &mut self.new_folder {

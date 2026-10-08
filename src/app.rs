@@ -154,13 +154,14 @@ pub struct Rename {
     pub select: bool,
 }
 
-/// A folder to make beside the current image, or those chosen, and move
-/// them into (Alt+N), or with `copy` copy them into (Shift+Alt+N): where,
-/// the name as typed, and why it could not be used.
+/// A folder to make: in the folder shown (`transfer` None), or beside the
+/// current image, or those chosen, to move them into (Alt+N, `Some(false)`)
+/// or copy them into (Shift+Alt+N, `Some(true)`); where, the name as
+/// typed, and why it could not be used.
 pub struct NewFolder {
     pub parent: PathBuf,
     pub name: String,
-    pub copy: bool,
+    pub transfer: Option<bool>,
     pub error: Option<String>,
     /// Focus the name on the next frame, and with `select` select it.
     pub focus: bool,
@@ -2649,7 +2650,8 @@ impl App {
                     self.transfer_to(ctx, to, cmd == Cmd::CopyToListed(k), None);
                 }
             }
-            Cmd::MoveToNew | Cmd::CopyToNew => self.ask_new_folder(cmd == Cmd::CopyToNew),
+            Cmd::MoveToNew | Cmd::CopyToNew => self.ask_new_folder(Some(cmd == Cmd::CopyToNew)),
+            Cmd::NewFolder => self.ask_new_folder(None),
             Cmd::MoveToOther | Cmd::CopyToOther => self.transfer_to_picked(ctx, frame, cmd == Cmd::CopyToOther),
             Cmd::CopyFavorites => {
                 let files = self.favorite_files();
@@ -3038,12 +3040,18 @@ impl App {
         (parent, self.sibling_folders.as_ref().map(|(_, f)| f.clone()).unwrap_or_default())
     }
 
-    /// Ask for the name of a folder to make beside the current image, or
-    /// the chosen ones, and move them into (Alt+N), or with `copy` copy
-    /// them into (Shift+Alt+N): "New folder", numbered past one there.
-    pub fn ask_new_folder(&mut self, copy: bool) {
-        let Some(parent) = self.transfer_base() else { return };
-        if self.moving.is_some() || self.copying.is_some() {
+    /// Ask for the name of a folder to make: in the folder shown (`transfer`
+    /// None; not the favourites, Quick Access or an archive), or beside the
+    /// current image, or the chosen ones, to move them into (Alt+N,
+    /// `Some(false)`) or copy them into (Shift+Alt+N, `Some(true)`): "New
+    /// folder", numbered past one there.
+    pub fn ask_new_folder(&mut self, transfer: Option<bool>) {
+        let parent = match transfer {
+            Some(_) => self.transfer_base(),
+            None => self.dir.clone().filter(|d| !favorites::is_virtual(d) && !self.archive),
+        };
+        let Some(parent) = parent else { return };
+        if transfer.is_some() && (self.moving.is_some() || self.copying.is_some()) {
             self.notice(tr!("Still moving or copying…".into(), "Перемещение или копирование ещё идёт…".into()));
             return;
         }
@@ -3054,13 +3062,14 @@ impl App {
             name = format!("{base} ({n})");
             n += 1;
         }
-        self.new_folder = Some(NewFolder { parent, name, copy, error: None, focus: true, select: true });
+        self.new_folder = Some(NewFolder { parent, name, transfer, error: None, focus: true, select: true });
     }
 
-    /// Make the folder `name` in `parent` and move the current image, or
-    /// those chosen, into it, or with `copy` copy them; why not, if it
-    /// cannot be made.
-    pub fn make_folder_and_transfer(&mut self, ctx: &egui::Context, parent: &Path, name: &str, copy: bool) -> Result<(), String> {
+    /// Make the folder `name` in `parent`, and with `transfer` move the
+    /// current image, or those chosen, into it (`Some(false)`) or copy them
+    /// (`Some(true)`); made alone in the folder shown, its cell gets the
+    /// cursor. Why not, if it cannot be made.
+    pub fn make_folder(&mut self, ctx: &egui::Context, parent: &Path, name: &str, transfer: Option<bool>) -> Result<(), String> {
         folder::check_name(name).map_err(str::to_string)?;
         let dir = parent.join(name);
         if dir.exists() {
@@ -3068,9 +3077,23 @@ impl App {
         }
         std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
         self.sibling_folders = None;
-        if !self.transfer_to(ctx, dir.clone(), copy, Some(dir.clone())) {
-            // Refused (a name taken among the files): no folder for nothing.
-            let _ = std::fs::remove_dir(&dir);
+        match transfer {
+            Some(copy) => {
+                if !self.transfer_to(ctx, dir.clone(), copy, Some(dir.clone())) {
+                    // Refused (a name taken among the files): no folder for nothing.
+                    let _ = std::fs::remove_dir(&dir);
+                }
+            }
+            None => {
+                self.notice(tr!(format!("Folder made: {name}"), format!("Папка создана: {name}")));
+                if self.lists_folder(parent) {
+                    self.list_again(ctx);
+                    // Its cell has the cursor once listed.
+                    if folder::same_path(parent, self.dir.as_deref().unwrap_or(parent)) {
+                        self.refocus = Some(dir);
+                    }
+                }
+            }
         }
         Ok(())
     }

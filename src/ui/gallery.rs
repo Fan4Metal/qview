@@ -760,6 +760,7 @@ impl App {
         }
         background.context_menu(|ui| {
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
+            self.new_folder_item(ui);
             if let Some(dir) = self.pinnable_dir() {
                 ui.separator();
                 self.pin_item(ui, dir, true);
@@ -791,6 +792,7 @@ impl App {
         self.item(ui, tr!("Delete…", "Удалить…").into(), "Delete", Cmd::Delete, true);
         ui.separator();
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
+        self.new_folder_item(ui);
         if let Some(dir) = self.focused_folder() {
             ui.separator();
             self.pin_item(ui, dir.clone(), false);
@@ -801,6 +803,13 @@ impl App {
                 self.set_pin_key(dir, key);
             }
         }
+    }
+
+    /// Make a folder in the folder shown (not the favourites, Quick Access
+    /// or an archive).
+    fn new_folder_item(&mut self, ui: &mut Ui) {
+        let enabled = self.dir.as_deref().is_some_and(|d| !crate::favorites::is_virtual(d)) && !self.archive;
+        self.item(ui, tr!("New Folder…", "Новая папка…").into(), "Ctrl+Shift+N", Cmd::NewFolder, enabled);
     }
 
     /// The frame dragged over the grid (from anywhere on it): the images it

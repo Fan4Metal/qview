@@ -169,6 +169,9 @@ pub enum Cmd {
     /// Move them, or copy them, into a folder picked in a dialog.
     MoveToOther,
     CopyToOther,
+    /// Make a folder in the folder shown, named in a dialog (Ctrl+Shift+N
+    /// in the gallery, as in Explorer).
+    NewFolder,
 }
 
 /// The digit of a number key, 1 to 9.
@@ -288,6 +291,7 @@ pub fn gallery_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::PageUp if !m.ctrl && !m.alt => Some(Cmd::PageUp),
         Key::PageDown if !m.ctrl && !m.alt => Some(Cmd::PageDown),
         Key::F if m.ctrl && m.shift && !m.alt => Some(Cmd::WindowFullScreen),
+        Key::N if m.ctrl && m.shift && !m.alt => (!repeat).then_some(Cmd::NewFolder),
         // As in Explorer.
         Key::ArrowLeft if m.alt && !m.ctrl && !repeat => Some(Cmd::Back),
         // Held, it does not repeat, nor select the previous image.
@@ -449,6 +453,9 @@ mod tests {
         assert_eq!(gallery_command(Key::N, ALT, false), Some(Cmd::MoveToNew));
         assert_eq!(command(Key::N, ALT, true), None);
         assert_eq!(command(Key::N, CTRL | ALT, false), None);
+        assert_eq!(gallery_command(Key::N, CTRL | SHIFT, false), Some(Cmd::NewFolder));
+        assert_eq!(gallery_command(Key::N, CTRL | SHIFT, true), None);
+        assert_eq!(command(Key::N, CTRL | SHIFT, false), None);
         assert_eq!(command(Key::OpenBracket, NONE, false), Some(Cmd::RotateLeft));
         assert_eq!(command(Key::H, NONE, false), Some(Cmd::FlipHorizontal));
         assert_eq!(command(Key::V, NONE, false), Some(Cmd::FlipVertical));
