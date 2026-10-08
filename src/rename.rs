@@ -51,9 +51,9 @@ pub fn move_all(pairs: &[(PathBuf, PathBuf)]) -> Result<(), MoveError> {
 
 /// The new names of `paths`: `base_01.jpg`, `base_02.heic`… numbered from
 /// `start` with as many digits as the last number has (at least two), each
-/// in its own folder with its own extension. Without a base, the number
-/// alone.
-pub fn numbered(paths: &[PathBuf], base: &str, start: u32) -> Vec<PathBuf> {
+/// in its own folder with its own extension; the first `dirs` are folders,
+/// whose names keep nothing after a dot. Without a base, the number alone.
+pub fn numbered(paths: &[PathBuf], dirs: usize, base: &str, start: u32) -> Vec<PathBuf> {
     let last = start as u64 + paths.len().saturating_sub(1) as u64;
     let width = last.to_string().len().max(2);
     let base = base.trim();
@@ -63,7 +63,7 @@ pub fn numbered(paths: &[PathBuf], base: &str, start: u32) -> Vec<PathBuf> {
         .map(|(k, path)| {
             let number = format!("{:0width$}", start as u64 + k as u64);
             let stem = if base.is_empty() { number } else { format!("{base}_{number}") };
-            let name = match path.extension() {
+            let name = match path.extension().filter(|_| k >= dirs) {
                 Some(ext) => format!("{stem}.{}", ext.to_string_lossy()),
                 None => stem,
             };
@@ -140,9 +140,12 @@ mod tests {
     #[test]
     fn numbers_keep_the_extensions() {
         let paths: Vec<PathBuf> = ["a.jpg", "b.HEIC", "c"].iter().map(|n| PathBuf::from("C:/x").join(n)).collect();
-        assert_eq!(names(&numbered(&paths, " trip ", 1)), ["trip_01.jpg", "trip_02.HEIC", "trip_03"]);
-        assert_eq!(names(&numbered(&paths, "", 99)), ["099.jpg", "100.HEIC", "101"]);
-        assert_eq!(numbered(&paths, "t", 1)[0], PathBuf::from("C:/x/t_01.jpg"));
+        assert_eq!(names(&numbered(&paths, 0, " trip ", 1)), ["trip_01.jpg", "trip_02.HEIC", "trip_03"]);
+        assert_eq!(names(&numbered(&paths, 0, "", 99)), ["099.jpg", "100.HEIC", "101"]);
+        assert_eq!(numbered(&paths, 0, "t", 1)[0], PathBuf::from("C:/x/t_01.jpg"));
+        // Folders first: a dot in a folder's name is not an extension.
+        let mixed: Vec<PathBuf> = ["2024.05", "a.jpg"].iter().map(|n| PathBuf::from("C:/x").join(n)).collect();
+        assert_eq!(names(&numbered(&mixed, 1, "trip", 1)), ["trip_01", "trip_02.jpg"]);
     }
 
     #[test]

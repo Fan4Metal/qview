@@ -31,7 +31,7 @@ impl App {
             let f = self.name_filter.trim();
             fields.push(tr!(format!("Filter \"{f}\": {n} of {all}"), format!("Фильтр «{f}»: {n} из {all}")));
         }
-        let chosen = self.selection.len();
+        let chosen = self.selection.len() + self.selection.folders_len();
         if self.gallery_open && chosen > 1 {
             fields.push(tr!(format!("Selected: {chosen}"), format!("Выбрано: {chosen}")));
         }

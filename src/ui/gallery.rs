@@ -492,7 +492,7 @@ impl App {
         // Each visible cell, and while images are chosen the centre of its
         // circle, which a click alone ticks or unticks.
         let mut cells: Vec<(usize, Response, Option<Pos2>)> = Vec::new();
-        let mut folder_cells: Vec<(usize, Response)> = Vec::new();
+        let mut folder_cells: Vec<(usize, Response, Option<Pos2>)> = Vec::new();
         // Sub-folders to list for their cells.
         let mut unlisted = Vec::new();
         let mut hovered = None;
@@ -564,9 +564,15 @@ impl App {
                 } else {
                     FOLDER_CELL
                 };
-                painter.rect_filled(cell.shrink(1.0), 3.0, ground);
                 let path = &folders[k];
+                // A chosen folder keeps its amber ground, outlined in the
+                // accent.
+                let chosen = selection.contains_folder(path);
+                let outline = if chosen { egui::Stroke::new(2.0, ACCENT) } else { egui::Stroke::NONE };
+                painter.rect(cell.shrink(1.0), 3.0, ground, outline, egui::StrokeKind::Inside);
                 let square = Rect::from_min_size(pos2(cell.center().x - folder_frame.x / 2.0, cell.top() + PAD), folder_frame);
+                // While anything is chosen, its circle in the corner.
+                let circle = selection.choosing().then(|| square.left_top() + vec2(TICK_INSET, TICK_INSET));
                 let preview = gallery.preview(path).cloned();
                 if preview.is_none() {
                     unlisted.push(path.clone());
@@ -577,7 +583,13 @@ impl App {
                     let name = file_name(path);
                     label(&painter, &name, cell, square.bottom() + 2.0);
                     key_badge(&painter, cell, pinned.key(path));
-                    folder_cells.push((k, response));
+                    if let Some(c) = circle {
+                        tick(&painter, c, chosen);
+                        if response.hover_pos().is_some_and(|p| p.distance(c) <= TICK_REACH) {
+                            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                    }
+                    folder_cells.push((k, response, circle));
                     continue;
                 }
                 let slots = mosaic(&painter, square, ppp);
@@ -602,7 +614,13 @@ impl App {
                 };
                 label(&painter, &name, cell, square.bottom() + 2.0);
                 key_badge(&painter, cell, pinned.key(path));
-                folder_cells.push((k, response));
+                if let Some(c) = circle {
+                    tick(&painter, c, chosen);
+                    if response.hover_pos().is_some_and(|p| p.distance(c) <= TICK_REACH) {
+                        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                }
+                folder_cells.push((k, response, circle));
             }
             let visible = layout.visible(viewport.min.y, viewport.max.y);
             for i in visible.clone() {
@@ -617,7 +635,7 @@ impl App {
                 };
                 // Chosen images in the accent; with none chosen, the current
                 // image in grey, as it always was.
-                let choosing = !selection.is_empty();
+                let choosing = selection.choosing();
                 let chosen = selection.contains(path);
                 if chosen {
                     let outline = egui::Stroke::new(2.0, ACCENT);
@@ -715,13 +733,17 @@ impl App {
 
         let mut opened = None;
         let modifiers = ctx.input(|i| i.modifiers);
-        // A click puts the cursor on a sub-folder, a double click opens it.
-        for (k, response) in folder_cells {
-            if response.clicked() || response.secondary_clicked() {
-                self.folder_focus = Some(k);
-                self.selection.clear();
+        // A click puts the cursor on a sub-folder (with Ctrl or Shift, or on
+        // its circle, chooses it as images are), a double click opens it.
+        for (k, response, circle) in folder_cells {
+            let on_circle = circle.zip(response.interact_pointer_pos()).is_some_and(|(c, p)| p.distance(c) <= TICK_REACH);
+            if response.clicked() {
+                self.click_folder(k, if on_circle { egui::Modifiers::CTRL } else { modifiers });
             }
-            if crate::input::double_clicked(&response) {
+            if response.secondary_clicked() {
+                self.right_click_folder(k);
+            }
+            if crate::input::double_clicked(&response) && !modifiers.ctrl && !modifiers.shift && !on_circle {
                 folder = self.folders.get(k).cloned();
             }
             response.context_menu(|ui| self.folder_menu(ui));
@@ -788,8 +810,8 @@ impl App {
         self.item(ui, tr!("Open", "Открыть").into(), "Enter", Cmd::OpenFolder, true);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
         ui.separator();
-        self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, true);
-        self.item(ui, tr!("Delete…", "Удалить…").into(), "Delete", Cmd::Delete, true);
+        self.rename_item(ui, true);
+        self.delete_item(ui, true);
         ui.separator();
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         self.new_folder_item(ui);
@@ -820,8 +842,10 @@ impl App {
         if background.drag_started_by(PointerButton::Primary)
             && let Some(origin) = ctx.input(|i| i.pointer.press_origin())
         {
-            let before = if ctx.input(|i| i.modifiers.ctrl) { self.chosen_or_current() } else { Default::default() };
-            self.selection.band = Some(crate::selection::Band { start: to_grid(origin), before });
+            let ctrl = ctx.input(|i| i.modifiers.ctrl);
+            let before = if ctrl { self.chosen_or_current() } else { Default::default() };
+            let before_folders = if ctrl { self.selection.chosen_folders() } else { Default::default() };
+            self.selection.band = Some(crate::selection::Band { start: to_grid(origin), before, before_folders });
             // The images chosen are the file commands' again.
             self.folder_focus = None;
         }
@@ -832,10 +856,14 @@ impl App {
         }
         let Some(p) = background.interact_pointer_pos() else { return };
         let Some(gallery) = &self.gallery else { return };
-        let cells = gallery.layout.cells_in(Rect::from_two_pos(band.start, to_grid(p)));
-        let before = band.before.clone();
+        let area = Rect::from_two_pos(band.start, to_grid(p));
+        let cells = gallery.layout.cells_in(area);
+        let folder_cells = gallery.layout.folders_in(area);
+        let (before, before_folders) = (band.before.clone(), band.before_folders.clone());
         let chosen: Vec<_> = cells.into_iter().filter_map(|i| self.files.get(i).cloned()).collect();
         self.selection.set(&before, chosen);
+        let chosen: Vec<_> = folder_cells.into_iter().filter_map(|k| self.folders.get(k).cloned()).collect();
+        self.selection.set_folders(&before_folders, chosen);
     }
 
     /// Keep the current image in view when the cells change size.

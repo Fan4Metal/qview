@@ -458,7 +458,23 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("confirm_delete")).show(ctx, |ui| {
             ui.set_width(380.0);
             let n = paths.len();
-            if n == 1 && paths[0].is_dir() {
+            let folders = self.delete_folders.min(n);
+            if folders > 1 && folders == n {
+                ui.heading(tr!("Delete Folders", "Удаление папок"));
+                ui.add_space(6.0);
+                ui.label(tr!(
+                    format!("Move {n} folders with everything in them to the Recycle Bin?"),
+                    format!("Переместить папки ({n}) со всем содержимым в корзину?")
+                ));
+            } else if folders > 0 && folders < n {
+                let files = n - folders;
+                ui.heading(tr!("Delete Folders and Files", "Удаление папок и файлов"));
+                ui.add_space(6.0);
+                ui.label(tr!(
+                    format!("Move {folders} folders with everything in them and {files} files to the Recycle Bin?"),
+                    format!("Переместить в корзину папки ({folders}) со всем содержимым и файлы ({files})?")
+                ));
+            } else if n == 1 && paths[0].is_dir() {
                 ui.heading(tr!("Delete Folder", "Удаление папки"));
                 ui.add_space(6.0);
                 let name = file_name(&paths[0]);
@@ -789,7 +805,11 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("batch_rename")).show(ctx, |ui| {
             ui.set_width(460.0);
             let n = batch.paths.len();
-            ui.heading(tr!(format!("Rename {n} Files"), format!("Переименование файлов ({n})")));
+            ui.heading(match batch.dirs {
+                0 => tr!(format!("Rename {n} Files"), format!("Переименование файлов ({n})")),
+                d if d == n => tr!(format!("Rename {n} Folders"), format!("Переименование папок ({n})")),
+                _ => tr!(format!("Rename {n} Folders and Files"), format!("Переименование папок и файлов ({n})")),
+            });
             ui.add_space(8.0);
             let mut changed = false;
             egui::Grid::new("batch_rename_fields").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
@@ -812,7 +832,7 @@ impl App {
             }
             ui.add_space(8.0);
             // The first names and the last: what the numbering looks like.
-            let news = crate::rename::numbered(&batch.paths, &batch.base, batch.start);
+            let news = crate::rename::numbered(&batch.paths, batch.dirs, &batch.base, batch.start);
             let shown: Vec<usize> = if n <= 4 { (0..n).collect() } else { vec![0, 1, 2, n - 1] };
             // The old and the new names share the width, the arrow between.
             let half = ((ui.available_width() - 30.0) / 2.0).max(60.0);
@@ -857,8 +877,8 @@ impl App {
         }
         match decision {
             Some(true) => {
-                let (paths, base, start) = (batch.paths.clone(), batch.base.clone(), batch.start);
-                match self.rename_batch(ctx, &paths, &base, start) {
+                let (paths, dirs, base, start) = (batch.paths.clone(), batch.dirs, batch.base.clone(), batch.start);
+                match self.rename_batch(ctx, &paths, dirs, &base, start) {
                     Ok(()) => self.batch_rename = None,
                     Err(e) => {
                         if let Some(batch) = &mut self.batch_rename {

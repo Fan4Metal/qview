@@ -208,7 +208,9 @@ struct Saving {
 /// Several files being renamed at once (F2 with several images chosen in
 /// the gallery): a name and the first number (see `rename::numbered`).
 pub struct BatchRename {
+    /// The folders chosen first (`dirs` of them), then the images.
     pub paths: Vec<PathBuf>,
+    pub dirs: usize,
     pub base: String,
     pub start: u32,
     pub error: Option<String>,
@@ -292,6 +294,8 @@ pub struct App {
     program_due: bool,
     /// The files the delete confirmation asks about.
     pub confirm_delete: Option<Vec<PathBuf>>,
+    /// How many of `confirm_delete` are folders: the first ones.
+    pub delete_folders: usize,
     pub rename: Option<Rename>,
     pub batch_rename: Option<BatchRename>,
     /// The images chosen in the gallery (see `selection`).
@@ -511,6 +515,32 @@ fn changes_files(cmd: Cmd) -> bool {
             | Cmd::EditWith(_)
             | Cmd::EditWithOther
             | Cmd::Favorite
+            | Cmd::MoveTo(_)
+            | Cmd::CopyTo(_)
+            | Cmd::MoveToListed(_)
+            | Cmd::CopyToListed(_)
+            | Cmd::MoveToNew
+            | Cmd::CopyToNew
+            | Cmd::MoveToOther
+            | Cmd::CopyToOther
+    )
+}
+
+/// The commands of the current image or the chosen ones besides Delete
+/// and F2, which do nothing while a folder's cell has the cursor or only
+/// folders are chosen.
+fn acts_on_files(cmd: Cmd) -> bool {
+    matches!(
+        cmd,
+        Cmd::Copy
+            | Cmd::CopyImage
+            | Cmd::ConvertTo(_)
+            | Cmd::Edit
+            | Cmd::EditWith(_)
+            | Cmd::EditWithOther
+            | Cmd::Favorite
+            | Cmd::Print
+            | Cmd::Wallpaper
             | Cmd::MoveTo(_)
             | Cmd::CopyTo(_)
             | Cmd::MoveToListed(_)
@@ -757,6 +787,7 @@ impl App {
             programs: HashMap::new(),
             program_due: false,
             confirm_delete: None,
+            delete_folders: 0,
             rename: None,
             batch_rename: None,
             selection: Selection::default(),
@@ -1135,7 +1166,7 @@ impl App {
         self.folders = self.filtered_folders();
         self.folder_focus = None;
         self.starts = folder::starts(&self.files);
-        self.selection.retain_listed(&self.files);
+        self.selection.retain_listed(&self.files, &self.folders);
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
         if self.index.is_none() && !self.files.is_empty() {
             self.go(0);
@@ -1290,8 +1321,8 @@ impl App {
     /// Rename `paths` to `base` and a number from `start` each (see
     /// `rename::numbered`), all or none, so that Ctrl+Z can undo it; why
     /// not, if they cannot be.
-    pub fn rename_batch(&mut self, ctx: &egui::Context, paths: &[PathBuf], base: &str, start: u32) -> Result<(), String> {
-        let news = crate::rename::numbered(paths, base, start);
+    pub fn rename_batch(&mut self, ctx: &egui::Context, paths: &[PathBuf], dirs: usize, base: &str, start: u32) -> Result<(), String> {
+        let news = crate::rename::numbered(paths, dirs, base, start);
         let pairs: Vec<(PathBuf, PathBuf)> = paths.iter().cloned().zip(news).filter(|(old, new)| old != new).collect();
         if pairs.is_empty() {
             return Ok(());
@@ -1301,7 +1332,11 @@ impl App {
         self.moved(&pairs);
         self.list_again(ctx);
         let n = pairs.len();
-        self.notice(tr!(format!("Files renamed: {n}"), format!("Переименовано файлов: {n}")));
+        self.notice(if dirs > 0 {
+            tr!(format!("Renamed: {n}"), format!("Переименовано: {n}"))
+        } else {
+            tr!(format!("Files renamed: {n}"), format!("Переименовано файлов: {n}"))
+        });
         self.push_undo(Undo::Rename(pairs));
         Ok(())
     }
@@ -1883,7 +1918,7 @@ impl App {
             self.set_current(None);
         }
         self.starts = folder::starts(&self.files);
-        self.selection.retain_listed(&self.files);
+        self.selection.retain_listed(&self.files, &self.folders);
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
         if std::mem::take(&mut self.centre_after_scan)
             && let Some(gallery) = &mut self.gallery
@@ -2304,21 +2339,26 @@ impl App {
         }
         let folders: Vec<PathBuf> =
             std::mem::take(&mut self.deleting_folders).into_iter().filter(|f| gone.iter().any(|g| folder::same_path(g, f))).collect();
+        // The files deleted with the folders (chosen together) first.
+        let gone: Vec<PathBuf> = gone.into_iter().filter(|g| !folders.iter().any(|f| folder::same_path(g, f))).collect();
+        for path in &gone {
+            self.cache.remove(path);
+        }
+        if !gone.is_empty()
+            && let Err(e) = self.favorites.remove_if(|p| gone.iter().any(|g| folder::same_path(p, g)))
+        {
+            self.notice(e);
+        }
+        for path in &gone {
+            self.unlist(path);
+        }
+        // The folder is listed again, or another shown.
         if !folders.is_empty() {
             self.folders_deleted(ctx, &folders);
             return;
         }
         if gone.is_empty() {
             return;
-        }
-        for path in &gone {
-            self.cache.remove(path);
-        }
-        if let Err(e) = self.favorites.remove_if(|p| gone.iter().any(|g| folder::same_path(p, g))) {
-            self.notice(e);
-        }
-        for path in &gone {
-            self.unlist(path);
         }
         // A listing begun before would bring them back.
         if self.scan.is_some() {
@@ -2366,6 +2406,42 @@ impl App {
     pub fn ask_delete_folder(&mut self, dir: PathBuf) {
         if self.deleting.is_none() && dir.is_dir() {
             self.confirm_delete = Some(vec![dir]);
+            self.delete_folders = 1;
+        }
+    }
+
+    /// Ask to move the folders chosen in the gallery, and the images chosen
+    /// with them, to the Recycle Bin (Delete).
+    fn ask_delete_chosen(&mut self) {
+        if self.deleting.is_some() {
+            return;
+        }
+        let items: Vec<PathBuf> = self.chosen_items().into_iter().filter(|p| p.exists()).collect();
+        let folders = items.iter().take_while(|p| p.is_dir()).count();
+        if !items.is_empty() {
+            self.confirm_delete = Some(items);
+            self.delete_folders = folders;
+        }
+    }
+
+    /// Ask for the new names of the folders chosen in the gallery and the
+    /// images chosen with them (F2): one folder alone as with its menu,
+    /// several as several images are (`BatchRename`).
+    fn ask_rename_chosen(&mut self) {
+        let items: Vec<PathBuf> = self.chosen_items().into_iter().filter(|p| p.exists()).collect();
+        let dirs = items.iter().take_while(|p| p.is_dir()).count();
+        match &items[..] {
+            [] => {}
+            [one] if dirs == 1 => self.ask_rename_folder(one.clone()),
+            [one] => {
+                let name = file_name(one);
+                self.rename = Some(Rename { path: one.clone(), name, error: None, focus: true, select: true });
+            }
+            _ => {
+                // The name of the folder shown, as a start.
+                let base = items[0].parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.batch_rename = Some(BatchRename { paths: items, dirs, base, start: 1, error: None, focus: true });
+            }
         }
     }
 
@@ -2544,6 +2620,7 @@ impl App {
                 let files: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
                 if self.deleting.is_none() && !files.is_empty() {
                     self.confirm_delete = Some(files);
+                    self.delete_folders = 0;
                 }
             }
             Cmd::Undo => self.undo(ctx),
@@ -2573,7 +2650,7 @@ impl App {
                     // The folder's name, as a start.
                     // (A drive's root has none.)
                     let base = paths[0].parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.batch_rename = Some(BatchRename { paths, base, start: 1, error: None, focus: true });
+                    self.batch_rename = Some(BatchRename { paths, dirs: 0, base, start: 1, error: None, focus: true });
                 } else if let Some(path) = paths.into_iter().next() {
                     let name = file_name(&path);
                     self.rename = Some(Rename { path, name, error: None, focus: true, select: true });
@@ -2684,6 +2761,27 @@ impl App {
         if self.gallery.is_none() {
             return false;
         }
+        // Folders chosen: Delete and F2 act on them and the images chosen
+        // with them, Esc chooses nothing; with no image chosen, the other
+        // commands of the files have none.
+        if self.selection.has_folders() {
+            match cmd {
+                Cmd::Delete => {
+                    self.ask_delete_chosen();
+                    return true;
+                }
+                Cmd::Rename => {
+                    self.ask_rename_chosen();
+                    return true;
+                }
+                Cmd::Escape => {
+                    self.selection.clear();
+                    return true;
+                }
+                _ if self.selection.is_empty() && acts_on_files(cmd) => return true,
+                _ => {}
+            }
+        }
         // A sub-folder's cell has the cursor: Enter opens it, Esc returns
         // to the current image, and the commands of the files have no file.
         if let Some(dir) = self.focused_folder() {
@@ -2721,24 +2819,8 @@ impl App {
                     self.ask_rename_folder(dir);
                     return true;
                 }
-                Cmd::Copy
-                | Cmd::CopyImage
-                | Cmd::ConvertTo(_)
-                | Cmd::Edit
-                | Cmd::EditWith(_)
-                | Cmd::EditWithOther
-                | Cmd::Favorite
-                | Cmd::Print
-                | Cmd::Wallpaper
-                | Cmd::MoveTo(_)
-                | Cmd::CopyTo(_)
-                | Cmd::MoveToListed(_)
-                | Cmd::CopyToListed(_)
-                | Cmd::MoveToNew
-                | Cmd::CopyToNew
-                | Cmd::MoveToOther
-                | Cmd::CopyToOther
-                | Cmd::SelectTo(_) => return true,
+                Cmd::SelectTo(_) => return true,
+                _ if acts_on_files(cmd) => return true,
                 Cmd::FullScreen | Cmd::SelectAll => self.folder_focus = None,
                 _ => {}
             }

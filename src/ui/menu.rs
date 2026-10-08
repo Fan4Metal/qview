@@ -479,19 +479,34 @@ impl App {
     }
 
     pub(super) fn rename_item(&mut self, ui: &mut Ui, enabled: bool) {
-        let text = match self.several() {
-            Some(n) => tr!(format!("Rename {n} Files…"), format!("Переименовать файлы ({n})…")),
-            None => tr!("Rename…", "Переименовать…").into(),
+        let text = match (self.with_folders(), self.several()) {
+            (Some((n, true)), _) => tr!(format!("Rename {n} Folders…"), format!("Переименовать папки ({n})…")),
+            (Some((n, false)), _) => tr!(format!("Rename {n} Folders and Files…"), format!("Переименовать папки и файлы ({n})…")),
+            (None, Some(n)) => tr!(format!("Rename {n} Files…"), format!("Переименовать файлы ({n})…")),
+            (None, None) => tr!("Rename…", "Переименовать…").into(),
         };
         self.item(ui, text, "F2", Cmd::Rename, enabled && !self.in_archive());
     }
 
     pub(super) fn delete_item(&mut self, ui: &mut Ui, enabled: bool) {
-        let text = match self.several() {
-            Some(n) => tr!(format!("Delete {n} Files…"), format!("Удалить файлы ({n})…")),
-            None => tr!("Delete…", "Удалить…").into(),
+        let text = match (self.with_folders(), self.several()) {
+            (Some((n, true)), _) => tr!(format!("Delete {n} Folders…"), format!("Удалить папки ({n})…")),
+            (Some((n, false)), _) => tr!(format!("Delete {n} Folders and Files…"), format!("Удалить папки и файлы ({n})…")),
+            (None, Some(n)) => tr!(format!("Delete {n} Files…"), format!("Удалить файлы ({n})…")),
+            (None, None) => tr!("Delete…", "Удалить…").into(),
         };
         self.item(ui, text, "Delete", Cmd::Delete, enabled && !self.in_archive());
+    }
+
+    /// Several things chosen in the gallery, folders among them: how many,
+    /// and whether they are all folders.
+    pub(super) fn with_folders(&self) -> Option<(usize, bool)> {
+        if !self.gallery_open || !self.selection.has_folders() {
+            return None;
+        }
+        let folders = self.selection.folders_len();
+        let n = folders + self.selection.len();
+        (n > 1).then_some((n, n == folders))
     }
 
     /// The current image's folder, from the favourites or the sub-folders.

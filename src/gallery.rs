@@ -794,6 +794,14 @@ impl Layout {
             .filter(|&i| Rect::from_min_size(self.cell_pos(i).to_pos2(), self.cell).intersects(band))
             .collect()
     }
+
+    /// The sub-folders' cells that `band` (in the grid's coordinates)
+    /// touches.
+    pub fn folders_in(&self, band: Rect) -> Vec<usize> {
+        self.visible_folders(band.top(), band.bottom())
+            .filter(|&j| Rect::from_min_size(self.folder_pos(j).to_pos2(), self.folder_cell).intersects(band))
+            .collect()
+    }
 }
 
 #[cfg(test)]
