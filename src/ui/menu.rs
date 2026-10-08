@@ -298,9 +298,15 @@ impl App {
         }
     }
 
-    /// Move the current image, or those chosen, into a pinned folder with
-    /// a key (Alt+1 to Alt+9), or with `copy` copy them there.
+    /// Move the current image, or those chosen, into a folder, or with
+    /// `copy` copy them there: a pinned folder with a key (Alt+1 to Alt+9),
+    /// the parent folder or a sub-folder of the image's folder (scrolled
+    /// past `FOLDER_ROWS`), a new folder (Alt+N) or one picked.
     pub(super) fn transfer_menu(&mut self, ui: &mut Ui, copy: bool, enabled: bool) {
+        /// The width the folder names are cut to, in points.
+        const WIDTH: f32 = 280.0;
+        /// The sub-folders shown without scrolling.
+        const FOLDER_ROWS: f32 = 12.0;
         let text = match (copy, self.several()) {
             (false, Some(n)) => tr!(format!("Move {n} Files to Folder"), format!("Переместить файлы ({n}) в папку")),
             (false, None) => tr!("Move to Folder", "Переместить в папку").into(),
@@ -310,19 +316,60 @@ impl App {
         let keyed = self.pinned.keyed();
         ui.add_enabled_ui(enabled && !self.in_archive(), |ui| {
             ui.menu_button(text, |ui| {
-                if keyed.is_empty() {
-                    ui.weak(tr!(
-                        "Give a pinned folder a key: the Key item of its context menu in Quick Access",
-                        "Назначьте закреплённой папке клавишу: пункт «Клавиша» её контекстного меню в быстром доступе"
-                    ));
-                }
-                for (k, dir) in keyed {
+                ui.set_max_width(WIDTH);
+                for (k, dir) in &keyed {
                     let shortcut = if copy { format!("Shift+Alt+{k}") } else { format!("Alt+{k}") };
-                    let cmd = if copy { Cmd::CopyTo(k) } else { Cmd::MoveTo(k) };
-                    self.item(ui, crate::app::folder_label(&dir), &shortcut, cmd, true);
+                    let cmd = if copy { Cmd::CopyTo(*k) } else { Cmd::MoveTo(*k) };
+                    self.folder_item(ui, dir, "", &shortcut, cmd);
                 }
+                if !keyed.is_empty() {
+                    ui.separator();
+                }
+                // The parent folder, then the sub-folders of the image's.
+                let (parent, subfolders) = self.transfer_folders();
+                let mut folders = Vec::new();
+                if let Some(parent) = parent {
+                    let cmd = if copy { Cmd::CopyToListed(0) } else { Cmd::MoveToListed(0) };
+                    self.folder_item(ui, &parent, "↑ ", "", cmd);
+                    folders.push(parent);
+                }
+                if !subfolders.is_empty() {
+                    let row = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                    egui::ScrollArea::vertical().max_height(row * FOLDER_ROWS).show(ui, |ui| {
+                        ui.set_max_width(WIDTH);
+                        for dir in subfolders {
+                            let k = folders.len();
+                            let cmd = if copy { Cmd::CopyToListed(k) } else { Cmd::MoveToListed(k) };
+                            self.folder_item(ui, &dir, "", "", cmd);
+                            folders.push(dir);
+                        }
+                    });
+                }
+                self.menu_folders = folders;
+                ui.separator();
+                let shortcut = if copy { "Shift+Alt+N" } else { "Alt+N" };
+                let cmd = if copy { Cmd::CopyToNew } else { Cmd::MoveToNew };
+                self.item(ui, tr!("New Folder…", "Новая папка…").into(), shortcut, cmd, true);
+                let cmd = if copy { Cmd::CopyToOther } else { Cmd::MoveToOther };
+                self.item(ui, tr!("Other Folder…", "Другая папка…").into(), "", cmd, true);
             })
         });
+    }
+
+    /// An item of the Move to Folder menu for the folder `dir`: its name
+    /// after `prefix`, cut to the menu's width, the whole path in a tooltip
+    /// then.
+    fn folder_item(&mut self, ui: &mut Ui, dir: &std::path::Path, prefix: &str, shortcut: &str, cmd: Cmd) {
+        let name = crate::app::folder_label(dir);
+        let button = Button::new(format!("{prefix}{name}")).shortcut_text(shortcut).truncate();
+        let response = ui.add(button);
+        if response.clicked() {
+            self.clicked.push(cmd);
+            ui.close();
+        }
+        if name.chars().count() > 24 {
+            response.on_hover_text(dir.display().to_string());
+        }
     }
 
     /// Clear the favourites, after a confirmation.

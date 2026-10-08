@@ -154,15 +154,31 @@ pub struct Rename {
     pub select: bool,
 }
 
+/// A folder to make beside the current image, or those chosen, and move
+/// them into (Alt+N), or with `copy` copy them into (Shift+Alt+N): where,
+/// the name as typed, and why it could not be used.
+pub struct NewFolder {
+    pub parent: PathBuf,
+    pub name: String,
+    pub copy: bool,
+    pub error: Option<String>,
+    /// Focus the name on the next frame, and with `select` select it.
+    pub focus: bool,
+    pub select: bool,
+}
+
 /// What Ctrl+Z undoes, all of it at once.
 pub enum Undo {
     /// Files renamed, `(old, new)`.
     Rename(Vec<(PathBuf, PathBuf)>),
-    /// Files moved into a pinned folder (Alt+1 to Alt+9), `(old, new)`.
-    Move(Vec<(PathBuf, PathBuf)>),
-    /// Copies made in a pinned folder (Shift+Alt+1 to Shift+Alt+9), where
-    /// no file of the name was: undone by deleting them.
-    Copy(Vec<PathBuf>),
+    /// Files moved into a folder (Alt+1 to Alt+9, the Move to Folder
+    /// menu), `(old, new)`; `created`: the folder made for them (Alt+N),
+    /// removed again if it is empty once they are back.
+    Move { pairs: Vec<(PathBuf, PathBuf)>, created: Option<PathBuf> },
+    /// Copies made in a folder (Shift+Alt+1 to Shift+Alt+9, the Copy to
+    /// Folder menu), where no file of the name was: undone by deleting
+    /// them; `created` as for `Move`.
+    Copy { copies: Vec<PathBuf>, created: Option<PathBuf> },
     /// Files saved (turned, cropped, converted): each one's contents
     /// before, None if saving made it.
     Save(Vec<(PathBuf, Option<edit::Before>)>),
@@ -286,6 +302,16 @@ pub struct App {
     /// Those listed in the Edit With menu this frame, which
     /// `Cmd::EditWith` counts in.
     pub menu_editors: Vec<Editor>,
+    /// The folders listed in the Move to Folder menu this frame (the
+    /// parent folder and the sub-folders of the image's folder), which
+    /// `Cmd::MoveToListed` counts in.
+    pub menu_folders: Vec<PathBuf>,
+    /// The sub-folders of the image's folder read for that menu when the
+    /// listing is not that folder alone: the folder and what it holds
+    /// (forgotten by a new listing and by a move).
+    sibling_folders: Option<(PathBuf, Vec<PathBuf>)>,
+    /// A folder being named, to move or copy the images into.
+    pub new_folder: Option<NewFolder>,
     /// An editor being started on a thread.
     opening: Option<mpsc::Receiver<Result<(), String>>>,
     /// Many files to open in an editor, waiting for the user's yes.
@@ -444,6 +470,8 @@ struct Copying {
     /// The copies that would be new in `to` (Shift+Alt+1 to 9), for the
     /// notice and Ctrl+Z; None: the favourites (Copy All to Folder).
     fresh: Option<Vec<PathBuf>>,
+    /// The folder made for them (Shift+Alt+N), for Ctrl+Z.
+    created: Option<PathBuf>,
 }
 
 /// Files being moved by the shell on a thread (see `win::move_to`).
@@ -453,6 +481,11 @@ struct Moving {
     pairs: Vec<(PathBuf, PathBuf)>,
     /// Remember the move for Ctrl+Z (not when it is one).
     undoable: bool,
+    /// The folder made for them (Alt+N), for Ctrl+Z.
+    created: Option<PathBuf>,
+    /// Undoing a move into a folder made for it: the folder to remove
+    /// once the files are back, if it is empty then.
+    remove_empty: Option<PathBuf>,
 }
 
 /// The name of a folder for a message: a drive's root has none, so its
@@ -479,6 +512,12 @@ fn changes_files(cmd: Cmd) -> bool {
             | Cmd::Favorite
             | Cmd::MoveTo(_)
             | Cmd::CopyTo(_)
+            | Cmd::MoveToListed(_)
+            | Cmd::CopyToListed(_)
+            | Cmd::MoveToNew
+            | Cmd::CopyToNew
+            | Cmd::MoveToOther
+            | Cmd::CopyToOther
     )
 }
 
@@ -726,6 +765,9 @@ impl App {
                 .filter(|e| !e.id.is_empty()),
             editors: HashMap::new(),
             menu_editors: Vec::new(),
+            menu_folders: Vec::new(),
+            sibling_folders: None,
+            new_folder: None,
             opening: None,
             confirm_edit: None,
             undo: Vec::new(),
@@ -1140,6 +1182,7 @@ impl App {
         self.place = self.index.filter(|_| same);
         // Set again after this by those returning to a folder.
         self.refocus = None;
+        self.sibling_folders = None;
         if !same {
             self.selection.clear();
         }
@@ -1222,6 +1265,7 @@ impl App {
     pub fn modal_open(&self) -> bool {
         self.confirm_delete.is_some()
             || self.rename.is_some()
+            || self.new_folder.is_some()
             || self.batch_rename.is_some()
             || self.confirm_edit.is_some()
             || self.dialog.is_some()
@@ -1266,7 +1310,7 @@ impl App {
         self.undo.push(undo);
         let bytes = |u: &Undo| match u {
             Undo::Save(files) => files.iter().filter_map(|(_, b)| b.as_ref()).map(|b| b.bytes.len()).sum(),
-            Undo::Rename(_) | Undo::Move(_) | Undo::Copy(_) => 0,
+            Undo::Rename(_) | Undo::Move { .. } | Undo::Copy { .. } => 0,
         };
         while self.undo.len() > UNDO_STEPS
             || (self.undo.len() > 1 && self.undo.iter().map(bytes).sum::<usize>() > UNDO_BYTES)
@@ -1289,11 +1333,18 @@ impl App {
         }
         match self.undo.pop() {
             None => {}
-            Some(Undo::Move(pairs)) => {
+            Some(Undo::Move { pairs, created }) => {
                 let back: Vec<(PathBuf, PathBuf)> = pairs.iter().map(|(old, new)| (new.clone(), old.clone())).collect();
-                self.move_pairs(ctx, back, false);
+                self.move_pairs(ctx, back, false, None);
+                // The folder made for them goes once they are out of it:
+                // now, or when the shell has moved them (`poll_move`).
+                if let Some(moving) = &mut self.moving {
+                    moving.remove_empty = created;
+                } else if let Some(dir) = created {
+                    self.remove_if_empty(ctx, &dir);
+                }
             }
-            Some(Undo::Copy(copies)) => {
+            Some(Undo::Copy { copies, created }) => {
                 let (mut removed, mut error) = (Vec::new(), None);
                 for path in &copies {
                     match std::fs::remove_file(path) {
@@ -1316,6 +1367,9 @@ impl App {
                     Some(e) => tr!(format!("Cannot undo the copy of {e}"), format!("Не удалось отменить копирование {e}")),
                 };
                 self.notice(text);
+                if let Some(dir) = created {
+                    self.remove_if_empty(ctx, &dir);
+                }
             }
             Some(Undo::Rename(pairs)) => {
                 let back: Vec<(PathBuf, PathBuf)> = pairs.iter().map(|(old, new)| (new.clone(), old.clone())).collect();
@@ -1362,8 +1416,8 @@ impl App {
     pub fn undo_label(&self) -> &'static str {
         match self.undo.last() {
             Some(Undo::Save(_)) => tr!("Undo Save", "Отменить сохранение"),
-            Some(Undo::Move(_)) => tr!("Undo Move", "Отменить перемещение"),
-            Some(Undo::Copy(_)) => tr!("Undo Copy", "Отменить копирование"),
+            Some(Undo::Move { .. }) => tr!("Undo Move", "Отменить перемещение"),
+            Some(Undo::Copy { .. }) => tr!("Undo Copy", "Отменить копирование"),
             _ => tr!("Undo Rename", "Отменить переименование"),
         }
     }
@@ -2590,6 +2644,13 @@ impl App {
             }
             Cmd::MoveTo(n) => self.transfer(ctx, n, false),
             Cmd::CopyTo(n) => self.transfer(ctx, n, true),
+            Cmd::MoveToListed(k) | Cmd::CopyToListed(k) => {
+                if let Some(to) = self.menu_folders.get(k).cloned() {
+                    self.transfer_to(ctx, to, cmd == Cmd::CopyToListed(k), None);
+                }
+            }
+            Cmd::MoveToNew | Cmd::CopyToNew => self.ask_new_folder(cmd == Cmd::CopyToNew),
+            Cmd::MoveToOther | Cmd::CopyToOther => self.transfer_to_picked(ctx, frame, cmd == Cmd::CopyToOther),
             Cmd::CopyFavorites => {
                 let files = self.favorite_files();
                 let n = files.len();
@@ -2669,6 +2730,12 @@ impl App {
                 | Cmd::Wallpaper
                 | Cmd::MoveTo(_)
                 | Cmd::CopyTo(_)
+                | Cmd::MoveToListed(_)
+                | Cmd::CopyToListed(_)
+                | Cmd::MoveToNew
+                | Cmd::CopyToNew
+                | Cmd::MoveToOther
+                | Cmd::CopyToOther
                 | Cmd::SelectTo(_) => return true,
                 Cmd::FullScreen | Cmd::SelectAll => self.folder_focus = None,
                 _ => {}
@@ -2872,25 +2939,24 @@ impl App {
             .set_parent(frame)
             .pick_folder();
         let Some(to) = picked else { return };
-        self.copy_files_to(ctx, files, to, None);
+        self.copy_files_to(ctx, files, to, None, None);
     }
 
     /// Copy `files` into `to` by the shell on a thread; `fresh`: the
     /// copies that would be new there, for Ctrl+Z (None for the
     /// favourites). `poll_copy` takes the outcome.
-    fn copy_files_to(&mut self, ctx: &egui::Context, files: Vec<PathBuf>, to: PathBuf, fresh: Option<Vec<PathBuf>>) {
+    fn copy_files_to(&mut self, ctx: &egui::Context, files: Vec<PathBuf>, to: PathBuf, fresh: Option<Vec<PathBuf>>, created: Option<PathBuf>) {
         let (tx, done) = mpsc::channel();
         let (ctx, owner, dest, count) = (ctx.clone(), self.hwnd, to.clone(), files.len());
         std::thread::spawn(move || {
             let _ = tx.send(win::copy_to(&files, &dest, owner));
             ctx.request_repaint();
         });
-        self.copying = Some(Copying { done, to, count, fresh });
+        self.copying = Some(Copying { done, to, count, fresh, created });
     }
 
     /// Move the current image, or those chosen, into the pinned folder with
     /// the key `n` (Alt+n), or with `copy` copy them there (Shift+Alt+n).
-    /// The next image takes the place of one moved.
     fn transfer(&mut self, ctx: &egui::Context, n: u8, copy: bool) {
         let Some(to) = self.pinned.with_key(n) else {
             self.notice(tr!(
@@ -2899,26 +2965,34 @@ impl App {
             ));
             return;
         };
+        self.transfer_to(ctx, to, copy, None);
+    }
+
+    /// Move the current image, or those chosen, into the folder `to`, or
+    /// with `copy` copy them there; `created`: the folder was made for
+    /// them, and Ctrl+Z removes it again if it is empty then. The next
+    /// image takes the place of one moved. False when nothing is done.
+    fn transfer_to(&mut self, ctx: &egui::Context, to: PathBuf, copy: bool, created: Option<PathBuf>) -> bool {
         let name = folder_label(&to);
         if !to.is_dir() {
             self.notice(tr!(format!("Folder not found: {name}"), format!("Папка не найдена: {name}")));
-            return;
+            return false;
         }
         if self.moving.is_some() || self.copying.is_some() {
             self.notice(tr!("Still moving or copying…".into(), "Перемещение или копирование ещё идёт…".into()));
-            return;
+            return false;
         }
         if self.still_saving() {
-            return;
+            return false;
         }
         let files: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
         if files.is_empty() {
-            return;
+            return false;
         }
         // Already there: nothing to do.
         if files.iter().all(|f| f.parent().is_some_and(|p| folder::same_path(p, &to))) {
             self.notice(tr!(format!("Already in {name}"), format!("Уже в папке {name}")));
-            return;
+            return false;
         }
         let files: Vec<PathBuf> = files.into_iter().filter(|f| f.parent().is_none_or(|p| !folder::same_path(p, &to))).collect();
         let pairs = crate::rename::into_folder(&files, &to);
@@ -2926,23 +3000,115 @@ impl App {
             // The shell asks about the names taken; the copies that are
             // new can be undone.
             let fresh: Vec<PathBuf> = pairs.iter().filter(|(_, new)| !new.exists()).map(|(_, new)| new.clone()).collect();
-            self.copy_files_to(ctx, files, to, Some(fresh));
+            self.copy_files_to(ctx, files, to, Some(fresh), created);
         } else {
             if let Err(e) = crate::rename::check(&pairs) {
                 self.notice(tr!(format!("Cannot move: {e}"), format!("Не удалось переместить: {e}")));
-                return;
+                return false;
             }
-            self.move_pairs(ctx, pairs, true);
+            self.move_pairs(ctx, pairs, true, created);
+        }
+        true
+    }
+
+    /// The folder of the current image, or of the first chosen (none in
+    /// an archive): where a new folder is made, what the Move to Folder
+    /// menu lists around.
+    fn transfer_base(&self) -> Option<PathBuf> {
+        if self.in_archive() {
+            return None;
+        }
+        self.targets().first().and_then(|f| f.parent()).map(Path::to_path_buf)
+    }
+
+    /// The folders the Move to Folder menu offers besides the pinned ones:
+    /// the parent of the image's folder, if any, and its sub-folders (those
+    /// listed, or read now and kept until the next listing).
+    pub fn transfer_folders(&mut self) -> (Option<PathBuf>, Vec<PathBuf>) {
+        let Some(base) = self.transfer_base() else { return (None, Vec::new()) };
+        let parent = base.parent().map(Path::to_path_buf);
+        let listed = !self.deep && !self.archive && self.dir.as_deref().is_some_and(|d| folder::same_path(d, &base));
+        if listed {
+            return (parent, self.listed_folders.clone());
+        }
+        if !self.sibling_folders.as_ref().is_some_and(|(dir, _)| folder::same_path(dir, &base)) {
+            let subfolders = folder::subfolders(&base);
+            self.sibling_folders = Some((base, subfolders));
+        }
+        (parent, self.sibling_folders.as_ref().map(|(_, f)| f.clone()).unwrap_or_default())
+    }
+
+    /// Ask for the name of a folder to make beside the current image, or
+    /// the chosen ones, and move them into (Alt+N), or with `copy` copy
+    /// them into (Shift+Alt+N): "New folder", numbered past one there.
+    pub fn ask_new_folder(&mut self, copy: bool) {
+        let Some(parent) = self.transfer_base() else { return };
+        if self.moving.is_some() || self.copying.is_some() {
+            self.notice(tr!("Still moving or copying…".into(), "Перемещение или копирование ещё идёт…".into()));
+            return;
+        }
+        let base = tr!("New folder", "Новая папка");
+        let mut name = base.to_string();
+        let mut n = 2;
+        while parent.join(&name).exists() {
+            name = format!("{base} ({n})");
+            n += 1;
+        }
+        self.new_folder = Some(NewFolder { parent, name, copy, error: None, focus: true, select: true });
+    }
+
+    /// Make the folder `name` in `parent` and move the current image, or
+    /// those chosen, into it, or with `copy` copy them; why not, if it
+    /// cannot be made.
+    pub fn make_folder_and_transfer(&mut self, ctx: &egui::Context, parent: &Path, name: &str, copy: bool) -> Result<(), String> {
+        folder::check_name(name).map_err(str::to_string)?;
+        let dir = parent.join(name);
+        if dir.exists() {
+            return Err(tr!("A file or folder with this name already exists", "Файл или папка с таким именем уже существует").into());
+        }
+        std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+        self.sibling_folders = None;
+        if !self.transfer_to(ctx, dir.clone(), copy, Some(dir.clone())) {
+            // Refused (a name taken among the files): no folder for nothing.
+            let _ = std::fs::remove_dir(&dir);
+        }
+        Ok(())
+    }
+
+    /// Move the current image, or those chosen, into a folder picked in a
+    /// dialog, or with `copy` copy them there.
+    fn transfer_to_picked(&mut self, ctx: &egui::Context, frame: &eframe::Frame, copy: bool) {
+        let Some(base) = self.transfer_base() else { return };
+        let title = if copy { tr!("Copy to folder", "Копировать в папку") } else { tr!("Move to folder", "Переместить в папку") };
+        let picked = rfd::FileDialog::new().set_title(title).set_directory(&base).set_parent(frame).pick_folder();
+        if let Some(to) = picked {
+            self.transfer_to(ctx, to, copy, None);
+        }
+    }
+
+    /// Remove the folder `dir` if it holds nothing (made for a move or a
+    /// copy that is undone), and list the folder again, since its cell is
+    /// gone.
+    fn remove_if_empty(&mut self, ctx: &egui::Context, dir: &Path) {
+        let empty = std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none());
+        if empty && std::fs::remove_dir(dir).is_ok() {
+            self.sibling_folders = None;
+            if let Some(parent) = dir.parent()
+                && self.lists_folder(parent)
+            {
+                self.list_again(ctx);
+            }
         }
     }
 
     /// Move each file of `pairs` to its new path: at once by renaming, so
     /// that the next image takes its place now, or by the shell on a
     /// thread when the folder is on another drive (`poll_move` then);
-    /// `undoable`: remembered for Ctrl+Z.
-    fn move_pairs(&mut self, ctx: &egui::Context, pairs: Vec<(PathBuf, PathBuf)>, undoable: bool) {
+    /// `undoable`: remembered for Ctrl+Z, with `created`, the folder made
+    /// for them.
+    fn move_pairs(&mut self, ctx: &egui::Context, pairs: Vec<(PathBuf, PathBuf)>, undoable: bool, created: Option<PathBuf>) {
         match crate::rename::move_all(&pairs) {
-            Ok(()) => self.files_moved(ctx, pairs, undoable),
+            Ok(()) => self.files_moved(ctx, pairs, undoable, created),
             Err(crate::rename::MoveError::OtherDrive) => {
                 let files: Vec<PathBuf> = pairs.iter().map(|(old, _)| old.clone()).collect();
                 let Some(to) = pairs.first().and_then(|(_, new)| new.parent()).map(Path::to_path_buf) else { return };
@@ -2952,7 +3118,7 @@ impl App {
                     let _ = tx.send(win::move_to(&files, &to, owner));
                     ctx.request_repaint();
                 });
-                self.moving = Some(Moving { done, pairs, undoable });
+                self.moving = Some(Moving { done, pairs, undoable, created, remove_empty: None });
             }
             Err(crate::rename::MoveError::Other(e)) => self.notice(e),
         }
@@ -2961,7 +3127,7 @@ impl App {
     /// The files of `pairs` are now at their new paths: what the listing
     /// still holds stays, with its texture and thumbnail, the rest leave
     /// it (the next image taking the current one's place).
-    fn files_moved(&mut self, ctx: &egui::Context, pairs: Vec<(PathBuf, PathBuf)>, undoable: bool) {
+    fn files_moved(&mut self, ctx: &egui::Context, pairs: Vec<(PathBuf, PathBuf)>, undoable: bool, created: Option<PathBuf>) {
         self.moved(&pairs);
         let mut stays = false;
         for (_, new) in &pairs {
@@ -2971,9 +3137,18 @@ impl App {
                 self.unlist(new);
             }
         }
+        // The cells of the folders they left and entered show other
+        // images now; a folder made for them gets a cell.
+        self.sibling_folders = None;
+        if let Some(gallery) = &mut self.gallery {
+            let dirs: Vec<PathBuf> =
+                pairs.iter().flat_map(|(old, new)| [old.parent(), new.parent()]).flatten().map(Path::to_path_buf).collect();
+            gallery.forget_previews_of(&dirs);
+        }
+        let made = created.as_deref().and_then(Path::parent).is_some_and(|p| self.lists_folder(p));
         // Still listed: their place in the order may have changed. A
         // listing begun before the move would bring the others back.
-        if stays || self.scan.is_some() {
+        if stays || made || self.scan.is_some() {
             self.list_again(ctx);
         }
         let n = pairs.len();
@@ -2984,7 +3159,7 @@ impl App {
         };
         self.notice(text);
         if undoable {
-            self.push_undo(Undo::Move(pairs));
+            self.push_undo(Undo::Move { pairs, created });
         }
     }
 
@@ -3011,7 +3186,7 @@ impl App {
     fn poll_move(&mut self, ctx: &egui::Context) {
         let Some(moving) = &self.moving else { return };
         let Ok(result) = moving.done.try_recv() else { return };
-        let Some(Moving { pairs, undoable, .. }) = self.moving.take() else { return };
+        let Some(Moving { pairs, undoable, created, remove_empty, .. }) = self.moving.take() else { return };
         // The shell may have moved some and not others.
         let (done, left): (Vec<_>, Vec<_>) = pairs.into_iter().partition(|(old, new)| !old.exists() && new.exists());
         match result {
@@ -3024,7 +3199,10 @@ impl App {
             Ok(()) => {}
         }
         if !done.is_empty() {
-            self.files_moved(ctx, done, undoable);
+            self.files_moved(ctx, done, undoable, created);
+        }
+        if let Some(dir) = remove_empty {
+            self.remove_if_empty(ctx, &dir);
         }
     }
 
@@ -3180,7 +3358,7 @@ impl App {
     fn poll_copy(&mut self, ctx: &egui::Context) {
         let Some(copying) = &self.copying else { return };
         let Ok(result) = copying.done.try_recv() else { return };
-        let Some(Copying { to, count: n, fresh, .. }) = self.copying.take() else { return };
+        let Some(Copying { to, count: n, fresh, created, .. }) = self.copying.take() else { return };
         let Some(fresh) = fresh else {
             let to = to.display().to_string();
             self.notice(match result {
@@ -3200,11 +3378,18 @@ impl App {
             Err(e) if e == "cancelled" => tr!("Copying cancelled".into(), "Копирование отменено".into()),
             Err(e) => tr!(format!("Cannot copy: {e}"), format!("Не удалось скопировать: {e}")),
         });
-        if self.lists_folder(&to) {
+        // The cell of the folder shows other images now; a folder made
+        // for them gets a cell.
+        self.sibling_folders = None;
+        if let Some(gallery) = &mut self.gallery {
+            gallery.forget_previews_of(std::slice::from_ref(&to));
+        }
+        let made_folder = created.as_deref().and_then(Path::parent).is_some_and(|p| self.lists_folder(p));
+        if self.lists_folder(&to) || made_folder {
             self.list_again(ctx);
         }
         if !made.is_empty() {
-            self.push_undo(Undo::Copy(made));
+            self.push_undo(Undo::Copy { copies: made, created });
         }
     }
 

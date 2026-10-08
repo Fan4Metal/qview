@@ -108,6 +108,8 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                     tr!("Move the file into the pinned folder with that key", "Переместить файл в закреплённую папку с этой клавишей"),
                 ),
                 ("Shift+Alt+1 … 9", tr!("Copy it into that folder", "Копировать файл в эту папку")),
+                ("Alt+N", tr!("Move the file into a new folder", "Переместить файл в новую папку")),
+                ("Shift+Alt+N", tr!("Copy it into a new folder", "Копировать файл в новую папку")),
                 ("Ctrl+Z", tr!("Undo the last rename, move, copy or save", "Отменить последнее переименование, перемещение, копирование или сохранение")),
                 ("Ctrl+C", tr!("Copy the file", "Копировать файл")),
                 ("Ctrl+Shift+C", tr!("Copy the image as shown", "Копировать картинку, как она показана")),
@@ -155,6 +157,7 @@ impl App {
         self.confirm_unpin_all_dialog(ctx);
         self.confirm_edit_dialog(ctx);
         self.rename_dialog(ctx);
+        self.new_folder_dialog(ctx);
         self.batch_rename_dialog(ctx);
         // The key that opened a dialog this frame must not close it.
         let fresh = std::mem::take(&mut self.dialog_fresh);
@@ -707,6 +710,70 @@ impl App {
 }
 
 impl App {
+    /// The name of a folder to make beside the image and move it, or the
+    /// chosen images, into (Alt+N), or copy them into (Shift+Alt+N);
+    /// Enter does it, Esc cancels.
+    fn new_folder_dialog(&mut self, ctx: &egui::Context) {
+        let Some(new) = self.new_folder.as_mut() else { return };
+        let id = egui::Id::new("new_folder_name");
+        let mut decision = None;
+        let modal = egui::Modal::new(egui::Id::new("new_folder")).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.heading(tr!("New Folder", "Новая папка"));
+            ui.add_space(4.0);
+            ui.label(tr!(format!("In {}", new.parent.display()), format!("В папке {}", new.parent.display())));
+            ui.add_space(8.0);
+            let edit = ui.add(egui::TextEdit::singleline(&mut new.name).id(id).desired_width(f32::INFINITY));
+            if std::mem::take(&mut new.focus) {
+                edit.request_focus();
+            }
+            if std::mem::take(&mut new.select) {
+                select_stem(ctx, id, &new.name, true);
+            }
+            if edit.changed() {
+                new.error = None;
+            }
+            if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                decision = Some(true);
+            }
+            if let Some(error) = &new.error {
+                ui.add_space(4.0);
+                ui.colored_label(egui::Color32::from_rgb(0xff, 0x8a, 0x80), error);
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let text = |s: &str| RichText::new(s).size(16.0);
+                let go = if new.copy { tr!("Copy", "Копировать") } else { tr!("Move", "Переместить") };
+                if ui.add(egui::Button::new(text(go)).min_size(egui::vec2(160.0, 34.0))).clicked() {
+                    decision = Some(true);
+                }
+                if ui.add(egui::Button::new(text(tr!("Cancel", "Отмена"))).min_size(egui::vec2(100.0, 34.0))).clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        if decision.is_none() && modal.should_close() {
+            decision = Some(false);
+        }
+        match decision {
+            Some(true) => {
+                let (parent, name, copy) = (new.parent.clone(), new.name.clone(), new.copy);
+                match self.make_folder_and_transfer(ctx, &parent, &name, copy) {
+                    Ok(()) => self.new_folder = None,
+                    Err(e) => {
+                        if let Some(new) = &mut self.new_folder {
+                            new.error = Some(e);
+                            new.focus = true;
+                        }
+                    }
+                }
+            }
+            Some(false) => self.new_folder = None,
+            None => {}
+        }
+    }
+
     /// Several files renamed to a name and a number each, in the order of
     /// the grid; the first and last new names shown. Enter renames, Esc
     /// cancels.

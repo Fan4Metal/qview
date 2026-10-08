@@ -157,6 +157,18 @@ pub enum Cmd {
     /// with this key (Alt+1 to Alt+9), or copy them there (Shift+Alt).
     MoveTo(u8),
     CopyTo(u8),
+    /// Move them, or copy them, into a folder of the Move to Folder menu's
+    /// list (the parent folder and the sub-folders of the image's folder,
+    /// `App::menu_folders`), by its index there.
+    MoveToListed(usize),
+    CopyToListed(usize),
+    /// Move them, or copy them, into a new folder, named in a dialog
+    /// (Alt+N, Shift+Alt+N).
+    MoveToNew,
+    CopyToNew,
+    /// Move them, or copy them, into a folder picked in a dialog.
+    MoveToOther,
+    CopyToOther,
 }
 
 /// The digit of a number key, 1 to 9.
@@ -188,6 +200,10 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         && let Some(n) = digit(key)
     {
         return Some(if m.shift { CopyTo(n) } else { MoveTo(n) });
+    }
+    // Alt+N: into a new folder.
+    if m.alt && !m.ctrl && !repeat && key == Key::N {
+        return Some(if m.shift { CopyToNew } else { MoveToNew });
     }
     let cmd = match key {
         Key::ArrowRight if m.ctrl && m.alt => RotateRight,
@@ -428,6 +444,11 @@ mod tests {
         assert_eq!(command(Key::Num1, ALT, true), None);
         assert_eq!(command(Key::Num1, CTRL | ALT, false), None);
         assert_eq!(command(Key::Num0, ALT, false), None);
+        assert_eq!(command(Key::N, ALT, false), Some(Cmd::MoveToNew));
+        assert_eq!(command(Key::N, ALT | SHIFT, false), Some(Cmd::CopyToNew));
+        assert_eq!(gallery_command(Key::N, ALT, false), Some(Cmd::MoveToNew));
+        assert_eq!(command(Key::N, ALT, true), None);
+        assert_eq!(command(Key::N, CTRL | ALT, false), None);
         assert_eq!(command(Key::OpenBracket, NONE, false), Some(Cmd::RotateLeft));
         assert_eq!(command(Key::H, NONE, false), Some(Cmd::FlipHorizontal));
         assert_eq!(command(Key::V, NONE, false), Some(Cmd::FlipVertical));

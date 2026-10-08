@@ -342,6 +342,12 @@ fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<PathBuf>)
     Ok((files, subfolders.into_iter().map(|(_, p)| p).collect()))
 }
 
+/// The visible sub-folders of `dir`, in Explorer's name order (none when
+/// it cannot be read).
+pub fn subfolders(dir: &Path) -> Vec<PathBuf> {
+    read(dir, true).map(|(_, folders)| folders).unwrap_or_default()
+}
+
 /// Image files of `dir`, in `order`. `keep` (the file being shown) is
 /// listed even when its extension is not one of [`EXTENSIONS`], so that it
 /// keeps its place among the others.

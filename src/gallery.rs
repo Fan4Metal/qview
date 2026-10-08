@@ -233,6 +233,14 @@ impl Gallery {
         }
     }
 
+    /// Forget what the cells of `dirs` show (images moved in or out):
+    /// listed again when drawn.
+    pub fn forget_previews_of(&mut self, dirs: &[PathBuf]) {
+        for dir in dirs {
+            self.previews.remove(dir);
+        }
+    }
+
     /// Forget what the sub-folders' cells show (the order changed, F5):
     /// listed again when drawn; listings started before are dropped.
     pub fn forget_previews(&mut self) {
