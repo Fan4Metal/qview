@@ -1,0 +1,5 @@
+# The C runtime linked into the exe (as heif.dll and libde265.dll have it,
+# see tools/build_heif.py): no VCRUNTIME140.dll, so qview starts on a
+# Windows without the Visual C++ Redistributable. About 100 KB.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

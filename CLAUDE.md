@@ -23,7 +23,7 @@ python tools/build_heif.py         # heif.dll + libde265.dll + licenses into tar
 $env:QVIEW_HEIF_FILE="<heic>"; cargo test --release heif_file -- --ignored --nocapture   # libheif against WIC: header, decode times, pixel difference
 ```
 
-Toolchain: stable MSVC Rust plus VS 2022 Build Tools. In the Bash tool, `cargo` is not on PATH; prefix commands with `export PATH="$HOME/.cargo/bin:$PATH"`. A running `qview.exe` locks the release binary; `build.py` closes it first (WM_CLOSE via `taskkill`, so settings are saved; killed after 3 s) and only touches copies under this project's `target`. The user often has qview open, so build with `uv run build.py`, not plain cargo. Heredocs containing Rust code break the Bash tool (lifetime apostrophes); write source files with the Write tool or a Python script.
+Toolchain: stable MSVC Rust plus VS 2022 Build Tools. `.cargo/config.toml` links the C runtime statically (`crt-static`, ~180 KB): the exe imports only system DLLs, no `VCRUNTIME140.dll` (check the import table after adding a native dependency; a `RUSTFLAGS` variable would override it). In the Bash tool, `cargo` is not on PATH; prefix commands with `export PATH="$HOME/.cargo/bin:$PATH"`. A running `qview.exe` locks the release binary; `build.py` closes it first (WM_CLOSE via `taskkill`, so settings are saved; killed after 3 s) and only touches copies under this project's `target`. The user often has qview open, so build with `uv run build.py`, not plain cargo. Heredocs containing Rust code break the Bash tool (lifetime apostrophes); write source files with the Write tool or a Python script.
 
 ## Architecture
 

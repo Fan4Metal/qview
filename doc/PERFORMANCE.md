@@ -31,6 +31,7 @@ At 240 Hz a frame lasts 4.2 ms; at 60 Hz, 16.7 ms. GPU timings below are compare
 - A window saved maximized is created normal, cloaked, maximized and shown once a maximized frame is presented, which avoids a white flash rather than saving time.
 - The WIC decoder list (`wic::extensions`) is warmed by a thread in `main`.
 - A filter shader (see [Filtering](#filtering)) is never built before the first image is on screen.
+- The C runtime is linked statically (`crt-static`, `.cargo/config.toml`), so that qview needs no Visual C++ Redistributable; it adds ~180 KB to the exe. For start-up it is slightly in favour: an empty program started and ended in 6.31 ms (median of 300 runs) against 6.70 ms with `VCRUNTIME140.dll` and the `api-ms-win-crt-*` DLLs loaded, ~0.4 ms less.
 
 ## Decoding
 
