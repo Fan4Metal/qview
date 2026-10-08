@@ -31,6 +31,7 @@ At 240 Hz a frame lasts 4.2 ms; at 60 Hz, 16.7 ms. GPU timings below are compare
 - A window saved maximized is created normal, cloaked, maximized and shown once a maximized frame is presented, which avoids a white flash rather than saving time.
 - The WIC decoder list (`wic::extensions`) is warmed by a thread in `main`.
 - A filter shader (see [Filtering](#filtering)) is never built before the first image is on screen.
+- The icons (the app's and 16 file types', 8 sizes each) were stored as 32-bit BMP layers: 306 KB each, 264 KB of it the 256 px layer, 5.2 MB of an 18 MB exe. The 256 px layer is now a PNG (Windows reads PNG layers in icons since Vista; checked with `PrivateExtractIconsW` from the exe): ~50 KB an icon, 0.85 MB in all, the exe 13.2 MB. The smaller layers stay BMP, which Windows draws without decoding.
 - The C runtime is linked statically (`crt-static`, `.cargo/config.toml`), so that qview needs no Visual C++ Redistributable; it adds ~180 KB to the exe. For start-up it is slightly in favour: an empty program started and ended in 6.31 ms (median of 300 runs) against 6.70 ms with `VCRUNTIME140.dll` and the `api-ms-win-crt-*` DLLs loaded, ~0.4 ms less.
 
 ## Decoding
@@ -74,7 +75,7 @@ Measured with `archive_timings` on a real comic book (RAR 1.5-4, stored, 68 page
 
 - An entry is found by reading the headers before it; in an ordinary archive their data is skipped, so any page costs about the same. The format is told by the first 6 bytes (~0.07 ms).
 - In a solid archive every page before the one wanted is unpacked, so without help the last page cost ~570 ms and the gallery's thumbnails about half a minute. The archive read last keeps an UnRAR cursor after the page read last and the pages unpacked on the way (up to 256 MB): reading on costs only the pages between, the thumbnails of the whole book about one unpacking, and threads wait for the one that unpacks instead of each starting over.
-- UnRAR adds ~290 KB to the exe (with the static C runtime it needs no `MSVCP140.dll`), the CBR file type's icon ~306 KB more. The `unrar-ng` wrapper was tried first: it depends on `regex` with its default features, which put `regex`'s Unicode tables into the exe (~360 KB), so UnRAR's C API is called directly through `unrar-ng-sys`.
+- UnRAR adds ~290 KB to the exe (with the static C runtime it needs no `MSVCP140.dll`), the CBR file type's icon ~50 KB more (306 KB before the icons' 256 px layers were stored as PNG, see below). The `unrar-ng` wrapper was tried first: it depends on `regex` with its default features, which put `regex`'s Unicode tables into the exe (~360 KB), so UnRAR's C API is called directly through `unrar-ng-sys`.
 
 ## Texture upload
 

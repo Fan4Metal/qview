@@ -20,6 +20,9 @@ raw-window-handle = "0.6"
 log = "0.4"
 env_logger = "0.11"
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+# The 256 px layers of the icons (src/icon.rs, also run by build.rs): the
+# version image already links, so no code is added.
+png = "0.18"
 # RAR and CBR: RARLab's UnRAR source, compiled in (with the static C
 # runtime of .cargo/config.toml it needs no MSVCP140.dll), ~280 KB; its C
 # API directly (src/archive.rs): the unrar-ng wrapper pulls in regex with
@@ -50,6 +53,7 @@ clipboard-win = "5.4"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+png = "0.18"
 
 [profile.release]
 opt-level = 3

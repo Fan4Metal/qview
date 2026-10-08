@@ -232,10 +232,17 @@ pub fn ico(sizes: &[u32]) -> Vec<u8> {
     encode_ico(sizes, rgba)
 }
 
+/// The layers from this size up are stored as PNG, which Windows reads in
+/// icons since Vista: the 256 px layer as a 32-bit BMP took 264 KB of each
+/// icon's 306 (17 icons: 5.2 MB of the exe, 0.9 MB with PNG). The smaller
+/// ones stay BMP, which Windows draws without decoding.
+const PNG_FROM: u32 = 256;
+
 /// Encode the images `render(size)` (straight RGBA) as a multi-resolution
-/// `.ico` of 32-bit BMP entries.
+/// `.ico`: 32-bit BMP entries, PNG from `PNG_FROM` up.
 pub fn encode_ico(sizes: &[u32], render: impl Fn(u32) -> Vec<u8>) -> Vec<u8> {
-    let images: Vec<Vec<u8>> = sizes.iter().map(|&s| bmp_entry(s, &render(s))).collect();
+    let images: Vec<Vec<u8>> =
+        sizes.iter().map(|&s| if s >= PNG_FROM { png_entry(s, &render(s)) } else { bmp_entry(s, &render(s)) }).collect();
     let mut out = Vec::new();
     out.extend_from_slice(&[0, 0, 1, 0]); // reserved, type = icon
     out.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
@@ -252,6 +259,19 @@ pub fn encode_ico(sizes: &[u32], render: impl Fn(u32) -> Vec<u8>) -> Vec<u8> {
     for img in images {
         out.extend_from_slice(&img);
     }
+    out
+}
+
+/// A whole PNG file of straight RGBA pixels, compressed hard (built once).
+fn png_entry(size: u32, px: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, size, size);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::High);
+    let mut writer = encoder.write_header().expect("PNG header");
+    writer.write_image_data(px).expect("PNG data");
+    writer.finish().expect("PNG end");
     out
 }
 
@@ -296,6 +316,26 @@ mod tests {
     /// Writes the icon at all sizes on a light and a dark strip, and the
     /// small sizes enlarged 8 times, into the PNG named by
     /// `QVIEW_APP_ICON_SHEET`, for a look at the design.
+    /// The 256 px layer is a PNG of the same pixels, the smaller ones BMP.
+    #[test]
+    fn large_layer_is_png() {
+        let ico = encode_ico(&[16, 256], rgba);
+        let entry = |k: usize| {
+            let at = 6 + 16 * k;
+            let size = u32::from_le_bytes(ico[at + 8..at + 12].try_into().unwrap()) as usize;
+            let offset = u32::from_le_bytes(ico[at + 12..at + 16].try_into().unwrap()) as usize;
+            (ico[at], &ico[offset..offset + size])
+        };
+        let (dim, small) = entry(0);
+        assert_eq!((dim, &small[..4]), (16, &40u32.to_le_bytes()[..]));
+        let (dim, large) = entry(1);
+        assert_eq!(dim, 0);
+        assert!(large.starts_with(b"\x89PNG"));
+        let decoded = image::load_from_memory(large).unwrap().to_rgba8();
+        assert_eq!(decoded.into_raw(), rgba(256));
+        assert!(large.len() < 256 * 256 * 4 / 2, "{}", large.len());
+    }
+
     #[test]
     #[ignore]
     fn preview_sheet() {
