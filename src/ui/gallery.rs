@@ -789,6 +789,8 @@ impl App {
         ui.separator();
         self.item(ui, tr!("Rename…", "Переименовать…").into(), "F2", Cmd::Rename, true);
         self.item(ui, tr!("Delete…", "Удалить…").into(), "Delete", Cmd::Delete, true);
+        ui.separator();
+        ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         if let Some(dir) = self.focused_folder() {
             ui.separator();
             self.pin_item(ui, dir.clone(), false);
