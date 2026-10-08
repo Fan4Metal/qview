@@ -229,9 +229,28 @@ pub struct Stats {
 pub fn folder_stats(dir: &Path, cancel: &AtomicBool) -> std::io::Result<Stats> {
     use std::os::windows::fs::MetadataExt;
     let own = std::fs::metadata(dir)?;
-    let (mut files, folders) = read(dir, true)?;
+    let (mut files, folders, _) = read(dir, true)?;
     let mut stats = stats_of(&mut files, true, cancel);
     stats.folders = Some(folders.len());
+    stats.dates = Some((own.last_write_time(), own.creation_time()));
+    Ok(stats)
+}
+
+/// The images of the comic book archive `archive` (a cell among the
+/// sub-folders) counted as `folder_stats` counts a folder's: its pages,
+/// their size and dates, and the archive's own dates.
+pub fn archive_stats(archive: &Path) -> std::io::Result<Stats> {
+    use std::os::windows::fs::MetadataExt;
+    let own = std::fs::metadata(archive)?;
+    let mut files: Vec<Entry> = crate::archive::list(archive)?
+        .into_iter()
+        .map(|i| {
+            let mut e = Entry::new(i.path, None);
+            (e.size, e.modified, e.taken) = (i.size, i.modified, i.modified);
+            e
+        })
+        .collect();
+    let mut stats = stats_of(&mut files, false, &AtomicBool::new(false));
     stats.dates = Some((own.last_write_time(), own.creation_time()));
     Ok(stats)
 }
@@ -314,10 +333,11 @@ pub fn insertion_point(files: &[PathBuf], path: &Path, order: Order) -> Option<u
 /// The image files of `dir`, unsorted, and with `folders` its sub-folders
 /// that Explorer shows, in its name order (as in the gallery's tree);
 /// symbolic links and junctions are left out, since they can loop.
-fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<PathBuf>)> {
+fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<PathBuf>, Vec<PathBuf>)> {
     use std::os::windows::fs::MetadataExt;
     let mut files = Vec::new();
     let mut subfolders = Vec::new();
+    let mut comics = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let Ok(entry) = entry else { continue };
         // The type, the size and the date come with the listing on
@@ -336,16 +356,24 @@ fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<PathBuf>)
         let path = entry.path();
         if is_image(&path) {
             files.push(Entry::new(path, meta.as_ref()));
+        } else if folders
+            && crate::archive::is_comic(&path)
+            // Not hidden, as the sub-folders shown.
+            && meta.as_ref().is_some_and(|m| m.file_attributes() & 0x2 == 0)
+        {
+            comics.push((crate::win::wide(path.file_name().unwrap_or_default()), path));
         }
     }
     subfolders.sort_by(|(a, _), (b, _)| crate::win::logical_cmp(a, b));
-    Ok((files, subfolders.into_iter().map(|(_, p)| p).collect()))
+    comics.sort_by(|(a, _), (b, _)| crate::win::logical_cmp(a, b));
+    let names = |list: Vec<(Vec<u16>, PathBuf)>| list.into_iter().map(|(_, p)| p).collect();
+    Ok((files, names(subfolders), names(comics)))
 }
 
 /// The visible sub-folders of `dir`, in Explorer's name order (none when
 /// it cannot be read).
 pub fn subfolders(dir: &Path) -> Vec<PathBuf> {
-    read(dir, true).map(|(_, folders)| folders).unwrap_or_default()
+    read(dir, true).map(|(_, folders, _)| folders).unwrap_or_default()
 }
 
 /// Image files of `dir`, in `order`. `keep` (the file being shown) is
@@ -353,12 +381,12 @@ pub fn subfolders(dir: &Path) -> Vec<PathBuf> {
 /// keeps its place among the others.
 #[cfg(test)]
 pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Vec<PathBuf>> {
-    list_with_folders(dir, keep, order, false).map(|(files, _)| files)
+    list_with_folders(dir, keep, order, false).map(|(files, _, _)| files)
 }
 
 /// [`list`], and with `folders` the sub-folders of `dir` that Explorer
 /// shows, in its name order (the gallery's folder cells).
-pub fn list_with_folders(dir: &Path, keep: Option<&Path>, order: Order, folders: bool) -> std::io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+pub fn list_with_folders(dir: &Path, keep: Option<&Path>, order: Order, folders: bool) -> std::io::Result<Listed> {
     list_with_folders_until(dir, keep, order, folders, &AtomicBool::new(false))
 }
 
@@ -370,8 +398,8 @@ fn list_with_folders_until(
     order: Order,
     folders: bool,
     cancel: &AtomicBool,
-) -> std::io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    let (mut files, subfolders) = read(dir, folders)?;
+) -> std::io::Result<Listed> {
+    let (mut files, subfolders, comics) = read(dir, folders)?;
     if let Some(keep) = keep
         && !files.iter().any(|e| same_path(&e.path, keep))
         && keep.is_file()
@@ -383,8 +411,12 @@ fn list_with_folders_until(
         return Err(std::io::ErrorKind::Interrupted.into());
     }
     files.sort_by(|a, b| compare(a, b, order));
-    Ok((files.into_iter().map(|e| e.path).collect(), subfolders))
+    Ok((files.into_iter().map(|e| e.path).collect(), subfolders, comics))
 }
+
+/// A folder's images in order, its visible sub-folders and its comic book
+/// archives (`archive::COMICS`), both in Explorer's name order.
+pub type Listed = (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>);
 
 /// What a listing holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -419,7 +451,7 @@ pub fn list_deep(
         if cancel.load(Relaxed) {
             return Err(std::io::ErrorKind::Interrupted.into());
         }
-        let (mut own, subfolders) = read(dir, true)?;
+        let (mut own, subfolders, _) = read(dir, true)?;
         if let Some(order) = order {
             read_taken(&mut own, order, cancel);
             own.sort_by(|a, b| compare(a, b, order));
@@ -613,9 +645,10 @@ pub struct Scan {
     /// Of a listing of files ([`scan_files`]): those found gone, set
     /// before the listing is sent.
     gone: Arc<Mutex<Vec<PathBuf>>>,
-    /// Of a folder listed alone: its sub-folders, set before the listing
-    /// is sent.
+    /// Of a folder listed alone: its sub-folders and its comic book
+    /// archives, set before the listing is sent.
     folders: Arc<Mutex<Vec<PathBuf>>>,
+    comics: Arc<Mutex<Vec<PathBuf>>>,
     /// The folder (or archive) listed is gone: the nearest folder above it
     /// that is there, set before the error is sent.
     up: Arc<Mutex<Option<PathBuf>>>,
@@ -637,6 +670,12 @@ impl Scan {
     /// ready.
     pub fn take_folders(&self) -> Vec<PathBuf> {
         std::mem::take(&mut *self.folders.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// The comic book archives of a folder listed alone, once the listing
+    /// is ready.
+    pub fn take_comics(&self) -> Vec<PathBuf> {
+        std::mem::take(&mut *self.comics.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// The nearest folder above the one listed that is there, when that
@@ -663,12 +702,15 @@ impl Drop for Scan {
 pub fn scan(dir: PathBuf, depth: Depth, keep: Option<PathBuf>, order: Order, ctx: egui::Context) -> Scan {
     let folders = Arc::new(Mutex::new(Vec::new()));
     let out = folders.clone();
+    let comics = Arc::new(Mutex::new(Vec::new()));
+    let comics_out = comics.clone();
     let up = Arc::new(Mutex::new(None));
     let above = up.clone();
     let mut scan = spawn(ctx, move |found, cancel| {
         let result = match depth {
-            Depth::Folder => list_with_folders_until(&dir, keep.as_deref(), order, true, cancel).map(|(files, subfolders)| {
+            Depth::Folder => list_with_folders_until(&dir, keep.as_deref(), order, true, cancel).map(|(files, subfolders, archives)| {
                 *out.lock().unwrap_or_else(|e| e.into_inner()) = subfolders;
+                *comics_out.lock().unwrap_or_else(|e| e.into_inner()) = archives;
                 files
             }),
             Depth::ByFolder => list_deep(&dir, order, true, found, cancel),
@@ -680,6 +722,7 @@ pub fn scan(dir: PathBuf, depth: Depth, keep: Option<PathBuf>, order: Order, ctx
         result
     });
     scan.folders = folders;
+    scan.comics = comics;
     scan.up = up;
     scan
 }
@@ -742,7 +785,7 @@ fn spawn(
             }
         })
         .expect("spawn folder thread");
-    Scan { rx, found, cancel, gone: Arc::default(), folders: Arc::default(), up: Arc::default() }
+    Scan { rx, found, cancel, gone: Arc::default(), folders: Arc::default(), comics: Arc::default(), up: Arc::default() }
 }
 
 #[cfg(test)]
@@ -785,6 +828,22 @@ mod tests {
             let st = folder_stats(&dir, &AtomicBool::new(false)).unwrap();
             println!("round {round}: {:.1} ms, {st:?}", t.elapsed().as_secs_f64() * 1e3);
         }
+    }
+
+    #[test]
+    fn lists_comic_books_apart() {
+        let dir = std::env::temp_dir().join(format!("qview_comics_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Sub")).unwrap();
+        for name in ["p.png", "A10.cbz", "A9.cbz", "b.CBR", "backup.zip", "other.rar"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let (files, folders, comics) = list_with_folders(&dir, None, Order::default(), true).unwrap();
+        assert_eq!(files, [dir.join("p.png")]);
+        assert_eq!(folders, [dir.join("Sub")]);
+        // Comic books only, in Explorer's order; other archives are not shown.
+        assert_eq!(comics, [dir.join("A9.cbz"), dir.join("A10.cbz"), dir.join("b.CBR")]);
+        assert!(list_with_folders(&dir, None, Order::default(), false).unwrap().2.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

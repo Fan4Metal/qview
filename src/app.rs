@@ -359,6 +359,10 @@ pub struct App {
     /// listing with the sub-folders); `folders` is what of them passes the
     /// filter.
     listed_folders: Vec<PathBuf>,
+    /// The comic book archives of a folder listed alone (`archive::COMICS`),
+    /// shown after its sub-folders, among the cells of `folders`, and
+    /// opened as they are.
+    listed_comics: Vec<PathBuf>,
     pub folders: Vec<PathBuf>,
     /// The gallery's section of the sub-folders is folded to its header
     /// (a click on it).
@@ -630,6 +634,8 @@ impl Picked {
 pub enum StatsOf {
     /// The sub-folder with the cursor.
     Folder(PathBuf),
+    /// The comic book archive with the cursor (a cell among the folders).
+    Comic(PathBuf),
     /// The images chosen, more than one.
     Files(Vec<PathBuf>),
 }
@@ -823,6 +829,7 @@ impl App {
             clipboard: None,
             handing: None,
             listed_folders: Vec::new(),
+            listed_comics: Vec::new(),
             folders: Vec::new(),
             folders_folded: cc.storage.and_then(|s| s.get_string(FOLDERS_KEY)).as_deref() == Some("true"),
             folder_focus: None,
@@ -1095,7 +1102,12 @@ impl App {
     /// The sub-folders whose names pass the gallery's filter.
     fn filtered_folders(&self) -> Vec<PathBuf> {
         let filter = self.name_filter.trim();
-        self.listed_folders.iter().filter(|p| filter.is_empty() || folder::matches(&file_name(p), filter)).cloned().collect()
+        self.listed_folders
+            .iter()
+            .chain(&self.listed_comics)
+            .filter(|p| filter.is_empty() || folder::matches(&file_name(p), filter))
+            .cloned()
+            .collect()
     }
 
     /// The folder that can be pinned to Quick Access from the menus: the
@@ -1149,12 +1161,21 @@ impl App {
         self.folder_focus.and_then(|k| self.folders.get(k).cloned())
     }
 
-    /// Open a sub-folder from its cell or its header, as the tree would.
+    /// Open a sub-folder from its cell or its header, as the tree would;
+    /// a comic book archive's cell opens it (the tree stays on its folder).
     pub fn open_subfolder(&mut self, ctx: &egui::Context, dir: PathBuf) {
-        if let Some(gallery) = &mut self.gallery {
+        let comic = self.is_comic_cell(&dir);
+        if let Some(gallery) = &mut self.gallery
+            && !comic
+        {
             gallery.tree.reveal(&dir);
         }
         self.open_folder(ctx, dir, self.deep);
+    }
+
+    /// Whether the cell of `path` among `folders` is a comic book archive.
+    pub fn is_comic_cell(&self, path: &Path) -> bool {
+        self.listed_comics.iter().any(|c| c == path)
     }
 
     /// The gallery's filter has changed: `files` is the listing filtered
@@ -1226,6 +1247,7 @@ impl App {
         self.files.clear();
         self.starts.clear();
         self.listed_folders.clear();
+        self.listed_comics.clear();
         self.folders.clear();
         self.folder_focus = None;
         self.index = None;
@@ -1600,7 +1622,8 @@ impl App {
             return None;
         }
         if let Some(k) = self.folder_focus {
-            return self.folders.get(k).cloned().map(StatsOf::Folder);
+            let path = self.folders.get(k).cloned()?;
+            return Some(if self.is_comic_cell(&path) { StatsOf::Comic(path) } else { StatsOf::Folder(path) });
         }
         (self.selection.len() > 1).then(|| StatsOf::Files(self.targets()))
     }
@@ -1639,6 +1662,7 @@ impl App {
             let start = Instant::now();
             let stats = match &what {
                 StatsOf::Folder(dir) => crate::folder::folder_stats(dir, &stop).map_err(|e| e.to_string()),
+                StatsOf::Comic(archive) => crate::folder::archive_stats(archive).map_err(|e| e.to_string()),
                 StatsOf::Files(paths) => Ok(crate::folder::files_stats(paths, &stop)),
             };
             log::debug!("counted {:?} in {:.1} ms", stats.as_ref().map(|s| s.images), start.elapsed().as_secs_f64() * 1e3);
@@ -1740,6 +1764,12 @@ impl App {
         for (old, new) in pairs {
             if let Some(i) = folder::position(&self.listed, old) {
                 self.listed[i] = new.clone();
+            }
+            // A comic book archive's cell renamed.
+            for list in [&mut self.listed_comics, &mut self.folders] {
+                if let Some(i) = list.iter().position(|p| p == old) {
+                    list[i] = new.clone();
+                }
             }
         }
         for path in [self.current.as_mut(), self.shown.as_mut().map(|(p, _)| p), self.reloading.as_mut()].into_iter().flatten() {
@@ -1870,6 +1900,7 @@ impl App {
         }
         let gone = scan.as_ref().map(Scan::take_gone).unwrap_or_default();
         self.listed_folders = scan.as_ref().map(Scan::take_folders).unwrap_or_default();
+        self.listed_comics = scan.as_ref().map(Scan::take_comics).unwrap_or_default();
         // Quick Access: the pinned folders.
         if self.in_quick_access() {
             self.listed_folders = self.pinned.paths();
@@ -2361,8 +2392,9 @@ impl App {
         if gone.is_empty() {
             return;
         }
-        // A listing begun before would bring them back.
-        if self.scan.is_some() {
+        // A listing begun before would bring them back; a comic book
+        // archive's cell goes with the listing.
+        if self.scan.is_some() || gone.iter().any(|g| self.is_comic_cell(g)) {
             self.list_again(ctx);
         }
     }
@@ -2403,11 +2435,11 @@ impl App {
     }
 
     /// Ask to move the folder `dir` to the Recycle Bin (its context menu,
-    /// Delete on its cell).
+    /// Delete on its cell), or the comic book archive of a cell.
     pub fn ask_delete_folder(&mut self, dir: PathBuf) {
-        if self.deleting.is_none() && dir.is_dir() {
+        if self.deleting.is_none() && dir.exists() {
+            self.delete_folders = usize::from(dir.is_dir());
             self.confirm_delete = Some(vec![dir]);
-            self.delete_folders = 1;
         }
     }
 
@@ -2447,9 +2479,10 @@ impl App {
     }
 
     /// Ask for a new name of the folder `dir` (its context menu, F2 on its
-    /// cell).
+    /// cell), or of the comic book archive of a cell (its name selected up
+    /// to the extension, as a file's).
     pub fn ask_rename_folder(&mut self, dir: PathBuf) {
-        if dir.is_dir() && dir.parent().is_some() {
+        if dir.exists() && dir.parent().is_some() {
             let name = file_name(&dir);
             self.rename = Some(Rename { path: dir, name, error: None, focus: true, select: true });
         }

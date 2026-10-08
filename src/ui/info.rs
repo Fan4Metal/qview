@@ -111,6 +111,17 @@ impl App {
                 }
                 s
             }
+            StatsOf::Comic(archive) => {
+                let mut s = Section { title: tr!("Comic Book", "Комикс"), rows: Vec::new() };
+                s.rows.push((tr!("Name", "Имя"), crate::app::file_name(archive)));
+                if let Some(parent) = archive.parent() {
+                    s.rows.push((tr!("Location", "Расположение"), parent.display().to_string()));
+                }
+                if let Ok(m) = std::fs::metadata(archive) {
+                    s.rows.push((tr!("File size", "Размер файла"), format::file_size(m.len())));
+                }
+                s
+            }
             StatsOf::Files(paths) => {
                 let mut s = Section { title: tr!("Chosen", "Выбрано"), rows: Vec::new() };
                 s.rows.push((tr!("Images", "Изображений"), paths.len().to_string()));
@@ -120,6 +131,10 @@ impl App {
         match stats {
             Some(Err(e)) => section.rows.push((tr!("Cannot read", "Не читается"), e)),
             Some(Ok(st)) => {
+                let comic = matches!(of, StatsOf::Comic(_));
+                if comic {
+                    section.rows.push((tr!("Pages", "Страниц"), st.images.to_string()));
+                }
                 if let Some(folders) = st.folders {
                     section.rows.push((tr!("Images", "Изображений"), st.images.to_string()));
                     section.rows.push((tr!("Sub-folders", "Подпапок"), folders.to_string()));
@@ -141,11 +156,16 @@ impl App {
                     section.rows.push((tr!("Modified", "Изменены"), modified));
                 }
                 if let Some((modified, created)) = st.dates {
+                    let (m, c) = if comic {
+                        (tr!("File modified", "Файл изменён"), tr!("File created", "Файл создан"))
+                    } else {
+                        (tr!("Folder modified", "Папка изменена"), tr!("Folder created", "Папка создана"))
+                    };
                     if let Some(d) = crate::win::local_date_time(modified).filter(|_| modified != 0) {
-                        section.rows.push((tr!("Folder modified", "Папка изменена"), d));
+                        section.rows.push((m, d));
                     }
                     if let Some(d) = crate::win::local_date_time(created).filter(|_| created != 0) {
-                        section.rows.push((tr!("Folder created", "Папка создана"), d));
+                        section.rows.push((c, d));
                     }
                 }
             }

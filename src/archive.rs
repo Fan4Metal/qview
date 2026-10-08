@@ -47,6 +47,15 @@ fn format(archive: &Path) -> std::io::Result<Format> {
     Ok(if head[..n] == *b"Rar!\x1a\x07" { Format::Rar } else { Format::Zip })
 }
 
+/// Extensions of comic book archives, lowercase: shown in the gallery
+/// among the sub-folders (`folder::read`), other ZIP and RAR files are not.
+pub const COMICS: &[&str] = &["cbz", "cbr"];
+
+/// Whether `path` has a comic book archive's extension.
+pub fn is_comic(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| COMICS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+}
+
 /// Whether `path` has an archive's extension (it may not exist).
 pub fn is_archive(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))

@@ -216,8 +216,14 @@ impl Gallery {
         let listed = dirs.clone();
         let spawned = std::thread::Builder::new().name("folder previews".into()).spawn(move || {
             for dir in dirs {
-                let preview = crate::folder::list_with_folders(&dir, None, order, false)
-                    .map(|(files, _)| Preview { count: files.len(), images: files.into_iter().take(PREVIEW_IMAGES).collect() })
+                // A comic book archive's pages as stored (its cover first).
+                let listed = if crate::archive::is_archive_file(&dir) {
+                    crate::folder::list_archive(&dir, crate::folder::Order::default(), false)
+                } else {
+                    crate::folder::list_with_folders(&dir, None, order, false).map(|(files, _, _)| files)
+                };
+                let preview = listed
+                    .map(|files| Preview { count: files.len(), images: files.into_iter().take(PREVIEW_IMAGES).collect() })
                     .unwrap_or_default();
                 if tx.send((generation, dir, preview)).is_err() {
                     return;

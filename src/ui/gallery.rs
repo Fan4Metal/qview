@@ -354,6 +354,15 @@ impl App {
         let listing = self.listing();
         let order = self.order();
         let (in_favorites, mixed) = (self.in_favorites(), self.mixed());
+        // Which of the folders' cells are comic book archives, and what
+        // their section's header calls them.
+        let comic_cells: Vec<bool> = self.folders.iter().map(|p| self.is_comic_cell(p)).collect();
+        let comics = comic_cells.iter().filter(|&&c| c).count();
+        let folders_title = match (comics, self.folders.len() - comics) {
+            (0, _) => tr!("Folders", "Папки"),
+            (_, 0) => tr!("Comic Books", "Комиксы"),
+            _ => tr!("Folders and Comic Books", "Папки и комиксы"),
+        };
         let gallery = self.gallery.as_mut()?;
         if n == 0 && self.folders.is_empty() {
             gallery.want(Vec::new());
@@ -519,7 +528,7 @@ impl App {
             let painter = ui.painter().clone();
             if layout.folders_header > 0.0 && viewport.min.y < layout.folders_header {
                 let rect = Rect::from_min_size(origin, vec2(ui.max_rect().width(), layout.folders_header));
-                folder_header(&painter, rect, tr!("Folders", "Папки"), folders.len(), Some(folded));
+                folder_header(&painter, rect, folders_title, folders.len(), Some(folded));
                 let tip = if folded { tr!("Show the folders", "Показать папки") } else { tr!("Hide the folders", "Скрыть папки") };
                 if ui.interact(rect, ui.id().with("folders_header"), Sense::CLICK).on_hover_text(tip).clicked() {
                     fold_clicked = true;
@@ -576,6 +585,50 @@ impl App {
                 let preview = gallery.preview(path).cloned();
                 if preview.is_none() {
                     unlisted.push(path.clone());
+                }
+                // A comic book archive: its cover (the first page) whole,
+                // its type in the corner, the name without the extension
+                // and the number of pages.
+                if comic_cells.get(k).copied().unwrap_or(false) {
+                    let mut badge_frame = square;
+                    match preview.as_ref().and_then(|p| p.images.first()) {
+                        Some(cover) => {
+                            let side = gallery::side_needed(square.size() * ppp, false, None);
+                            if gallery.needs(cover, side) {
+                                requests.push(Request { path: cover.clone(), side });
+                            }
+                            if let Some(t) = gallery.thumb(cover)
+                                && let Some(texture) = &t.texture
+                            {
+                                let px = vec2(t.px[0] as f32, t.px[1] as f32);
+                                let (rect, uv) = gallery::place_thumb(square, px, ppp, false, t.shrunk());
+                                painter.image(texture.id(), rect, uv, Color32::WHITE);
+                                badge_frame = rect;
+                            } else {
+                                painter.rect_filled(square.shrink(square.size().min_elem() * 0.08), 2.0, FOLDER_SLOT);
+                            }
+                        }
+                        None if preview.is_some() => folder_outline(&painter, square),
+                        None => {
+                            painter.rect_filled(square.shrink(square.size().min_elem() * 0.08), 2.0, FOLDER_SLOT);
+                        }
+                    }
+                    comic_badge(&painter, badge_frame, path);
+                    let name = path.file_stem().map_or_else(|| file_name(path), |s| s.to_string_lossy().into_owned());
+                    let name = match &preview {
+                        Some(p) if p.count > 0 => format!("{name} · {}", p.count),
+                        _ => name,
+                    };
+                    label(&painter, &name, cell, square.bottom() + 2.0);
+                    if let Some(c) = circle {
+                        tick(&painter, c, chosen);
+                        if response.hover_pos().is_some_and(|p| p.distance(c) <= TICK_REACH) {
+                            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                    }
+                    let response = response.on_hover_text(file_name(path));
+                    folder_cells.push((k, response, circle));
+                    continue;
                 }
                 // No images: a folder's outline instead of empty places.
                 if preview.as_ref().is_some_and(|p| p.count == 0) {
@@ -815,7 +868,8 @@ impl App {
         ui.separator();
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         self.new_folder_item(ui);
-        if let Some(dir) = self.focused_folder() {
+        // A comic book archive's cell is not pinned.
+        if let Some(dir) = self.focused_folder().filter(|d| !self.is_comic_cell(d)) {
             ui.separator();
             self.pin_item(ui, dir.clone(), false);
             // A pinned folder's key (Alt+1 to Alt+9).
@@ -989,6 +1043,19 @@ fn tick(painter: &Painter, c: Pos2, chosen: bool) {
     } else {
         painter.circle(c, 8.0, Color32::from_black_alpha(90), egui::Stroke::new(1.5, Color32::from_white_alpha(200)));
     }
+}
+
+/// A comic book archive's type ("CBZ", "CBR") in the bottom right corner
+/// of `frame` (its cover), in the colours of its file type icon.
+fn comic_badge(painter: &Painter, frame: Rect, path: &std::path::Path) {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let Some(t) = crate::filetypes::FILE_TYPES.iter().find(|t| t.extensions.contains(&ext.as_str())) else { return };
+    let rgb = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
+    let galley = painter.layout_no_wrap(t.label.to_owned(), FontId::proportional(11.0), rgb(t.ink));
+    let size = galley.size() + vec2(8.0, 2.0);
+    let badge = Rect::from_min_size(frame.right_bottom() - size - vec2(3.0, 3.0), size);
+    painter.rect(badge, 3.0, rgb(t.band), egui::Stroke::new(1.0, Color32::from_black_alpha(140)), egui::StrokeKind::Inside);
+    painter.galley(badge.min + vec2(4.0, 1.0), galley, rgb(t.ink));
 }
 
 /// The file name under a thumbnail, cut short with an ellipsis.
