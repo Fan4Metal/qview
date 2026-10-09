@@ -311,7 +311,8 @@ impl App {
     /// Move the current image, or those chosen, into a folder, or with
     /// `copy` copy them there: a pinned folder with a key (Alt+1 to Alt+9),
     /// the parent folder or a sub-folder of the image's folder (scrolled
-    /// past `FOLDER_ROWS`), a new folder (Alt+N) or one picked.
+    /// past `FOLDER_ROWS`), a new folder (Alt+N) or one picked; among the
+    /// favourites only the pinned folders and one picked.
     pub(super) fn transfer_menu(&mut self, ui: &mut Ui, copy: bool, enabled: bool) {
         /// The width the folder names are cut to, in points.
         const WIDTH: f32 = 280.0;
@@ -358,11 +359,16 @@ impl App {
                         }
                     });
                 }
+                let nearby = !folders.is_empty();
                 self.menu_folders = folders;
-                ui.separator();
-                let shortcut = if copy { "Shift+Alt+N" } else { "Alt+N" };
-                let cmd = if copy { Cmd::CopyToNew } else { Cmd::MoveToNew };
-                self.item(ui, tr!("New Folder…", "Новая папка…").into(), shortcut, cmd, true);
+                if self.transfer_nearby() {
+                    if nearby {
+                        ui.separator();
+                    }
+                    let shortcut = if copy { "Shift+Alt+N" } else { "Alt+N" };
+                    let cmd = if copy { Cmd::CopyToNew } else { Cmd::MoveToNew };
+                    self.item(ui, tr!("New Folder…", "Новая папка…").into(), shortcut, cmd, true);
+                }
                 let cmd = if copy { Cmd::CopyToOther } else { Cmd::MoveToOther };
                 self.item(ui, tr!("Other Folder…", "Другая папка…").into(), "", cmd, true);
             })

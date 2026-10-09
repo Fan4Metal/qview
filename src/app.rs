@@ -3157,10 +3157,21 @@ impl App {
         self.targets().first().and_then(|f| f.parent()).map(Path::to_path_buf)
     }
 
+    /// The Move to Folder menu offers folders around the image's folder
+    /// and a new folder there: not among the favourites, whose images come
+    /// from anywhere, so that their folders say nothing of where they go.
+    pub fn transfer_nearby(&self) -> bool {
+        !self.in_favorites()
+    }
+
     /// The folders the Move to Folder menu offers besides the pinned ones:
     /// the parent of the image's folder, if any, and its sub-folders (those
-    /// listed, or read now and kept until the next listing).
+    /// listed, or read now and kept until the next listing); none among the
+    /// favourites.
     pub fn transfer_folders(&mut self) -> (Option<PathBuf>, Vec<PathBuf>) {
+        if !self.transfer_nearby() {
+            return (None, Vec::new());
+        }
         let Some(base) = self.transfer_base() else { return (None, Vec::new()) };
         let parent = base.parent().map(Path::to_path_buf);
         let listed = !self.deep && !self.archive && self.dir.as_deref().is_some_and(|d| folder::same_path(d, &base));
@@ -3177,10 +3188,11 @@ impl App {
     /// Ask for the name of a folder to make: in the folder shown (`transfer`
     /// None; not the favourites, Quick Access or an archive), or beside the
     /// current image, or the chosen ones, to move them into (Alt+N,
-    /// `Some(false)`) or copy them into (Shift+Alt+N, `Some(true)`): "New
-    /// folder", numbered past one there.
+    /// `Some(false)`) or copy them into (Shift+Alt+N, `Some(true)`; not
+    /// among the favourites): "New folder", numbered past one there.
     pub fn ask_new_folder(&mut self, transfer: Option<bool>) {
         let parent = match transfer {
+            Some(_) if !self.transfer_nearby() => None,
             Some(_) => self.transfer_base(),
             None => self.dir.clone().filter(|d| !favorites::is_virtual(d) && !self.archive),
         };
