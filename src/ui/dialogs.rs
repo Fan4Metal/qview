@@ -506,8 +506,8 @@ impl App {
             // Files only: folders are always asked about.
             if folders == 0 {
                 ui.add_space(6.0);
-                let text = tr!("Don't ask again (File → Confirm Deletion turns it back on)", "Больше не спрашивать («Файл» → «Подтверждать удаление» включает снова)");
-                ui.checkbox(&mut self.dont_ask_delete, text);
+                let tip = tr!("File → Confirm Deletion asks again", "«Файл» → «Подтверждать удаление» включает вопрос снова");
+                ui.checkbox(&mut self.dont_ask_delete, tr!("Don't ask again", "Больше не спрашивать")).on_hover_text(tip);
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
