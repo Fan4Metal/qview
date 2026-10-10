@@ -80,6 +80,9 @@ pub enum Cmd {
     /// Esc in the viewer closes the program instead of opening the
     /// gallery, or no longer does (View menu, the gallery button's menu).
     EscCloses,
+    /// Deleting files asks first, or no longer does (File → Confirm
+    /// Deletion; the dialog's "Don't ask again" turns it off too).
+    ConfirmDelete,
     Close,
     Delete,
     /// Rename the current file (F2).

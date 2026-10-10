@@ -85,6 +85,7 @@ impl App {
         let undo = !self.undo.is_empty() && self.crop.is_none();
         self.item(ui, self.undo_label().into(), "Ctrl+Z", Cmd::Undo, undo);
         self.delete_item(ui, e.file);
+        self.check_item(ui, tr!("Confirm Deletion", "Подтверждать удаление").into(), "", Cmd::ConfirmDelete, self.confirm_deletion);
         ui.separator();
         self.transfer_menu(ui, false, e.file && self.crop.is_none());
         self.transfer_menu(ui, true, e.file && self.crop.is_none());
@@ -531,11 +532,13 @@ impl App {
     }
 
     pub(super) fn delete_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let dots = if self.confirm_deletion { "…" } else { "" };
         let text = match (self.with_folders(), self.several()) {
             (Some((n, true)), _) => tr!(format!("Delete {n} Folders…"), format!("Удалить папки ({n})…")),
             (Some((n, false)), _) => tr!(format!("Delete {n} Folders and Files…"), format!("Удалить папки и файлы ({n})…")),
-            (None, Some(n)) => tr!(format!("Delete {n} Files…"), format!("Удалить файлы ({n})…")),
-            (None, None) => tr!("Delete…", "Удалить…").into(),
+            // The dots only when it asks.
+            (None, Some(n)) => tr!(format!("Delete {n} Files{dots}"), format!("Удалить файлы ({n}){dots}")),
+            (None, None) => tr!(format!("Delete{dots}"), format!("Удалить{dots}")),
         };
         self.item(ui, text, "Delete", Cmd::Delete, enabled && !self.in_archive());
     }

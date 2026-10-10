@@ -503,6 +503,12 @@ impl App {
                 ui.add_space(6.0);
                 ui.label(tr!(format!("Move {n} files to the Recycle Bin?"), format!("Переместить файлы ({n}) в корзину?")));
             }
+            // Files only: folders are always asked about.
+            if folders == 0 {
+                ui.add_space(6.0);
+                let text = tr!("Don't ask again (File → Confirm Deletion turns it back on)", "Больше не спрашивать («Файл» → «Подтверждать удаление» включает снова)");
+                ui.checkbox(&mut self.dont_ask_delete, text);
+            }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
@@ -528,9 +534,15 @@ impl App {
         match decision {
             Some(true) => {
                 self.confirm_delete = None;
+                if std::mem::take(&mut self.dont_ask_delete) {
+                    self.confirm_deletion = false;
+                }
                 self.delete(ctx, paths);
             }
-            Some(false) => self.confirm_delete = None,
+            Some(false) => {
+                self.confirm_delete = None;
+                self.dont_ask_delete = false;
+            }
             None => {}
         }
     }

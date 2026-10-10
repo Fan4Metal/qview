@@ -89,6 +89,7 @@ const UNDO_BYTES: usize = 512 << 20;
 
 const MENU_BAR_KEY: &str = "menu_bar";
 const ESC_CLOSES_KEY: &str = "esc_closes";
+const CONFIRM_DELETE_KEY: &str = "confirm_delete";
 const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
 const BACKGROUND_KEY: &str = "background";
@@ -287,6 +288,11 @@ pub struct App {
     /// Esc in the viewer closes the program; otherwise (the default) it
     /// opens the gallery.
     pub esc_closes: bool,
+    /// Deleting files asks first (the default); off, Delete moves them
+    /// to the Recycle Bin at once. Folders are always asked about.
+    pub confirm_deletion: bool,
+    /// "Don't ask again" ticked in the delete dialog.
+    pub dont_ask_delete: bool,
     /// Background of the image area.
     pub background: Color32,
     /// A checkerboard behind the image, seen where it is transparent.
@@ -791,6 +797,8 @@ impl App {
             show_toolbar: flag(TOOLBAR_KEY),
             show_status_bar: flag(STATUS_BAR_KEY),
             esc_closes: cc.storage.and_then(|s| s.get_string(ESC_CLOSES_KEY)).as_deref() == Some("true"),
+            confirm_deletion: flag(CONFIRM_DELETE_KEY),
+            dont_ask_delete: false,
             background: cc
                 .storage
                 .and_then(|s| s.get_string(BACKGROUND_KEY))
@@ -2390,6 +2398,20 @@ impl App {
         for path in &gone {
             self.cache.remove(path);
         }
+        // Not asked about: say what went.
+        if !self.confirm_deletion && folders.is_empty() {
+            match gone.as_slice() {
+                [] => {}
+                [one] => {
+                    let name = file_name(one);
+                    self.notice(tr!(format!("\"{name}\" moved to the Recycle Bin"), format!("«{name}» перемещён в корзину")));
+                }
+                many => {
+                    let n = many.len();
+                    self.notice(tr!(format!("{n} files moved to the Recycle Bin"), format!("Файлы ({n}) перемещены в корзину")));
+                }
+            }
+        }
         if !gone.is_empty()
             && let Err(e) = self.favorites.remove_if(|p| gone.iter().any(|g| folder::same_path(p, g)))
         {
@@ -2666,12 +2688,17 @@ impl App {
             Cmd::Escape if self.esc_closes => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::Escape => self.enter_gallery(ctx),
             Cmd::EscCloses => self.esc_closes = !self.esc_closes,
+            Cmd::ConfirmDelete => self.confirm_deletion = !self.confirm_deletion,
             Cmd::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::Delete => {
                 let files: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
                 if self.deleting.is_none() && !files.is_empty() {
-                    self.confirm_delete = Some(files);
-                    self.delete_folders = 0;
+                    if self.confirm_deletion {
+                        self.confirm_delete = Some(files);
+                        self.delete_folders = 0;
+                    } else {
+                        self.delete(ctx, files);
+                    }
                 }
             }
             Cmd::Undo => self.undo(ctx),
@@ -3719,6 +3746,7 @@ impl App {
             | Cmd::SlideshowLoop
             | Cmd::ToggleMenuBar
             | Cmd::EscCloses
+            | Cmd::ConfirmDelete
             | Cmd::ToggleToolbar
             | Cmd::ToggleStatusBar
             | Cmd::Info
@@ -4442,6 +4470,7 @@ impl eframe::App for App {
         storage.set_string(TOOLBAR_KEY, self.show_toolbar.to_string());
         storage.set_string(STATUS_BAR_KEY, self.show_status_bar.to_string());
         storage.set_string(ESC_CLOSES_KEY, self.esc_closes.to_string());
+        storage.set_string(CONFIRM_DELETE_KEY, self.confirm_deletion.to_string());
         storage.set_string(BACKGROUND_KEY, background_to_hex(self.background));
         storage.set_string(CHECKER_KEY, self.checker.to_string());
         storage.set_string(LINEAR_MIPS_KEY, self.linear_mips.to_string());

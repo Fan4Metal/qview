@@ -95,7 +95,7 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Gallery | `G`, `Enter`, `Esc` (unless Esc Closes qview is on), double click |
 | Leave full screen | `Esc` |
 | Close | `Ctrl+W`, `Alt+F4`; `Esc` in the gallery, and in the viewer with Esc Closes qview |
-| Move to the Recycle Bin | `Delete` (`Enter` confirms, `Esc` cancels) |
+| Move to the Recycle Bin | `Delete` (`Enter` confirms, `Esc` cancels; "Don't ask again" in the dialog, or File → Confirm Deletion unticked, deletes files at once, with a note in the status bar; folders are always asked about) |
 | Rename the file | `F2` (`Enter` renames, `Esc` cancels) |
 | Move the file, or the chosen files, into the pinned folder with that key / copy them there | `Alt+1`–`Alt+9` / `Shift+Alt+1`–`9` |
 | Move the file, or the chosen files, into a new folder / copy them there | `Alt+N` / `Shift+Alt+N` (`Enter` confirms, `Esc` cancels) |
