@@ -16,6 +16,8 @@ This document collects the measurements behind qview's design: where the time go
 
 At 240 Hz a frame lasts 4.2 ms; at 60 Hz, 16.7 ms. GPU timings below are compared with both budgets.
 
+Some later measurements were made on a second machine, an Intel Core i7-12700K with an NVIDIA GeForce RTX 4070 Ti and 32 GB; they are marked as such and are not compared with the figures above.
+
 ## Start-up
 
 | Moment | Time after process creation |
@@ -23,7 +25,7 @@ At 240 Hz a frame lasts 4.2 ms; at 60 Hz, 16.7 ms. GPU timings below are compare
 | `main` entered | ~20 ms |
 | Window created | ~145 ms |
 | First frame | ~160 ms |
-| 14.7 MP JPEG decoded (in parallel) | ~80 ms of decoding |
+| 14.7 MP JPEG decoded (in parallel) | ~80 ms of decoding (with the `image` crate's decoder; a JPEG on disk now goes through Windows' decoder, see [Decoding](#decoding)) |
 
 - The loader is created and the file from the command line is requested before `eframe::run_native`, so decoding overlaps window creation; window creation, not decoding, is the limit.
 - The renderer is glow, not wgpu, and eframe's default features (accesskit, wgpu) are off.
@@ -36,7 +38,24 @@ At 240 Hz a frame lasts 4.2 ms; at 60 Hz, 16.7 ms. GPU timings below are compare
 
 ## Decoding
 
-Measured for a 14.7 MP JPEG on a decoder thread:
+### Paths
+
+Which decoder a file goes to (`loader::decode`):
+
+| File | Decoder |
+|---|---|
+| JPEG on disk (told by its first bytes, whatever the extension) | Windows' (WIC), see [JPEG through Windows' decoder](#jpeg-through-windows-decoder); the `image` crate if that fails |
+| HEIC/HEIF | libheif with 8 threads, see [HEIC and HEIF](#heic-and-heif); WIC if that fails |
+| AVIF, camera RAW, JPEG XR, DDS and any other format Windows has a codec for | WIC |
+| Everything else (PNG, GIF, WebP, TIFF, BMP, …), and every image in an archive | the `image` crate, the format guessed from the content |
+
+`loader::read`, which the histogram's reading again, the colour under the pointer, saving and the thumbnails of formats Windows cannot make use, tries the `image` crate first for every file on disk, so their figures below are the `image` crate's.
+
+The status bar's "Decoded in N ms" is the worker thread's time for the file: reading, decoding, the orientation, premultiplied BGRA, the mip levels and the histogram when the section is open; not the texture upload. With two or three workers busy, it runs above a thread's own time measured alone.
+
+### Phases
+
+Measured for a 14.7 MP JPEG on a decoder thread, with the `image` crate's decoder (the path of every format but JPEG on disk, and JPEG's fallback):
 
 | Phase | Time |
 |---|---|
@@ -52,7 +71,7 @@ Measured for a 14.7 MP JPEG on a decoder thread:
 
 ### JPEG through Windows' decoder
 
-A JPEG on disk is decoded by Windows (WIC) first, `image`'s zune-jpeg only when that fails or in an archive. WIC's decoder is as fast as zune-jpeg and gives premultiplied BGRA itself, so the conversion is saved; on heavy files it is faster too. Measured on a decoder thread (reading, decoding, orientation, premultiplied BGRA; mip levels not counted):
+A JPEG on disk is decoded by Windows (WIC) first, `image`'s zune-jpeg only when that fails or in an archive. WIC's decoder is as fast as zune-jpeg and gives premultiplied BGRA itself, so the conversion is saved; on heavy files it is faster too. Measured on the second machine (i7-12700K) on a decoder thread (reading, decoding, orientation, premultiplied BGRA; mip levels not counted):
 
 | File | `image` + conversion | WIC |
 |---|---|---|
@@ -91,7 +110,7 @@ Measured with `archive_timings` on a real comic book (RAR 1.5-4, stored, 68 page
 
 - An entry is found by reading the headers before it; in an ordinary archive their data is skipped, so any page costs about the same. The format is told by the first 6 bytes (~0.07 ms).
 - In a solid archive every page before the one wanted is unpacked, so without help the last page cost ~570 ms and the gallery's thumbnails about half a minute. The archive read last keeps an UnRAR cursor after the page read last and the pages unpacked on the way (up to 256 MB): reading on costs only the pages between, the thumbnails of the whole book about one unpacking, and threads wait for the one that unpacks instead of each starting over. The archive stays open only while it is the one shown: UnRAR opens it without sharing deletion, so a cover read for its cell in the parent folder used to leave it locked, and renaming or deleting it failed. Showing another folder lets go of it without waiting for a thread in the middle of a pass (which could take seconds and froze the UI thread); that thread lets go when done.
-- UnRAR adds ~290 KB to the exe (with the static C runtime it needs no `MSVCP140.dll`), the CBR file type's icon ~50 KB more (306 KB before the icons' 256 px layers were stored as PNG, see below). The `unrar-ng` wrapper was tried first: it depends on `regex` with its default features, which put `regex`'s Unicode tables into the exe (~360 KB), so UnRAR's C API is called directly through `unrar-ng-sys`.
+- UnRAR adds ~290 KB to the exe (with the static C runtime it needs no `MSVCP140.dll`), the CBR file type's icon ~50 KB more (306 KB before the icons' 256 px layers were stored as PNG, see [Start-up](#start-up)). The `unrar-ng` wrapper was tried first: it depends on `regex` with its default features, which put `regex`'s Unicode tables into the exe (~360 KB), so UnRAR's C API is called directly through `unrar-ng-sys`.
 
 ## Texture upload
 
@@ -197,6 +216,7 @@ What the panel adds to opening an image:
 
 - Open, decoding takes 3–10 ms longer, about 5%; in the 49.8 MP case the difference is within the noise. The image appears that much later; neighbours are decoded ahead anyway.
 - The figures of one run of the same test vary by about 20%, since the processor's cores differ (performance and efficiency cores) and run at changing clocks.
+- The decoding rows are of the `image` crate's JPEG decoder, measured before a JPEG on disk went to Windows' decoder; what matters is the difference between the rows, which the decoder does not change. The reading again goes through `loader::read`, still the `image` crate's.
 
 ### Decisions
 
@@ -219,6 +239,7 @@ The information panel's Colour section shows the pixel under the pointer. Folded
 
 - **The file is read again rather than the decoder's pixels kept.** The neighbours of the current image are decoded ahead, so by the time one becomes current its pixels have been uploaded and dropped; keeping them for every cached image would cost several times the memory. Reading again also gives the full image when the GPU shows it shrunk.
 - **One reading at a time.** While browsing fast with the section open, only the image stopped at is read; the image read before is dropped when the next reading starts.
+- The reading again goes through `loader::read`, the `image` crate's decoder, so these figures hold since a JPEG on disk went to Windows' decoder.
 
 ## Measuring
 
@@ -234,5 +255,13 @@ The information panel's Colour section shows the pixel under the pointer. Folded
 | Finding the pixel under the pointer | `cargo test --release pick_timings -- --ignored --nocapture` |
 | Building the histogram's graph | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release graph_timings -- --ignored --nocapture` |
 | Header reading of a folder, qview's against the `image` crate's | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release header_timings -- --ignored --nocapture` |
+| The mip levels of a 14.7 MP image, in linear light and of the stored values | `cargo test --release mip_timings -- --ignored --nocapture` |
+| A file's histogram levels, largest counts and scale | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release print_levels -- --ignored --nocapture` |
+| A comic book archive: listing, first, middle and last page, all in order, on 3 threads | `$env:QVIEW_ARCHIVE_FILE="<cbr or cbz>"; cargo test --release archive_timings -- --ignored --nocapture` |
+| The information panel's statistics of a folder | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release stats_timings -- --ignored --nocapture` |
+| The frames and delays of an animation | `$env:QVIEW_ANIM_FILE="<gif or webp>"; cargo test --release file_frames -- --ignored --nocapture` |
+| The information panel's reading of one file | `$env:QVIEW_INFO_FILE="<file>"; cargo test --release info_file -- --ignored --nocapture` |
+| The installed WIC decoders | `cargo test codec_list -- --ignored --nocapture` |
+| Windows' Print Pictures dialog opened for a file, and its `Drop` timed | `$env:QVIEW_PRINT_FILE="<file>"; cargo test print_dialog -- --ignored --nocapture` |
 
 A GUI program started from PowerShell gets no console; with `Start-Process -RedirectStandardError <log>` the trace goes to a file.
