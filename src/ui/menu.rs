@@ -112,6 +112,7 @@ impl App {
         ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
         ui.menu_button(tr!("Slideshow", "Слайд-шоу"), |ui| self.slideshow_menu(ui));
+        self.check_item(ui, tr!("Menu Bar", "Строка меню").into(), "M", Cmd::ToggleMenuBar, self.show_menu_bar);
         self.check_item(ui, tr!("Toolbar", "Панель инструментов").into(), "T", Cmd::ToggleToolbar, self.show_toolbar);
         self.check_item(ui, tr!("Status Bar", "Строка состояния").into(), "B", Cmd::ToggleStatusBar, self.show_status_bar);
         self.check_item(ui, tr!("Information", "Сведения").into(), "I", Cmd::Info, self.show_info);
@@ -551,6 +552,7 @@ impl App {
     /// wheel, the keys and the View menu.
     pub(crate) fn context_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
+        self.show_menu_bar_item(ui);
         self.item(ui, tr!("Gallery", "Галерея").into(), "G", Cmd::Gallery, true);
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
         ui.separator();
@@ -586,6 +588,15 @@ impl App {
         self.file_items(ui, e.file);
         ui.separator();
         self.delete_item(ui, e.file);
+    }
+
+    /// Show Menu Bar, at the top of the context menus while it is hidden:
+    /// without it, the menus' commands would be reachable only by keys.
+    pub(super) fn show_menu_bar_item(&mut self, ui: &mut Ui) {
+        if !self.show_menu_bar {
+            self.item(ui, tr!("Show Menu Bar", "Показать строку меню").into(), "M", Cmd::ToggleMenuBar, true);
+            ui.separator();
+        }
     }
 
     /// What the context menus of the image and of a thumbnail do with the

@@ -107,7 +107,7 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Add to / remove from the favorites | `S` |
 | Open a file | `Ctrl+O`, or dropping a file onto the window |
 | Reload the image and the folder | `F5` |
-| Show or hide the toolbar / status bar | `T` / `B` |
+| Show or hide the menu bar / toolbar / status bar | `M` / `T` / `B` |
 | Show or hide the information panel | `I`, the button at the right end of the toolbar |
 | List of shortcuts | `F1` |
 

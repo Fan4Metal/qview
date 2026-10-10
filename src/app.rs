@@ -87,6 +87,7 @@ const UNDO_STEPS: usize = 20;
 /// are forgotten first, the latest always kept.
 const UNDO_BYTES: usize = 512 << 20;
 
+const MENU_BAR_KEY: &str = "menu_bar";
 const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
 const BACKGROUND_KEY: &str = "background";
@@ -278,6 +279,8 @@ pub struct App {
     pub view: View,
     /// The image area of the last frame.
     pub viewport: Rect,
+    /// The menu bar; hidden, the context menus offer to show it (M).
+    pub show_menu_bar: bool,
     pub show_toolbar: bool,
     pub show_status_bar: bool,
     /// Background of the image area.
@@ -780,6 +783,7 @@ impl App {
             partial: HashMap::new(),
             view: View { zoom: mode, mode, ..View::default() },
             viewport: ctx.content_rect(),
+            show_menu_bar: flag(MENU_BAR_KEY),
             show_toolbar: flag(TOOLBAR_KEY),
             show_status_bar: flag(STATUS_BAR_KEY),
             background: cc
@@ -2731,6 +2735,7 @@ impl App {
                     self.start_scan(ctx, dir, self.deep, self.current.clone());
                 }
             }
+            Cmd::ToggleMenuBar => self.show_menu_bar = !self.show_menu_bar,
             Cmd::ToggleToolbar => self.show_toolbar = !self.show_toolbar,
             Cmd::ToggleStatusBar => self.show_status_bar = !self.show_status_bar,
             Cmd::Info => self.show_info = !self.show_info,
@@ -3704,6 +3709,7 @@ impl App {
             | Cmd::Slideshow
             | Cmd::SlideshowInterval(_)
             | Cmd::SlideshowLoop
+            | Cmd::ToggleMenuBar
             | Cmd::ToggleToolbar
             | Cmd::ToggleStatusBar
             | Cmd::Info
@@ -4288,7 +4294,7 @@ impl eframe::App for App {
             // the bars; `image_area` then keeps it exact.
             let mut area = ctx.content_rect();
             if !Self::is_fullscreen(&ctx) {
-                area.min.y += 24.0 + if self.show_toolbar { 32.0 } else { 0.0 };
+                area.min.y += if self.show_menu_bar { 24.0 } else { 0.0 } + if self.show_toolbar { 32.0 } else { 0.0 };
                 area.max.y -= if self.show_status_bar { 24.0 } else { 0.0 };
                 area.max.x -= if self.show_info { self.info_width } else { 0.0 };
             }
@@ -4364,7 +4370,9 @@ impl eframe::App for App {
         self.update_colour(&ctx, self.show_info && !fullscreen);
         self.update_stats(&ctx, self.show_info && !fullscreen);
         if !fullscreen {
-            self.menu_bar(root_ui);
+            if self.show_menu_bar {
+                self.menu_bar(root_ui);
+            }
             if self.show_toolbar {
                 self.toolbar(root_ui);
             }
@@ -4421,6 +4429,7 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(MENU_BAR_KEY, self.show_menu_bar.to_string());
         storage.set_string(TOOLBAR_KEY, self.show_toolbar.to_string());
         storage.set_string(STATUS_BAR_KEY, self.show_status_bar.to_string());
         storage.set_string(BACKGROUND_KEY, background_to_hex(self.background));

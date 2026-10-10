@@ -834,6 +834,7 @@ impl App {
             }
         }
         background.context_menu(|ui| {
+            self.show_menu_bar_item(ui);
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
             self.new_folder_item(ui);
             if let Some(dir) = self.pinnable_dir() {
@@ -860,6 +861,7 @@ impl App {
 
     /// Right click on a sub-folder's cell, which then has the cursor.
     fn folder_menu(&mut self, ui: &mut Ui) {
+        self.show_menu_bar_item(ui);
         self.item(ui, tr!("Open", "Открыть").into(), "Enter", Cmd::OpenFolder, true);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, true);
         ui.separator();
@@ -929,6 +931,7 @@ impl App {
 
     /// Right click on a cell, which is then the current image.
     fn cell_menu(&mut self, ui: &mut Ui) {
+        self.show_menu_bar_item(ui);
         self.item(ui, tr!("Open", "Открыть").into(), "Enter", Cmd::Gallery, true);
         ui.separator();
         self.favorite_item(ui, true);

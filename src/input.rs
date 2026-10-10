@@ -110,6 +110,8 @@ pub enum Cmd {
     Open,
     ShowInExplorer,
     Refresh,
+    /// Show or hide the menu bar (M).
+    ToggleMenuBar,
     ToggleToolbar,
     ToggleStatusBar,
     /// Show or hide the information panel (I).
@@ -243,6 +245,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::F if m.ctrl && !m.shift && !m.alt => Find,
         Key::F if plain && m.shift => Slideshow,
         Key::F if letter || (m.ctrl && m.shift && !m.alt) => FullScreen,
+        Key::M if letter => ToggleMenuBar,
         Key::T if letter => ToggleToolbar,
         Key::B if letter => ToggleStatusBar,
         Key::I if letter => Info,
@@ -466,6 +469,8 @@ mod tests {
         assert_eq!(command(Key::P, NONE, false), Some(Cmd::Pause));
         assert_eq!(command(Key::P, CTRL, false), Some(Cmd::Print));
         assert_eq!(command(Key::I, NONE, false), Some(Cmd::Info));
+        assert_eq!(command(Key::M, NONE, false), Some(Cmd::ToggleMenuBar));
+        assert_eq!(command(Key::M, NONE, true), None);
         assert_eq!(command(Key::F, SHIFT, false), Some(Cmd::Slideshow));
         assert_eq!(slideshow_command(Key::Space, NONE, false), Some(Cmd::Pause));
         assert_eq!(slideshow_command(Key::Space, NONE, true), None);
