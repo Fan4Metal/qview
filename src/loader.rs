@@ -227,6 +227,11 @@ fn format_name(format: ImageFormat) -> &'static str {
 /// Read and decode `path`, turned upright by its EXIF orientation and
 /// shrunk to `max_side` if larger; with `count`, its histogram counted
 /// too (`Meta::histogram`), while the mip levels are made.
+///
+/// A JPEG on disk goes to Windows' decoder first: it decodes as fast as
+/// `image`'s and gives premultiplied BGRA itself, saving the conversion
+/// (a 17.5 MP photo: 63 ms against 66 + 21; a 31.7 MP 4:4:4 scan of 34
+/// MB: 250 against 340 + 44); `image` decodes it if Windows cannot.
 pub fn decode(path: &Path, max_side: usize, count: bool) -> Result<(Pixels, Meta), String> {
     let shrink = |img: DynamicImage| {
         if img.width() as usize > max_side || img.height() as usize > max_side {
@@ -235,25 +240,53 @@ pub fn decode(path: &Path, max_side: usize, count: bool) -> Result<(Pixels, Meta
             img
         }
     };
-    let first = match (!crate::wic::takes(path)).then(|| read_image(path)) {
-        Some(Ok((img, mut meta))) => {
-            let img = shrink(img);
-            let (width, height) = (img.width(), img.height());
-            let (pixels, histogram) = with_levels(to_bgra(img), width, height, count);
-            meta.histogram = histogram.map(Arc::new);
-            return Ok((pixels, meta));
-        }
-        Some(Err(e)) => Some(e),
-        None => None,
-    };
     // Premultiplied BGRA already: turned and shrunk as it is (the image
     // is RGBA only by name), then only the mip levels are made.
-    let (img, mut meta) = read_wic(path, true).map_err(|e| first.unwrap_or(e))?;
-    let img = shrink(img);
-    let (width, height) = (img.width(), img.height());
-    let (pixels, histogram) = with_levels(img.into_rgba8().into_raw(), width, height, count);
-    meta.histogram = histogram.map(Arc::new);
-    Ok((pixels, meta))
+    let from_wic = |img: DynamicImage, mut meta: Meta| {
+        let img = shrink(img);
+        let (width, height) = (img.width(), img.height());
+        let (pixels, histogram) = with_levels(img.into_rgba8().into_raw(), width, height, count);
+        meta.histogram = histogram.map(Arc::new);
+        (pixels, meta)
+    };
+    let from_image = |img: DynamicImage, mut meta: Meta| {
+        let img = shrink(img);
+        let (width, height) = (img.width(), img.height());
+        let (pixels, histogram) = with_levels(to_bgra(img), width, height, count);
+        meta.histogram = histogram.map(Arc::new);
+        (pixels, meta)
+    };
+    let wic = crate::wic::takes(path);
+    let jpeg = !wic && is_jpeg_file(path);
+    if wic || jpeg {
+        match read_wic(path, true) {
+            Ok((img, mut meta)) => {
+                if jpeg {
+                    // By content, whatever the extension says.
+                    meta.format = "JPEG";
+                }
+                return Ok(from_wic(img, meta));
+            }
+            Err(e) if wic => return Err(e),
+            Err(e) => log::debug!("Windows cannot decode {}: {e}; trying image", path.display()),
+        }
+    }
+    match read_image(path) {
+        Ok((img, meta)) => Ok(from_image(img, meta)),
+        Err(e) if jpeg => Err(e),
+        Err(e) => {
+            let (img, meta) = read_wic(path, true).map_err(|_| e)?;
+            Ok(from_wic(img, meta))
+        }
+    }
+}
+
+/// Whether the file `path` starts as a JPEG (SOI and a marker), whatever
+/// its extension; false for an image in an archive.
+fn is_jpeg_file(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 3];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head == [0xFF, 0xD8, 0xFF]
 }
 
 /// Read and decode `path`, turned upright by its EXIF orientation: with
@@ -379,6 +412,12 @@ fn to_bgra(img: DynamicImage) -> Vec<u8> {
         DynamicImage::ImageRgb8(rgb) => {
             for (dst, p) in out.as_chunks_mut::<4>().0.iter_mut().zip(rgb.as_raw().as_chunks::<3>().0) {
                 *dst = [p[2], p[1], p[0], 255];
+            }
+        }
+        // The general way below took 132 ms for a 14.5 MP grey JPEG.
+        DynamicImage::ImageLuma8(grey) => {
+            for (dst, &v) in out.as_chunks_mut::<4>().0.iter_mut().zip(grey.as_raw()) {
+                *dst = [v, v, v, 255];
             }
         }
         other => {
@@ -614,6 +653,13 @@ mod tests {
             println!("round {round}: {w}x{h} ({mp:.1} MP), {orientation:?}");
             println!("  read {read:.1} ms, decode {decoded:.1} ms, orient {oriented:.1} ms, to BGRA {converted:.1} ms");
             println!("  {} mip levels {mips:.1} ms", levels.len() - 1);
+            // Windows' decoder reads, decodes, turns and converts in one.
+            let _com = crate::win::com_init();
+            let t = Instant::now();
+            match read_wic(&path, true) {
+                Ok(_) => println!("  WIC: read, decoded and converted to BGRA in {:.1} ms", ms(t)),
+                Err(e) => println!("  WIC: {e}"),
+            }
         }
     }
 
@@ -635,8 +681,9 @@ mod tests {
         // Content decides, not the extension.
         let jpeg = dir.join("really_a_jpeg.png");
         image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save_with_format(&jpeg, ImageFormat::Jpeg).unwrap();
-        let (_, meta) = decode(&jpeg, 16384, false).unwrap();
+        let (pixels, meta) = decode(&jpeg, 16384, false).unwrap();
         assert_eq!((meta.format, meta.bits), ("JPEG", 24));
+        assert_eq!((pixels.width, pixels.height), (8, 8));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -50,6 +50,20 @@ Measured for a 14.7 MP JPEG on a decoder thread:
 - A level of a million pixels or more (the first two of a 14.7 MP photo) is made in bands of rows on up to four threads: in one thread the levels took 5 ms of the stored values and 20 ms in linear light. `cargo test --release mip_timings -- --ignored --nocapture` measures both ways on a synthetic 14.7 MP image.
 - `cargo test --release phase_timings -- --ignored --nocapture` with `QVIEW_BENCH_FILE` measures these phases for any file.
 
+### JPEG through Windows' decoder
+
+A JPEG on disk is decoded by Windows (WIC) first, `image`'s zune-jpeg only when that fails or in an archive. WIC's decoder is as fast as zune-jpeg and gives premultiplied BGRA itself, so the conversion is saved; on heavy files it is faster too. Measured on a decoder thread (reading, decoding, orientation, premultiplied BGRA; mip levels not counted):
+
+| File | `image` + conversion | WIC |
+|---|---|---|
+| 17.5 MP photo, 4:2:0, 5.2 MB | 66 + 21 ms | 63 ms |
+| 10.2 MP poster, 4:4:4, 1.7 MB | 30 + 12 ms | 32 ms |
+| 14.5 MP grey scan, 6.3 MB | 53 + 132 ms (before `to_bgra`'s grey path, now 13) | 55 ms |
+| 31.7 MP scan, 4:4:4, 34 MB (8.6 bits per pixel, Photoshop quality 12) | 300–340 + 33–44 ms | 250 ms |
+
+- The 31.7 MP scan showed "Decoded in 422 ms" in the status bar: the two other workers decoding its neighbours and a thread landing on an E-core add to the thread's own 370 ms. At its bitrate the time is the Huffman decoding, which no decoder splits over threads; DCT-scaled decoding (libjpeg-turbo) would not help much either, since the entropy decoding stays whole.
+- `phase_timings` prints WIC's time after `image`'s phases.
+
 ### HEIC and HEIF
 
 | Path | 12 MP iPhone HEIC |
