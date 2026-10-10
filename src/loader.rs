@@ -46,6 +46,9 @@ pub struct Meta {
     /// histogram is open (`Loader::set_histograms`); of the first frame of
     /// an animation.
     pub histogram: Option<Arc<Histogram>>,
+    /// The worker's time for the file: reading, decoding, the orientation,
+    /// BGRA and the mip levels (not the texture upload); 0 when not measured.
+    pub decode_ms: f32,
 }
 
 /// An image as the GPU takes it: premultiplied BGRA, 8 bits per channel,
@@ -181,8 +184,11 @@ fn worker(shared: &Shared, tx: &mpsc::Sender<Decoded>) {
         };
         let start = Instant::now();
         let count = shared.histograms.load(Relaxed);
-        let result = decode(&path, shared.max_side.load(Relaxed), count);
+        let mut result = decode(&path, shared.max_side.load(Relaxed), count);
         let took = start.elapsed();
+        if let Ok((_, meta)) = &mut result {
+            meta.decode_ms = took.as_secs_f32() * 1e3;
+        }
         let with = if count { " with its histogram" } else { "" };
         log::debug!("decoded {}{with} in {:.1} ms", path.display(), took.as_secs_f64() * 1e3);
         // Marked done before it is sent, so the UI never sees the file as
@@ -295,6 +301,7 @@ pub fn read_wic(path: &Path, bgra: bool) -> Result<(DynamicImage, Meta), String>
         modified: file.last_write_time(),
         animated: false,
         histogram: None,
+        decode_ms: 0.0,
     };
     Ok((img, meta))
 }
@@ -337,6 +344,7 @@ fn read_image(path: &Path) -> Result<(DynamicImage, Meta), String> {
         modified,
         animated,
         histogram: None,
+        decode_ms: 0.0,
     };
     Ok((img, meta))
 }

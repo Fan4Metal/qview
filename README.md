@@ -117,7 +117,7 @@ The arrow keys scroll an image that is larger than the window in that direction;
 
 Images are listed in the same order as in Explorer (numbers are compared as numbers); View → Sort orders them by date modified, date taken or size instead, ascending or descending. The date taken is read from the EXIF data of each image when this order is chosen; an image without it is placed by its date modified.
 
-Downscaled images are smoothed with mipmaps; 100% shows one image pixel per screen pixel at any Windows display scaling. The EXIF orientation of photos is applied. The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date and zoom.
+Downscaled images are smoothed with mipmaps; 100% shows one image pixel per screen pixel at any Windows display scaling. The EXIF orientation of photos is applied. The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date, the time the file took to decode (reading, decoding and preparing the mipmaps; images decoded ahead show theirs too, though they appear at once) and zoom.
 
 The filtering of images not shown at 100% is chosen in View → Filtering: bilinear (the default), bicubic, which is sharper both when enlarging and when reducing, or pixelated, which shows every pixel of an enlarged image as a sharp square of the same size at any zoom and suits pixel art and screenshots. Reduced images are averaged in linear light, which keeps thin bright lines and fine texture from darkening; "Reduce in Linear Light" in the same menu turns this off, and the open images are then decoded again.
 

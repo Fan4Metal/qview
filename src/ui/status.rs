@@ -1,5 +1,5 @@
 //! The status bar:
-//! `3/16 | name.jpg | 337.3 KB | 800x532x24b JPEG | Modified Date: … | 100%`.
+//! `3/16 | name.jpg | 337.3 KB | 800x532x24b JPEG | Modified Date: … | Decoded in 80 ms | 100%`.
 
 use egui::{RichText, Stroke, Ui};
 
@@ -73,6 +73,12 @@ impl App {
                 };
                 fields.push(format!("{}x{}x{}b {}{animated}", m.width, m.height, m.bits, m.format));
                 modified(&mut fields, m.modified);
+                // The worker's time, whether the image was decoded ahead or
+                // waited for.
+                if m.decode_ms > 0.0 {
+                    let ms = m.decode_ms.round().max(1.0);
+                    fields.push(tr!(format!("Decoded in {ms} ms"), format!("Декодировано за {ms} мс")));
+                }
                 if !self.gallery_open {
                     let zoom = format::zoom(self.view.scale(picture.size(), self.viewport, ppp));
                     fields.push(if self.view.keep {
