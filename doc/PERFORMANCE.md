@@ -83,6 +83,16 @@ A JPEG on disk is decoded by Windows (WIC) first, `image`'s zune-jpeg only when 
 - The 31.7 MP scan showed "Decoded in 422 ms" in the status bar: the two other workers decoding its neighbours and a thread landing on an E-core add to the thread's own 370 ms. At its bitrate the time is the Huffman decoding, which no decoder splits over threads; DCT-scaled decoding (libjpeg-turbo) would not help much either, since the entropy decoding stays whole.
 - `phase_timings` prints WIC's time after `image`'s phases.
 
+DCT-scaled decoding was measured too (`wic_scaled`, second machine): Windows' JPEG decoder implements `IWICBitmapSourceTransform`, whose `CopyPixels` at half, a quarter or an eighth of the size skips most of the inverse DCT, the upsampling and the colour conversion, and gives premultiplied BGRA directly.
+
+| File | Full size | 1/2 | 1/4 | 1/8 |
+|---|---|---|---|---|
+| 14.7 MP photo, quality 90, 4:2:0, 3.0 MB | 42 ms | 30 ms | 26 ms | 22 ms |
+| 17.5 MP photo, 4:2:0, 5.2 MB | 60 ms | 46 ms | 41 ms | 37 ms |
+| 31.7 MP scan, 4:4:4, 34 MB | 250 ms | 230 ms | 220–230 ms | 200–220 ms |
+
+- Not used: the entropy decoding, which scaling cannot skip, is most of the time even for an ordinary photo (an eighth of the pixels still costs half the time), and on the heavy scan nearly all of it. The gain at the half size that would be shown, 10–25%, would be paid for with a second, full decoding when the image is zoomed to 100% and a texture that could not be completed from the pixels already decoded. libjpeg-turbo's scaled decoding is the same trade.
+
 ### HEIC and HEIF
 
 | Path | 12 MP iPhone HEIC |
@@ -249,6 +259,7 @@ The information panel's Colour section shows the pixel under the pointer. Folded
 | Decoding phases of one file | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release phase_timings -- --ignored --nocapture` |
 | Gallery thumbnails of a folder | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release thumbnail_timings -- --ignored --nocapture` |
 | One file through WIC | `$env:QVIEW_WIC_FILE="<file>"; cargo test --release wic_file -- --ignored --nocapture` |
+| A JPEG through WIC at full, half, quarter and eighth size (DCT scaling) | `$env:QVIEW_WIC_FILE="<jpeg>"; cargo test --release wic_scaled -- --ignored --nocapture` |
 | HEIC through libheif and WIC | `$env:QVIEW_HEIF_FILE="<heic>"; cargo test --release heif_file -- --ignored --nocapture` |
 | Histogram counting of one file, and decoding with and without it | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release histogram_timings -- --ignored --nocapture` |
 | A histogram read again (the section opened on a decoded image) | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release read_again_timings -- --ignored --nocapture` |

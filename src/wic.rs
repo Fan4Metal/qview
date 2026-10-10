@@ -500,6 +500,64 @@ pub(crate) mod tests {
         }
     }
 
+    /// Timings of the JPEG decoder's DCT-scaled decoding through
+    /// `IWICBitmapSourceTransform`: the file of `QVIEW_WIC_FILE` at full,
+    /// half, quarter and eighth size, against `decode`. Printed with
+    /// `--nocapture`.
+    #[test]
+    #[ignore]
+    fn wic_scaled() {
+        const IID_IWIC_BITMAP_SOURCE_TRANSFORM: GUID = GUID::from_u128(0x3b16811b_6a43_4ec9_b713_3d5a0c13b940);
+        // (prc, width, height, format in/out, transform, stride, size, buffer)
+        type CopyPixelsScaled =
+            unsafe extern "system" fn(Unknown, *const c_void, u32, u32, *mut GUID, i32, u32, u32, *mut u8) -> HRESULT;
+        type GetClosestSize = unsafe extern "system" fn(Unknown, *mut u32, *mut u32) -> HRESULT;
+        type GetClosestPixelFormat = unsafe extern "system" fn(Unknown, *mut GUID) -> HRESULT;
+        let _com = crate::win::com_init();
+        let path = std::path::PathBuf::from(std::env::var("QVIEW_WIC_FILE").expect("QVIEW_WIC_FILE"));
+        let factory = factory().unwrap();
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
+        for round in 0..3 {
+            let t = std::time::Instant::now();
+            let full = decode(&path, true).unwrap();
+            println!("round {round}: decode {}x{} to PBGRA in {:.1} ms", full.width, full.height, ms(t));
+            for div in [1u32, 2, 4, 8] {
+                let t = std::time::Instant::now();
+                let frame = first_frame(&factory, &path).unwrap();
+                let Some(transform) = frame.query(&IID_IWIC_BITMAP_SOURCE_TRANSFORM) else {
+                    println!("  no IWICBitmapSourceTransform");
+                    break;
+                };
+                let (w, h) = size_of_source(&frame).unwrap();
+                let (mut cw, mut ch) = (w.div_ceil(div), h.div_ceil(div));
+                check(unsafe { transform.method::<GetClosestSize>(4)(transform.0, &mut cw, &mut ch) }, "GetClosestSize").unwrap();
+                let mut format = PIXEL_FORMAT_32BPP_PBGRA;
+                check(unsafe { transform.method::<GetClosestPixelFormat>(5)(transform.0, &mut format) }, "GetClosestPixelFormat").unwrap();
+                let bpp = pixel_format(&factory, &format).0;
+                let stride = cw as usize * usize::from(bpp.max(8)) / 8;
+                let len = stride * ch as usize;
+                let mut pixels = vec![0u8; len];
+                let hr = unsafe {
+                    transform.method::<CopyPixelsScaled>(3)(
+                        transform.0,
+                        std::ptr::null(),
+                        cw,
+                        ch,
+                        &mut format,
+                        0,
+                        stride as u32,
+                        len as u32,
+                        pixels.as_mut_ptr(),
+                    )
+                };
+                match check(hr, "CopyPixels") {
+                    Ok(()) => println!("  1/{div}: {cw}x{ch}, {bpp} bpp (PBGRA asked for), in {:.1} ms", ms(t)),
+                    Err(e) => println!("  1/{div}: {cw}x{ch}: {e}"),
+                }
+            }
+        }
+    }
+
     #[test]
     fn lists_the_codecs() {
         let all = decoder_extensions().unwrap();
