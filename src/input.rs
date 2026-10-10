@@ -77,6 +77,9 @@ pub enum Cmd {
     SlideshowLoop,
     /// Leaves full screen, or closes the viewer.
     Escape,
+    /// Esc in the viewer closes the program instead of opening the
+    /// gallery, or no longer does (View menu, the gallery button's menu).
+    EscCloses,
     Close,
     Delete,
     /// Rename the current file (F2).

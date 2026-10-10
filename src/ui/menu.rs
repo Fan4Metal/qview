@@ -111,6 +111,7 @@ impl App {
         self.animation_items(ui);
         ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
+        self.esc_closes_item(ui);
         ui.menu_button(tr!("Slideshow", "Слайд-шоу"), |ui| self.slideshow_menu(ui));
         self.check_item(ui, tr!("Menu Bar", "Строка меню").into(), "M", Cmd::ToggleMenuBar, self.show_menu_bar);
         self.check_item(ui, tr!("Toolbar", "Панель инструментов").into(), "T", Cmd::ToggleToolbar, self.show_toolbar);
@@ -588,6 +589,20 @@ impl App {
         self.file_items(ui, e.file);
         ui.separator();
         self.delete_item(ui, e.file);
+    }
+
+    /// Esc in the viewer closes the program instead of opening the gallery
+    /// (View menu, and the gallery button's context menu).
+    pub(super) fn esc_closes_item(&mut self, ui: &mut Ui) {
+        let text = tr!("Esc Closes qview", "Закрывать программу по Esc");
+        let tip = tr!(
+            "In the viewer, instead of opening the gallery; Esc still stops a slideshow, leaves full screen and cancels cropping first, and in the gallery always closes",
+            "В режиме просмотра, вместо перехода в галерею; Esc по-прежнему сначала останавливает слайд-шоу, выходит из полного экрана и отменяет обрезку, а в галерее всегда закрывает программу"
+        );
+        if ui.add(Button::new(text).shortcut_text("Esc").selected(self.esc_closes)).on_hover_text(tip).clicked() {
+            self.clicked.push(Cmd::EscCloses);
+            ui.close();
+        }
     }
 
     /// Show Menu Bar, at the top of the context menus while it is hidden:

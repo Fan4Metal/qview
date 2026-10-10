@@ -88,6 +88,7 @@ const UNDO_STEPS: usize = 20;
 const UNDO_BYTES: usize = 512 << 20;
 
 const MENU_BAR_KEY: &str = "menu_bar";
+const ESC_CLOSES_KEY: &str = "esc_closes";
 const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
 const BACKGROUND_KEY: &str = "background";
@@ -283,6 +284,9 @@ pub struct App {
     pub show_menu_bar: bool,
     pub show_toolbar: bool,
     pub show_status_bar: bool,
+    /// Esc in the viewer closes the program; otherwise (the default) it
+    /// opens the gallery.
+    pub esc_closes: bool,
     /// Background of the image area.
     pub background: Color32,
     /// A checkerboard behind the image, seen where it is transparent.
@@ -786,6 +790,7 @@ impl App {
             show_menu_bar: flag(MENU_BAR_KEY),
             show_toolbar: flag(TOOLBAR_KEY),
             show_status_bar: flag(STATUS_BAR_KEY),
+            esc_closes: cc.storage.and_then(|s| s.get_string(ESC_CLOSES_KEY)).as_deref() == Some("true"),
             background: cc
                 .storage
                 .and_then(|s| s.get_string(BACKGROUND_KEY))
@@ -2656,8 +2661,11 @@ impl App {
                 self.notice(tr!("Slideshow stopped".into(), "Слайд-шоу остановлено".into()));
             }
             Cmd::Escape if Self::is_fullscreen(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false)),
-            // Back to the gallery, as with G; Esc there closes.
+            // Closes, when chosen; otherwise back to the gallery, as with
+            // G, where Esc closes.
+            Cmd::Escape if self.esc_closes => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::Escape => self.enter_gallery(ctx),
+            Cmd::EscCloses => self.esc_closes = !self.esc_closes,
             Cmd::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::Delete => {
                 let files: Vec<PathBuf> = self.targets().into_iter().filter(|p| p.is_file()).collect();
@@ -3710,6 +3718,7 @@ impl App {
             | Cmd::SlideshowInterval(_)
             | Cmd::SlideshowLoop
             | Cmd::ToggleMenuBar
+            | Cmd::EscCloses
             | Cmd::ToggleToolbar
             | Cmd::ToggleStatusBar
             | Cmd::Info
@@ -4432,6 +4441,7 @@ impl eframe::App for App {
         storage.set_string(MENU_BAR_KEY, self.show_menu_bar.to_string());
         storage.set_string(TOOLBAR_KEY, self.show_toolbar.to_string());
         storage.set_string(STATUS_BAR_KEY, self.show_status_bar.to_string());
+        storage.set_string(ESC_CLOSES_KEY, self.esc_closes.to_string());
         storage.set_string(BACKGROUND_KEY, background_to_hex(self.background));
         storage.set_string(CHECKER_KEY, self.checker.to_string());
         storage.set_string(LINEAR_MIPS_KEY, self.linear_mips.to_string());

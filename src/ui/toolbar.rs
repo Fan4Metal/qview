@@ -108,8 +108,13 @@ impl App {
                         }
                         for (icon, cmd, tip, enabled) in group.iter() {
                             let on = (matches!(icon, Icon::Gallery) && gallery) || (matches!(icon, Icon::Crop) && cropping);
-                            if icon_button(ui, *icon, tip, *enabled, on) {
+                            let response = icon_button(ui, *icon, tip, *enabled, on);
+                            if response.clicked() {
                                 self.clicked.push(*cmd);
+                            }
+                            // What Esc does in the viewer: the gallery, or closing.
+                            if matches!(icon, Icon::Gallery) {
+                                response.context_menu(|ui| self.esc_closes_item(ui));
                             }
                         }
                     }
@@ -118,7 +123,7 @@ impl App {
                     // of it.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let tip = tr!("Information (I)", "Сведения (I)");
-                        if icon_button(ui, Icon::Info, tip, true, self.show_info) {
+                        if icon_button(ui, Icon::Info, tip, true, self.show_info).clicked() {
                             self.clicked.push(Cmd::Info);
                         }
                         if let Some(tag) = self.updates.newer() {
@@ -165,9 +170,9 @@ fn divider(ui: &mut Ui) {
     ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0, DIVIDER));
 }
 
-/// A square button with `icon`, shown pressed while `on`; true when
-/// clicked.
-fn icon_button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool, on: bool) -> bool {
+/// A square button with `icon`, shown pressed while `on`; disabled, it
+/// senses no clicks.
+fn icon_button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool, on: bool) -> egui::Response {
     // CLICK without FOCUSABLE: Space and Enter belong to the viewer.
     let sense = if enabled { Sense::CLICK } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(vec2(32.0, 28.0), sense);
@@ -178,9 +183,7 @@ fn icon_button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool, on: bool) -> b
         painter.rect_filled(rect, 3.0, HOVER);
     }
     paint_icon(painter, icon, rect.center(), if enabled { ICON } else { ICON_DISABLED });
-    let clicked = response.clicked();
-    response.on_hover_text(tip);
-    enabled && clicked
+    response.on_hover_text(tip)
 }
 
 /// Points of an arc around `c`: angles in radians, clockwise on screen from

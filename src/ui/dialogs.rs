@@ -10,7 +10,7 @@ use crate::i18n::LangChoice;
 const LANG_WIDTH: f32 = 220.0;
 
 /// The key bindings as the Shortcuts dialog lists them, in sections.
-fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+fn shortcuts(esc_closes: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         (
             tr!("Browsing", "Просмотр"),
@@ -140,10 +140,14 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("F1", tr!("This list", "Этот список")),
                 (
                     "Esc",
-                    tr!(
-                        "Leave full screen; then the gallery, from it close",
-                        "Выйти из полного экрана; затем галерея, из неё закрыть"
-                    ),
+                    if esc_closes {
+                        tr!("Leave full screen; then close", "Выйти из полного экрана; затем закрыть")
+                    } else {
+                        tr!(
+                            "Leave full screen; then the gallery, from it close",
+                            "Выйти из полного экрана; затем галерея, из неё закрыть"
+                        )
+                    },
                 ),
                 ("Ctrl+W  Alt+F4", tr!("Close", "Закрыть")),
             ],
@@ -173,7 +177,7 @@ impl App {
                 egui::ScrollArea::vertical().max_height(height).min_scrolled_height(height).show(ui, |ui| {
                     // One grid, so that the columns line up across sections.
                     egui::Grid::new("shortcut_grid").num_columns(2).spacing([24.0, 5.0]).show(ui, |ui| {
-                        for (i, (title, keys)) in shortcuts().into_iter().enumerate() {
+                        for (i, (title, keys)) in shortcuts(self.esc_closes).into_iter().enumerate() {
                             if i > 0 {
                                 ui.add_space(6.0);
                                 ui.end_row();
