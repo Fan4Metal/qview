@@ -89,35 +89,40 @@ impl App {
         self.transfer_menu(ui, false, e.file && self.crop.is_none());
         self.transfer_menu(ui, true, e.file && self.crop.is_none());
         ui.separator();
-        self.item(ui, tr!("File Associations…", "Сопоставление файлов…").into(), "", Cmd::Associations, true);
-        ui.separator();
         self.item(ui, tr!("Exit", "Выход").into(), "Ctrl+W", Cmd::Close, true);
     }
 
+    /// Every command, the groups as submenus: the menu was 31 rows with
+    /// them all at the top level.
     fn view_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
         self.check_item(ui, tr!("Gallery", "Галерея").into(), "G", Cmd::Gallery, self.gallery_open);
         ui.separator();
-        self.item(ui, tr!("Previous", "Предыдущее").into(), "Page Up", Cmd::Prev, e.prev);
-        self.item(ui, tr!("Next", "Следующее").into(), "Page Down", Cmd::Next, e.next);
-        self.item(ui, tr!("First", "Первое").into(), "Home", Cmd::First, e.any);
-        self.item(ui, tr!("Last", "Последнее").into(), "End", Cmd::Last, e.any);
+        ui.menu_button(tr!("Go", "Переход"), |ui| {
+            self.item(ui, tr!("Previous", "Предыдущее").into(), "Page Up", Cmd::Prev, e.prev);
+            self.item(ui, tr!("Next", "Следующее").into(), "Page Down", Cmd::Next, e.next);
+            self.item(ui, tr!("First", "Первое").into(), "Home", Cmd::First, e.any);
+            self.item(ui, tr!("Last", "Последнее").into(), "End", Cmd::Last, e.any);
+        });
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         ui.separator();
-        self.zoom_items(ui, &e);
-        ui.separator();
-        self.rotate_items(ui, &e);
-        ui.separator();
-        self.animation_items(ui);
+        ui.menu_button(tr!("Zoom", "Масштаб"), |ui| self.zoom_items(ui, &e));
+        self.rotate_menu(ui, &e);
+        self.crop_item(ui, &e);
+        self.animation_menu(ui);
         ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
-        self.esc_closes_item(ui);
         ui.menu_button(tr!("Slideshow", "Слайд-шоу"), |ui| self.slideshow_menu(ui));
-        self.check_item(ui, tr!("Menu Bar", "Строка меню").into(), "M", Cmd::ToggleMenuBar, self.show_menu_bar);
-        self.check_item(ui, tr!("Toolbar", "Панель инструментов").into(), "T", Cmd::ToggleToolbar, self.show_toolbar);
-        self.check_item(ui, tr!("Status Bar", "Строка состояния").into(), "B", Cmd::ToggleStatusBar, self.show_status_bar);
-        self.check_item(ui, tr!("Information", "Сведения").into(), "I", Cmd::Info, self.show_info);
+        ui.separator();
+        ui.menu_button(tr!("Panels", "Панели"), |ui| {
+            self.check_item(ui, tr!("Menu Bar", "Строка меню").into(), "M", Cmd::ToggleMenuBar, self.show_menu_bar);
+            self.check_item(ui, tr!("Toolbar", "Панель инструментов").into(), "T", Cmd::ToggleToolbar, self.show_toolbar);
+            self.check_item(ui, tr!("Status Bar", "Строка состояния").into(), "B", Cmd::ToggleStatusBar, self.show_status_bar);
+            self.check_item(ui, tr!("Information", "Сведения").into(), "I", Cmd::Info, self.show_info);
+        });
         ui.menu_button(tr!("Background", "Фон"), |ui| self.background_menu(ui));
+        self.filtering_menu(ui);
+        self.esc_closes_item(ui);
         ui.separator();
         self.item(ui, tr!("Refresh", "Обновить").into(), "F5", Cmd::Refresh, e.file);
     }
@@ -150,6 +155,11 @@ impl App {
         self.item(ui, tr!("Fill Entire Window", "Заполнить окно целиком").into(), "4", Cmd::Cover, e.image);
         let keep = self.view.keep;
         self.check_item(ui, tr!("Keep Zoom and Position", "Сохранять масштаб и положение").into(), "L", Cmd::KeepZoom, keep);
+    }
+
+    /// The image's filtering, and the mip levels' light (View → Filtering;
+    /// in the context menu under Zoom).
+    fn filtering_menu(&mut self, ui: &mut Ui) {
         ui.menu_button(tr!("Filtering", "Фильтрация"), |ui| {
             for filter in crate::view::Filter::ALL {
                 if ui.add(Button::new(filter.label()).selected(self.filter == filter)).clicked() {
@@ -167,6 +177,14 @@ impl App {
                 self.clicked.push(Cmd::LinearMips);
                 ui.close();
             }
+        });
+    }
+
+    /// The animation's commands as a submenu, disabled while nothing is
+    /// animated.
+    fn animation_menu(&mut self, ui: &mut Ui) {
+        ui.add_enabled_ui(self.player.is_some(), |ui| {
+            ui.menu_button(tr!("Animation", "Анимация"), |ui| self.animation_items(ui))
         });
     }
 
@@ -200,10 +218,13 @@ impl App {
         self.check_item(ui, tr!("Loop", "По кругу").into(), "", Cmd::SlideshowLoop, self.slideshow_loop);
     }
 
-    fn rotate_items(&mut self, ui: &mut Ui, e: &Enabled) {
-        self.turn_items(ui, e);
-        self.flip_items(ui, e);
-        self.crop_item(ui, e);
+    /// The turns and the mirrors, as one submenu.
+    fn rotate_menu(&mut self, ui: &mut Ui, e: &Enabled) {
+        ui.menu_button(tr!("Rotate and Flip", "Поворот и отражение"), |ui| {
+            self.turn_items(ui, e);
+            ui.separator();
+            self.flip_items(ui, e);
+        });
     }
 
     fn turn_items(&mut self, ui: &mut Ui, e: &Enabled) {
@@ -545,11 +566,13 @@ impl App {
 
     fn help_menu(&mut self, ui: &mut Ui) {
         self.item(ui, tr!("Keyboard Shortcuts", "Сочетания клавиш").into(), "F1", Cmd::Shortcuts, true);
+        ui.separator();
+        self.item(ui, tr!("File Associations…", "Сопоставление файлов…").into(), "", Cmd::Associations, true);
         self.item(ui, tr!("About qview", "О программе").into(), "", Cmd::About, true);
     }
 
     /// Right click on the image: what is done with the mouse; the zoom,
-    /// the flips and the rarer commands in submenus, browsing left to the
+    /// the turns and the rarer commands in submenus, browsing left to the
     /// wheel, the keys and the View menu.
     pub(crate) fn context_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
@@ -557,16 +580,17 @@ impl App {
         self.item(ui, tr!("Gallery", "Галерея").into(), "G", Cmd::Gallery, true);
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
         ui.separator();
-        ui.menu_button(tr!("Zoom", "Масштаб"), |ui| self.zoom_items(ui, &e));
-        self.turn_items(ui, &e);
-        ui.menu_button(tr!("Flip", "Отразить"), |ui| self.flip_items(ui, &e));
+        ui.menu_button(tr!("Zoom", "Масштаб"), |ui| {
+            self.zoom_items(ui, &e);
+            self.filtering_menu(ui);
+        });
+        self.rotate_menu(ui, &e);
         self.crop_item(ui, &e);
         if e.edited {
             self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, true);
         }
         if self.player.is_some() {
-            ui.separator();
-            self.animation_items(ui);
+            self.animation_menu(ui);
         }
         if let Some(picked) = self.menu_picked {
             ui.separator();
@@ -618,12 +642,13 @@ impl App {
     /// file, the rarer commands under More (the File menu has them all).
     pub(super) fn file_items(&mut self, ui: &mut Ui, enabled: bool) {
         self.copy_item(ui, enabled);
-        self.copy_image_item(ui, enabled);
         self.rename_item(ui, enabled);
         self.transfer_menu(ui, false, enabled && self.crop.is_none());
-        self.open_in_editor_item(ui, enabled);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, enabled);
         ui.menu_button(tr!("More", "Ещё"), |ui| {
+            self.copy_image_item(ui, enabled);
+            self.open_in_editor_item(ui, enabled);
+            ui.separator();
             self.transfer_menu(ui, true, enabled && self.crop.is_none());
             self.convert_menu(ui);
             self.print_item(ui, enabled);
