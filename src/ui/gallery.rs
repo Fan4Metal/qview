@@ -7,7 +7,7 @@ use egui::{Align, Align2, Color32, FontId, Layout, Margin, Painter, PointerButto
 
 use super::{TEXT, TEXT_WEAK, panel_frame};
 use crate::app::{App, file_name};
-use crate::gallery::{self, ASPECTS, Cell, HEADER, HOVER_DELAY, LABEL, MAX_SIZE, MIN_SIZE, PAD, Scroll};
+use crate::gallery::{self, ASPECTS, Cell, HEADER, HOVER_DELAY, LABEL, MAX_COLUMNS_SIZE, MAX_SIZE, MIN_COLUMNS, MIN_SIZE, PAD, Scroll};
 use crate::input::Cmd;
 use crate::thumbs::Request;
 use crate::tree::Action;
@@ -177,12 +177,43 @@ impl App {
                     let visuals = ui.visuals_mut();
                     visuals.widgets.inactive.bg_fill = SLIDER_RAIL;
                     visuals.selection.bg_fill = SLIDER_FILL;
-                    let tip = tr!(
-                        "Thumbnail size (+ and -); Ctrl+Wheel over the grid steps between the sizes at which the cells fill the width exactly",
-                        "Размер миниатюр (+ и -); Ctrl+колесо над сеткой ходит по размерам, при которых ячейки заполняют ширину точно"
+                    let tip = match self.thumb_columns {
+                        Some(n) => tr!(
+                            format!("{n} columns (+ and -, Ctrl+Wheel over the grid): the cells fill the width"),
+                            format!("Столбцов: {n} (+ и -, Ctrl+колесо над сеткой); ячейки заполняют ширину")
+                        ),
+                        None => tr!(
+                            "Thumbnail size (+ and -); Ctrl+Wheel over the grid steps between the sizes at which the cells fill the width exactly",
+                            "Размер миниатюр (+ и -); Ctrl+колесо над сеткой ходит по размерам, при которых ячейки заполняют ширину точно"
+                        )
+                        .to_string(),
+                    };
+                    // Whole columns: the slider chooses how many, and the
+                    // cells fill the width whatever it becomes.
+                    let columns_tip = tr!(
+                        "Whole columns: the slider chooses their number and the cells always fill the width; off, it sets the thumbnail size",
+                        "Целые столбцы: ползунок выбирает их число, и ячейки всегда заполняют ширину; без этого он задаёт размер миниатюр"
                     );
+                    if columns_button(ui, self.thumb_columns.is_some()).on_hover_text(columns_tip).clicked() {
+                        self.thumb_columns = match self.thumb_columns {
+                            // The cells as they are, grown to fill the width.
+                            None => Some(self.gallery.as_ref().map_or(MIN_COLUMNS, |g| g.layout.columns.max(MIN_COLUMNS))),
+                            // The size they have now stays, within the slider.
+                            Some(_) => {
+                                self.thumb_size = self.thumb_size.min(MAX_SIZE);
+                                None
+                            }
+                        };
+                    }
                     size_icon(ui, 12.0);
-                    let slider = egui::Slider::new(&mut self.thumb_size, MIN_SIZE..=MAX_SIZE)
+                    // The columns chosen: the slider's end is the fewest
+                    // columns, whose cells may be twice the usual size.
+                    let largest = match (self.thumb_columns, self.grid_width_aspect()) {
+                        (Some(_), Some((width, aspect))) => gallery::size_for_columns(width, aspect, MIN_COLUMNS),
+                        (Some(_), None) => MAX_COLUMNS_SIZE,
+                        (None, _) => MAX_SIZE,
+                    };
+                    let slider = egui::Slider::new(&mut self.thumb_size, MIN_SIZE..=largest)
                         .show_value(false)
                         .trailing_fill(true)
                         .handle_shape(egui::style::HandleShape::Circle);
@@ -270,6 +301,14 @@ impl App {
                 });
             });
         if (self.thumb_size, self.thumb_aspect) != before {
+            // The slider dragged while the columns are chosen: the count
+            // whose cells are nearest; the grid then snaps the size to it.
+            if self.thumb_columns.is_some()
+                && self.thumb_size != before.0
+                && let Some((width, aspect)) = self.grid_width_aspect()
+            {
+                self.thumb_columns = Some(gallery::columns_near(width, aspect, self.thumb_size));
+            }
             self.thumb_size_changed();
         }
         if self.name_filter != filter_before {
@@ -345,7 +384,7 @@ impl App {
                 let aspect = self.thumb_aspect.or_else(|| self.gallery.as_ref().map(|g| g.shown_aspect)).unwrap_or(1.0);
                 let fits = gallery::fit_sizes(rect.width(), aspect);
                 for _ in 0..zoom.unsigned_abs() {
-                    self.thumb_size = gallery::step_fit(self.thumb_size, &fits, zoom > 0);
+                    self.step_thumb_size(zoom > 0, Some(&fits));
                 }
                 self.thumb_size_changed();
             }
@@ -424,6 +463,10 @@ impl App {
             }
             gallery.shown_aspect = aspect;
         }
+        // The columns chosen: the size that fills this frame's width.
+        if let Some(columns) = self.thumb_columns {
+            self.thumb_size = gallery::size_for_columns(rect.width(), aspect, columns);
+        }
         let frame = gallery::frame_size(self.thumb_size, aspect);
         // By folder: a section for each, under a header; not while the
         // listing in one order is still on screen.
@@ -458,10 +501,15 @@ impl App {
                 Cell::Folder(_) => layout.folder_cell.y,
                 Cell::Image(_) => cell.y,
             };
+            // A cell taller than the grid is shown from its top: brought
+            // in by its bottom, it would be scrolled back to its top the
+            // next time, and so on.
+            let tall = cell_height > height;
             offset = match scroll {
                 Scroll::Centre => Some((y - (height - cell_height) / 2.0).max(0.0)),
                 Scroll::Visible if y - above < top => Some(y - above),
-                Scroll::Visible if y + cell_height > top + height => Some(y + cell_height - height),
+                Scroll::Visible if tall && y >= top + height => Some(y - above),
+                Scroll::Visible if !tall && y + cell_height > top + height => Some(y + cell_height - height),
                 Scroll::Visible => None,
                 Scroll::Keep(below) => Some((y - below.clamp(0.0, (height - cell_height).max(0.0))).max(0.0)),
             };
@@ -929,6 +977,28 @@ impl App {
         }
     }
 
+    /// The width of the grid and the proportions of its cells in the last
+    /// frame, for the number of columns.
+    fn grid_width_aspect(&self) -> Option<(f32, f32)> {
+        let g = self.gallery.as_ref()?;
+        (g.layout.columns > 0).then_some((g.layout.columns as f32 * g.layout.cell.x, g.shown_aspect))
+    }
+
+    /// Larger (`up`) or smaller cells by a step: one column fewer or more
+    /// while the columns are chosen, else the next of `fits` (Ctrl+Wheel,
+    /// the sizes that fill the width) or of the fixed steps (+ and -).
+    pub(crate) fn step_thumb_size(&mut self, up: bool, fits: Option<&[f32]>) {
+        if let Some(columns) = self.thumb_columns
+            && let Some((width, aspect)) = self.grid_width_aspect()
+        {
+            self.thumb_columns = Some(gallery::step_columns(width, aspect, columns, up));
+        } else if let Some(fits) = fits {
+            self.thumb_size = gallery::step_fit(self.thumb_size, fits, up);
+        } else {
+            self.thumb_size = gallery::step_size(self.thumb_size, up);
+        }
+    }
+
     /// Right click on a cell, which is then the current image.
     fn cell_menu(&mut self, ui: &mut Ui) {
         self.show_menu_bar_item(ui);
@@ -1106,4 +1176,27 @@ fn size_icon(ui: &mut Ui, side: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
     let square = Rect::from_center_size(rect.center(), vec2(side, side));
     ui.painter().rect_stroke(square, 1.0, egui::Stroke::new(1.2, SLIDER_ICON), egui::StrokeKind::Inside);
+}
+
+/// The button beside the slider that makes it choose whole columns: three
+/// columns spanning a frame, in the accent colour while `on`.
+fn columns_button(ui: &mut Ui, on: bool) -> Response {
+    // CLICK without FOCUSABLE: Space and Enter belong to the grid.
+    let (rect, response) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::CLICK);
+    let colour = if on {
+        ACCENT
+    } else if response.hovered() {
+        TEXT
+    } else {
+        SLIDER_ICON
+    };
+    let painter = ui.painter();
+    let frame = Rect::from_center_size(rect.center(), vec2(14.0, 12.0));
+    painter.rect_stroke(frame, 1.0, egui::Stroke::new(1.2, colour), egui::StrokeKind::Inside);
+    // Two dividers: three columns reaching both edges.
+    for k in 1..3 {
+        let x = frame.left() + frame.width() * k as f32 / 3.0;
+        painter.vline(x.round() + 0.5, frame.y_range().shrink(1.2), egui::Stroke::new(1.2, colour));
+    }
+    response
 }

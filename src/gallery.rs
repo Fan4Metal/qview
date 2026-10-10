@@ -40,6 +40,11 @@ const AUTO_SAMPLE: usize = 200;
 /// slider's range.
 pub const MIN_SIZE: f32 = 64.0;
 pub const MAX_SIZE: f32 = 512.0;
+/// The largest cell while the columns are chosen: four columns of a wide
+/// grid would otherwise be stretched past the slider's end.
+pub const MAX_COLUMNS_SIZE: f32 = 2.0 * MAX_SIZE;
+/// The fewest columns chosen: fewer made cells too large for a gallery.
+pub const MIN_COLUMNS: usize = 4;
 pub const DEFAULT_SIZE: f32 = 160.0;
 /// Sizes `+` and `-` step through.
 const SIZE_STEPS: [f32; 12] = [64.0, 80.0, 96.0, 128.0, 160.0, 192.0, 224.0, 256.0, 320.0, 384.0, 448.0, 512.0];
@@ -589,6 +594,45 @@ pub fn step_size(size: f32, up: bool) -> f32 {
     next.unwrap_or(size).clamp(MIN_SIZE, MAX_SIZE)
 }
 
+/// The cell size at which `columns` cells of frames of proportions
+/// `aspect` fill a grid `width` points wide exactly, before the slider's
+/// range is applied (see [`size_for_columns`]).
+fn raw_size_for_columns(width: f32, aspect: f32, columns: usize) -> f32 {
+    let frame_x = width / columns.max(1) as f32 - 2.0 * PAD;
+    if aspect >= 1.0 { frame_x } else { frame_x / aspect }
+}
+
+/// The cell size at which `columns` cells fill a grid `width` points wide,
+/// from the slider's smallest to `MAX_COLUMNS_SIZE`: the size of the cells
+/// while the number of columns is chosen instead of their size, found anew
+/// every frame, so that the cells fill the width whatever it becomes.
+pub fn size_for_columns(width: f32, aspect: f32, columns: usize) -> f32 {
+    raw_size_for_columns(width, aspect, columns).clamp(MIN_SIZE, MAX_COLUMNS_SIZE)
+}
+
+/// The number of columns whose cells, filling `width`, are nearest to
+/// `size`: what the slider dragged to `size` chooses while the columns are
+/// chosen.
+pub fn columns_near(width: f32, aspect: f32, size: f32) -> usize {
+    let frame = frame_size(size, aspect);
+    ((width / (frame.x + 2.0 * PAD)).round() as usize).max(MIN_COLUMNS)
+}
+
+/// One column fewer (`up`, larger cells; not below `MIN_COLUMNS`) or more
+/// than `columns` in a grid `width` wide, as far as the cells stay within
+/// the range of [`size_for_columns`]; a count outside it (the window
+/// narrowed) may step towards the range.
+pub fn step_columns(width: f32, aspect: f32, columns: usize, up: bool) -> usize {
+    let next = if up { columns.saturating_sub(1).max(MIN_COLUMNS) } else { columns.max(MIN_COLUMNS) + 1 };
+    // How far a count's cells are outside the range.
+    let outside = |n: usize| {
+        let size = raw_size_for_columns(width, aspect, n);
+        (MIN_SIZE - size).max(0.0) + (size - MAX_COLUMNS_SIZE).max(0.0)
+    };
+    let (now, then) = (outside(columns), outside(next));
+    if then == 0.0 || then < now { next } else { columns }
+}
+
 /// The grid of `count` cells of thumbnail frames of `frame` points in a
 /// list `width` points wide: as many columns as fit, stretched to fill the
 /// width.
@@ -853,6 +897,55 @@ mod tests {
         assert_eq!(step_fit(100.2, &fits, false), step_size(100.2, false));
         assert_eq!(step_fit(300.0, &fits, true), step_size(300.0, true));
         assert_eq!(step_fit(150.0, &[], true), step_size(150.0, true));
+    }
+
+    #[test]
+    fn columns_chosen_fill_the_width() {
+        // The size for a count of columns is the one of `fit_sizes` that
+        // gives that count, and fills the width exactly.
+        for aspect in [1.0, 16.0 / 9.0, 9.0 / 16.0] {
+            for (k, &size) in fit_sizes(1000.0, aspect).iter().enumerate() {
+                let columns = grid(1000.0, frame_size(size, aspect), 1).columns;
+                assert!((size_for_columns(1000.0, aspect, columns) - size).abs() < 0.01, "{aspect} {k}");
+                if columns < MIN_COLUMNS {
+                    assert_eq!(columns_near(1000.0, aspect, size), MIN_COLUMNS);
+                    continue;
+                }
+                assert_eq!(columns_near(1000.0, aspect, size), columns);
+                // The sizes between two counts go to the nearer one.
+                assert_eq!(columns_near(1000.0, aspect, size + 1.0), columns);
+                if columns > MIN_COLUMNS {
+                    assert_eq!(columns_near(1000.0, aspect, size - 1.0), columns);
+                    assert_eq!(columns_near(1000.0, aspect, (size + fit_sizes(1000.0, aspect)[k - 1]) / 2.0 + 1.0), columns - 1);
+                }
+            }
+        }
+        // Within the range: a column in a wide grid is a cell of the
+        // largest size (twice the slider's), many columns one of the
+        // smallest.
+        assert_eq!(size_for_columns(8000.0, 1.0, 4), MAX_COLUMNS_SIZE);
+        assert_eq!(size_for_columns(3000.0, 1.0, 4), 3000.0 / 4.0 - 2.0 * PAD);
+        assert_eq!(size_for_columns(1000.0, 1.0, 40), MIN_SIZE);
+        assert_eq!(columns_near(1000.0, 1.0, 5000.0), MIN_COLUMNS);
+        // Steps: one column either way while the cells stay in the range,
+        // never fewer than `MIN_COLUMNS`; none past the range; towards it
+        // from outside.
+        assert_eq!(step_columns(1000.0, 1.0, 5, true), 4);
+        assert_eq!(step_columns(1000.0, 1.0, 5, false), 6);
+        assert_eq!(step_columns(1000.0, 1.0, 4, true), 4);
+        assert_eq!(step_columns(1000.0, 1.0, 1, true), 4);
+        assert_eq!(step_columns(1000.0, 1.0, 1, false), 5);
+        // The most columns within the range: those of the smallest size
+        // that fills the width.
+        let most = columns_near(1000.0, 1.0, *fit_sizes(1000.0, 1.0).last().unwrap());
+        assert_eq!(most, 13);
+        assert_eq!(step_columns(1000.0, 1.0, most, false), most);
+        assert_eq!(step_columns(1000.0, 1.0, most + 3, false), most + 3);
+        assert_eq!(step_columns(1000.0, 1.0, most + 3, true), most + 2);
+        assert_eq!(step_columns(8000.0, 1.0, 6, true), 6);
+        assert_eq!(step_columns(8000.0, 1.0, 4, false), 5);
+        assert_eq!(step_columns(4000.0, 1.0, 4, true), 4);
+        assert_eq!(step_columns(4000.0, 1.0, 5, true), 4);
     }
 
     #[test]

@@ -98,6 +98,7 @@ const FILTER_KEY: &str = "filter";
 const LINEAR_MIPS_KEY: &str = "linear_mips";
 const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
+const THUMB_COLUMNS_KEY: &str = "thumb_columns";
 const TREE_WIDTH_KEY: &str = "tree_width";
 const INFO_KEY: &str = "info_panel";
 const FOLDERS_KEY: &str = "folders_folded";
@@ -443,8 +444,13 @@ pub struct App {
     /// then: the third click of a triple click on a thumbnail, which lands
     /// on the image the first two opened, is not a request to go back.
     image_clicked: bool,
-    /// Size of the gallery's thumbnails, in points.
+    /// Size of the gallery's thumbnails, in points. While the columns are
+    /// chosen (`thumb_columns`), the size the grid found for them.
     pub thumb_size: f32,
+    /// The number of columns of the gallery's grid when chosen instead of
+    /// the thumbnail size (the button beside the slider): the cells then
+    /// fill the width whatever it becomes (`gallery::size_for_columns`).
+    pub thumb_columns: Option<usize>,
     /// Width of the gallery's folder tree, in points.
     pub tree_width: f32,
     /// The gallery's thumbnails fill their cells, cropped.
@@ -861,6 +867,7 @@ impl App {
             thumb_size: number(THUMB_SIZE_KEY)
                 .unwrap_or(gallery::DEFAULT_SIZE)
                 .clamp(gallery::MIN_SIZE, gallery::MAX_SIZE),
+            thumb_columns: number(THUMB_COLUMNS_KEY).filter(|&n| n >= 1.0).map(|n| (n as usize).max(gallery::MIN_COLUMNS)),
             tree_width: number(TREE_WIDTH_KEY).unwrap_or(240.0).clamp(140.0, 640.0),
             show_info: cc.storage.and_then(|s| s.get_string(INFO_KEY)).as_deref() == Some("true"),
             info_width: number(INFO_WIDTH_KEY).unwrap_or(280.0).clamp(200.0, 600.0),
@@ -2957,7 +2964,7 @@ impl App {
             }
             Cmd::Up => self.go_up(ctx),
             Cmd::ZoomIn | Cmd::ZoomOut => {
-                self.thumb_size = gallery::step_size(self.thumb_size, cmd == Cmd::ZoomIn);
+                self.step_thumb_size(cmd == Cmd::ZoomIn, None);
                 if let Some(gallery) = &mut self.gallery {
                     gallery.scroll = Some(Scroll::Visible);
                 }
@@ -4477,6 +4484,7 @@ impl eframe::App for App {
         storage.set_string(FILTER_KEY, self.filter.name().to_string());
         storage.set_string(ZOOM_KEY, self.view.mode.name().unwrap_or("fit").to_string());
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
+        storage.set_string(THUMB_COLUMNS_KEY, self.thumb_columns.unwrap_or(0).to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
         storage.set_string(INFO_KEY, self.show_info.to_string());
         storage.set_string(FOLDERS_KEY, self.folders_folded.to_string());
