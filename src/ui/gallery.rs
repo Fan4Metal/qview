@@ -57,6 +57,19 @@ const FILTER_WIDTH: f32 = 170.0;
 /// Width of the list of what is listed.
 const LISTING_WIDTH: f32 = 190.0;
 
+/// One folder of the path above the grid.
+struct Crumb {
+    path: std::path::PathBuf,
+    /// A click opens it (not the folder shown, nor a folder in an archive).
+    open: bool,
+    /// Below the folder shown: the folder of the section at the top of the
+    /// grid, brighter.
+    scrolled: bool,
+}
+
+/// The path's text.
+const CRUMB_FONT: f32 = 12.5;
+
 /// What the grid lists, as the list above it offers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Listing {
@@ -165,6 +178,12 @@ impl App {
         // Quick Access has no images to list one way or another.
         let quick_access = self.in_quick_access();
         let shown = self.gallery.as_ref().map_or(1.0, |g| g.shown_aspect);
+        // The path, going on to the folder at the top of the grid.
+        let scrolled = self.scrolled_folder();
+        self.path_folder = scrolled.clone();
+        let crumbs = self.crumbs(scrolled.as_deref());
+        let sections = mixed && by_folder;
+        let mut open = None;
         egui::Panel::top("gallery_bar")
             .frame(panel_frame(BAR_BG, Margin::symmetric(8, 3)))
             .show_separator_line(false)
@@ -287,15 +306,22 @@ impl App {
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         if in_favorites {
                             let n = self.favorites.len();
-                            ui.label(RichText::new(tr!("Favorites", "Избранное")).size(12.5).color(TEXT));
-                            ui.label(RichText::new(n.to_string()).size(12.5).color(TEXT_WEAK));
+                            ui.label(RichText::new(tr!("Favorites", "Избранное")).size(CRUMB_FONT).color(TEXT));
+                            ui.label(RichText::new(n.to_string()).size(CRUMB_FONT).color(TEXT_WEAK));
+                            if !crumbs.is_empty() {
+                                ui.label(RichText::new("›").size(CRUMB_FONT).color(TEXT_WEAK));
+                            }
                         } else if quick_access {
                             let n = self.pinned.len();
-                            ui.label(RichText::new(tr!("Quick Access", "Быстрый доступ")).size(12.5).color(TEXT));
-                            ui.label(RichText::new(n.to_string()).size(12.5).color(TEXT_WEAK));
-                        } else if let Some(dir) = &self.dir {
-                            let text = RichText::new(dir.display().to_string()).size(12.5).color(TEXT_WEAK);
-                            ui.add(egui::Label::new(text).truncate());
+                            ui.label(RichText::new(tr!("Quick Access", "Быстрый доступ")).size(CRUMB_FONT).color(TEXT));
+                            ui.label(RichText::new(n.to_string()).size(CRUMB_FONT).color(TEXT_WEAK));
+                        }
+                        let (clicked, responses) = breadcrumbs(ui, &crumbs);
+                        open = clicked;
+                        if sections {
+                            for response in responses {
+                                response.context_menu(|ui| self.follow_item(ui));
+                            }
                         }
                     });
                 });
@@ -325,6 +351,64 @@ impl App {
                 // In the order of each folder, or in one through all.
                 self.relist(root_ui.ctx());
             }
+        }
+        // As if chosen in the tree, with its sub-folders still.
+        if let Some(dir) = open {
+            self.open_subfolder(root_ui.ctx(), dir);
+        }
+    }
+
+    /// By folder (`path_follows_grid`), the folder of the section at the
+    /// top of the grid as it was last drawn, which the path above it shows.
+    fn scrolled_folder(&self) -> Option<std::path::PathBuf> {
+        if !self.path_follows_grid || !(self.mixed() && self.by_folder) || self.scan.is_some() {
+            return None;
+        }
+        let gallery = self.gallery.as_ref()?;
+        let sections = &gallery.layout.sections;
+        let k = sections.partition_point(|s| s.y <= gallery.top + 0.5).checked_sub(1)?;
+        Some(self.files.get(sections[k].first)?.parent()?.to_path_buf())
+    }
+
+    /// The folders of the path above the grid, from the drive: those of the
+    /// folder shown, then those down to `scrolled` below it; among the
+    /// favourites, those of `scrolled` alone.
+    fn crumbs(&self, scrolled: Option<&std::path::Path>) -> Vec<Crumb> {
+        let Some(dir) = self.dir.as_deref() else { return Vec::new() };
+        let down_to = |path: &std::path::Path, open: bool, scrolled: bool| {
+            let mut crumbs: Vec<Crumb> = path.ancestors().map(|p| Crumb { path: p.to_path_buf(), open, scrolled }).collect();
+            crumbs.reverse();
+            crumbs
+        };
+        if crate::favorites::is_virtual(dir) {
+            return scrolled.map(|s| down_to(s, true, true)).unwrap_or_default();
+        }
+        let mut crumbs = down_to(dir, true, false);
+        if let Some(last) = crumbs.last_mut() {
+            last.open = false;
+        }
+        if let Some(relative) = scrolled.and_then(|s| s.strip_prefix(dir).ok()) {
+            let mut path = dir.to_path_buf();
+            for part in relative {
+                path.push(part);
+                // An archive's folders are not opened on their own.
+                crumbs.push(Crumb { path: path.clone(), open: !self.archive, scrolled: true });
+            }
+        }
+        crumbs
+    }
+
+    /// Whether the path above the grid follows it (the path's and the
+    /// grid's context menus, by folder).
+    fn follow_item(&mut self, ui: &mut Ui) {
+        let text = tr!("Path Follows the Scrolling", "Путь следует за прокруткой");
+        let response = ui.add(egui::Button::new(text).selected(self.path_follows_grid)).on_hover_text(tr!(
+            "The path above the grid goes on to the folder at the top of the grid",
+            "Путь над сеткой продолжается до папки, которая вверху сетки"
+        ));
+        if response.clicked() {
+            self.path_follows_grid = !self.path_follows_grid;
+            ui.close();
         }
     }
 
@@ -881,9 +965,13 @@ impl App {
                 gallery.scroll = Some(Scroll::Visible);
             }
         }
+        let sections = mixed && self.by_folder;
         background.context_menu(|ui| {
             self.show_menu_bar_item(ui);
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
+            if sections {
+                self.follow_item(ui);
+            }
             self.new_folder_item(ui);
             if let Some(dir) = self.pinnable_dir() {
                 ui.separator();
@@ -903,6 +991,10 @@ impl App {
         // As if chosen in the tree, with its sub-folders still.
         if let Some(dir) = folder {
             self.open_subfolder(&ctx, dir);
+        }
+        // The path, drawn before the grid, shows the folder at its top.
+        if self.scrolled_folder() != self.path_folder {
+            ctx.request_repaint();
         }
         opened
     }
@@ -1018,6 +1110,61 @@ impl App {
         ui.separator();
         self.delete_item(ui, true);
     }
+}
+
+/// The path above the grid as folders separated by arrows, those that open
+/// underlined under the pointer, the full path in each one's tooltip; the
+/// first ones give way to "…" when it is too long. Returns the folder
+/// clicked, and the responses of all of them for their context menu.
+fn breadcrumbs(ui: &mut Ui, crumbs: &[Crumb]) -> (Option<std::path::PathBuf>, Vec<Response>) {
+    let font = FontId::proportional(CRUMB_FONT);
+    // A drive is named without its backslash.
+    let name = |p: &std::path::Path| match p.file_name() {
+        Some(n) => n.to_string_lossy().into_owned(),
+        None => p.display().to_string().trim_end_matches('\\').to_string(),
+    };
+    let names: Vec<String> = crumbs.iter().map(|c| name(&c.path)).collect();
+    let space = ui.spacing().item_spacing.x;
+    let width = |text: &str| ui.painter().layout_no_wrap(text.to_owned(), font.clone(), TEXT).size().x + space;
+    let arrow_width = width("›");
+    let widths: Vec<f32> = names.iter().map(|n| width(n) + arrow_width).collect();
+    let available = ui.available_width();
+    let mut first = 0;
+    let mut total: f32 = widths.iter().sum();
+    while first + 1 < crumbs.len() && total > available {
+        if first == 0 {
+            total += width("…") + arrow_width;
+        }
+        total -= widths[first];
+        first += 1;
+    }
+    let arrow = |ui: &mut Ui| ui.add(egui::Label::new(RichText::new("›").size(CRUMB_FONT).color(TEXT_WEAK)).selectable(false));
+    let mut responses = Vec::new();
+    let mut clicked = None;
+    if first > 0 {
+        let tip = crumbs[first - 1].path.display().to_string();
+        let more = egui::Label::new(RichText::new("…").size(CRUMB_FONT).color(TEXT_WEAK)).selectable(false);
+        responses.push(ui.add(more.sense(Sense::click())).on_hover_text(tip));
+        arrow(ui);
+    }
+    for (k, crumb) in crumbs.iter().enumerate().skip(first) {
+        if k > first {
+            arrow(ui);
+        }
+        let colour = if crumb.scrolled { TEXT } else { TEXT_WEAK };
+        let label = egui::Label::new(RichText::new(&names[k]).size(CRUMB_FONT).color(colour)).selectable(false).truncate();
+        let response = ui.add(label.sense(Sense::click()));
+        if crumb.open && response.hovered() {
+            let r = response.rect;
+            ui.painter().hline(r.x_range(), r.bottom() - 1.0, egui::Stroke::new(1.0, colour));
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if crumb.open && response.clicked() {
+            clicked = Some(crumb.path.clone());
+        }
+        responses.push(response.on_hover_text(crumb.path.display().to_string()));
+    }
+    (clicked, responses)
 }
 
 /// The folder of `file` as its header shows it: its path from `dir`, the

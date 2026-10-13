@@ -102,6 +102,7 @@ const THUMB_COLUMNS_KEY: &str = "thumb_columns";
 const TREE_WIDTH_KEY: &str = "tree_width";
 const INFO_KEY: &str = "info_panel";
 const FOLDERS_KEY: &str = "folders_folded";
+const PATH_FOLLOWS_KEY: &str = "path_follows_grid";
 const INFO_WIDTH_KEY: &str = "info_width";
 const HISTOGRAM_KEY: &str = "info_histogram";
 const HISTOGRAM_CHANNELS_KEY: &str = "info_histogram_channels";
@@ -385,6 +386,12 @@ pub struct App {
     /// The gallery's section of the sub-folders is folded to its header
     /// (a click on it).
     pub folders_folded: bool,
+    /// By folder, the path above the grid goes on to the folder of the
+    /// section at the top of the grid (on by default).
+    pub path_follows_grid: bool,
+    /// That folder as the path showed it this frame: the grid, drawn after
+    /// the path, repaints when its scrolling has changed it.
+    pub path_folder: Option<PathBuf>,
     /// The cell of `folders[k]` has the gallery's cursor instead of the
     /// current image: Enter opens it, the file commands do nothing.
     pub folder_focus: Option<usize>,
@@ -860,6 +867,8 @@ impl App {
             listed_comics: Vec::new(),
             folders: Vec::new(),
             folders_folded: cc.storage.and_then(|s| s.get_string(FOLDERS_KEY)).as_deref() == Some("true"),
+            path_follows_grid: cc.storage.and_then(|s| s.get_string(PATH_FOLLOWS_KEY)).as_deref() != Some("false"),
+            path_folder: None,
             folder_focus: None,
             gallery: None,
             gallery_open: false,
@@ -4488,6 +4497,7 @@ impl eframe::App for App {
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
         storage.set_string(INFO_KEY, self.show_info.to_string());
         storage.set_string(FOLDERS_KEY, self.folders_folded.to_string());
+        storage.set_string(PATH_FOLLOWS_KEY, self.path_follows_grid.to_string());
         storage.set_string(INFO_WIDTH_KEY, self.info_width.round().to_string());
         storage.set_string(HISTOGRAM_KEY, self.show_histogram.to_string());
         storage.set_string(COLOUR_KEY, self.show_colour.to_string());
