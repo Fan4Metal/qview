@@ -81,6 +81,7 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Fill the window (enlarge too, proportions kept) | `3` |
 | Fill the entire window (the edges are cropped) | `4` |
 | Keep the zoom and position for the next images (on / off) | `L` |
+| Navigator over a zoomed image (on / off) | `N` |
 | Scroll a zoomed image | arrow keys, dragging with the left button |
 | Rotate left / right | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
 | Flip horizontally / vertically | `H` / `V` |
@@ -239,7 +240,11 @@ qview.exe --unregister
 
 The registration refers to the location of `qview.exe`; after the program is moved, it is registered again.
 
-The zoom mode chosen with `1`–`4` applies to the following images as well, also after zooming in or out by steps. With `L` (View → Zoom → Keep Zoom and Position) the following images keep the zoom set by steps and the scrolled position instead, so that a series of photos is compared at the same place and scale; the status bar marks the zoom as kept. This choice is not kept between runs. The window position and size, the visibility of the toolbar and the status bar, the background colour and the checkerboard, the zoom mode, the filtering and the linear-light reduction, the sort orders, the language, the gallery's thumbnail size, cell proportions, "Fill cells" and "By folder" choices, the folding of the folders' section and tree width, the visibility and width of the information panel, whether its histogram and colour sections are open and the histogram's channels, the editor chosen last and the update check setting are kept in `%APPDATA%\qview\data\app.ron`; the favorites and the pinned folders are kept apart, in `favorites.txt` and `pinned.txt` in `%APPDATA%\qview\data`.
+The zoom mode chosen with `1`–`4` applies to the following images as well, also after zooming in or out by steps. With `L` (View → Zoom → Keep Zoom and Position) the following images keep the zoom set by steps and the scrolled position instead, so that a series of photos is compared at the same place and scale; the status bar marks the zoom as kept. This choice is not kept between runs.
+
+While the image is larger than the window, the navigator in a corner of the image area (the bottom left one unless another is chosen in View → Zoom → Navigator Position) shows the whole image with the part in the window outlined; a click on it brings that place to the centre of the window, and dragging moves the view, the outline following the pointer. `N` (View → Zoom → Navigator, also in the image's context menu) turns it on and off. With Hide Navigator When Idle it appears only while the image is zoomed or moved and while the pointer is over it, and fades out a moment later. It is not shown while cropping. The navigator is drawn from the image's own texture, so nothing is decoded or kept for it.
+
+The window position and size, the visibility of the toolbar and the status bar, the background colour and the checkerboard, the zoom mode, the navigator and its position, the filtering and the linear-light reduction, the sort orders, the language, the gallery's thumbnail size, cell proportions, "Fill cells" and "By folder" choices, the folding of the folders' section and tree width, the visibility and width of the information panel, whether its histogram and colour sections are open and the histogram's channels, the editor chosen last and the update check setting are kept in `%APPDATA%\qview\data\app.ron`; the favorites and the pinned folders are kept apart, in `favorites.txt` and `pinned.txt` in `%APPDATA%\qview\data`.
 
 ## Building
 

@@ -8,6 +8,12 @@
 
 use egui::{Color32, Mesh, Painter, Pos2, Rect, Shape, TextureId, Vec2, pos2, vec2};
 
+/// The navigator (N): the long side of the whole image in a corner of the
+/// image area, at most this many points and a quarter of the area's short
+/// side, this far from its edges.
+pub const NAVIGATOR_SIDE: f32 = 180.0;
+pub const NAVIGATOR_MARGIN: f32 = 12.0;
+
 /// Zoom levels of Zoom In and Zoom Out.
 pub const STEPS: [f32; 25] = [
     0.05, 0.10, 0.15, 0.20, 0.25, 0.33, 0.50, 0.66, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0,
@@ -218,6 +224,14 @@ impl View {
         self.clamp(size, viewport, ppp);
     }
 
+    /// Pan so that the point at `fraction` of the image as shown (0..1 both
+    /// ways, turned as on screen) is at the centre of the viewport, as far
+    /// as the image reaches (the navigator).
+    pub fn centre_on(&mut self, fraction: Vec2, size: Vec2, viewport: Rect, ppp: f32) {
+        self.offset = self.shown_size(size, viewport, ppp) * (Vec2::splat(0.5) - fraction);
+        self.clamp(size, viewport, ppp);
+    }
+
     /// Where the (rotated) image goes on screen, in points; its corner is
     /// on a whole screen pixel so that 100% maps pixel to pixel.
     pub fn place(&mut self, size: Vec2, viewport: Rect, ppp: f32) -> Rect {
@@ -233,10 +247,15 @@ impl View {
 /// then turned by `turns` clockwise quarter turns. The corners are fixed
 /// and the texture coordinates move, which is exact (no trigonometry).
 pub fn paint(painter: &Painter, texture: TextureId, rect: Rect, turns: u8, flip: bool) {
+    paint_tinted(painter, texture, rect, turns, flip, Color32::WHITE);
+}
+
+/// [`paint`] multiplied by `tint` (the navigator fading out).
+pub fn paint_tinted(painter: &Painter, texture: TextureId, rect: Rect, turns: u8, flip: bool, tint: Color32) {
     let corners = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
     let mut mesh = Mesh::with_texture(texture);
     for (i, pos) in corners.into_iter().enumerate() {
-        mesh.vertices.push(egui::epaint::Vertex { pos, uv: corner_uv(i, turns, flip), color: Color32::WHITE });
+        mesh.vertices.push(egui::epaint::Vertex { pos, uv: corner_uv(i, turns, flip), color: tint });
     }
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);
@@ -277,6 +296,44 @@ impl Filter {
             Filter::Bilinear => tr!("Bilinear", "Билинейная"),
             Filter::Bicubic => tr!("Bicubic (sharper)", "Бикубическая (чётче)"),
             Filter::Pixels => tr!("Pixelated (When Enlarged)", "Пиксельная (при увеличении)"),
+        }
+    }
+}
+
+/// The corner of the image area the navigator is in (View → Zoom →
+/// Navigator Position).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    #[default]
+    BottomLeft,
+    BottomRight,
+}
+
+impl Corner {
+    pub const ALL: [Corner; 4] = [Corner::TopLeft, Corner::TopRight, Corner::BottomLeft, Corner::BottomRight];
+
+    /// As kept in the settings.
+    pub fn name(self) -> &'static str {
+        match self {
+            Corner::TopLeft => "top_left",
+            Corner::TopRight => "top_right",
+            Corner::BottomLeft => "bottom_left",
+            Corner::BottomRight => "bottom_right",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.name() == name)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Corner::TopLeft => tr!("Top Left", "Слева вверху"),
+            Corner::TopRight => tr!("Top Right", "Справа вверху"),
+            Corner::BottomLeft => tr!("Bottom Left", "Слева внизу"),
+            Corner::BottomRight => tr!("Bottom Right", "Справа внизу"),
         }
     }
 }
@@ -330,9 +387,77 @@ pub fn paint_checker(painter: &Painter, texture: TextureId, rect: Rect, ppp: f32
     painter.image(texture, rect, uv, Color32::WHITE);
 }
 
+/// The navigator's place: the image as shown (`shown`, its size on screen),
+/// small, in `corner` of `area`, on whole pixels.
+pub fn navigator_rect(shown: Vec2, area: Rect, corner: Corner, ppp: f32) -> Rect {
+    let long = NAVIGATOR_SIDE.min(area.size().min_elem() * 0.25);
+    let size = shown * (long / shown.max_elem().max(1.0));
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let size = vec2(snap(size.x).max(1.0), snap(size.y).max(1.0));
+    let left = matches!(corner, Corner::TopLeft | Corner::BottomLeft);
+    let top = matches!(corner, Corner::TopLeft | Corner::TopRight);
+    let x = if left { area.left() + NAVIGATOR_MARGIN } else { area.right() - NAVIGATOR_MARGIN - size.x };
+    let y = if top { area.top() + NAVIGATOR_MARGIN } else { area.bottom() - NAVIGATOR_MARGIN - size.y };
+    Rect::from_min_size(pos2(snap(x), snap(y)), size)
+}
+
+/// The part of the image on screen (`place`, as far as `area` shows it)
+/// on the navigator at `nav`.
+pub fn navigator_window(place: Rect, area: Rect, nav: Rect) -> Rect {
+    let visible = place.intersect(area);
+    let map = |p: Pos2| nav.min + (p - place.min) / place.size() * nav.size();
+    Rect::from_min_max(map(visible.min), map(visible.max))
+}
+
+/// Where `point` on the navigator at `nav` is on the image, as a fraction
+/// of it both ways.
+pub fn navigator_fraction(point: Pos2, nav: Rect) -> Vec2 {
+    ((point - nav.min) / nav.size()).clamp(Vec2::ZERO, Vec2::splat(1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigator() {
+        let area = viewport();
+        // A wide image: a quarter of the area's height across (less than
+        // 180 points), in the bottom left corner.
+        let nav = navigator_rect(vec2(4000.0, 2000.0), area, Corner::BottomLeft, 1.0);
+        assert_eq!(nav, Rect::from_min_size(pos2(12.0, 30.0 + 600.0 - 12.0 - 75.0), vec2(150.0, 75.0)));
+        // The other corners.
+        let at = |corner| navigator_rect(vec2(4000.0, 2000.0), area, corner, 1.0).min;
+        assert_eq!(at(Corner::TopLeft), pos2(12.0, 42.0));
+        assert_eq!(at(Corner::TopRight), pos2(1000.0 - 12.0 - 150.0, 42.0));
+        assert_eq!(at(Corner::BottomRight), pos2(1000.0 - 12.0 - 150.0, 543.0));
+        let large = Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 1200.0));
+        assert_eq!(navigator_rect(vec2(4000.0, 2000.0), large, Corner::BottomLeft, 1.0).size(), vec2(180.0, 90.0));
+        // A small window: a quarter of its short side.
+        let small = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 200.0));
+        assert_eq!(navigator_rect(vec2(1000.0, 2000.0), small, Corner::BottomLeft, 1.0).size(), vec2(25.0, 50.0));
+        // The right half of the image on screen: the right half of the navigator.
+        let place = Rect::from_min_size(pos2(-1000.0, 30.0), vec2(2000.0, 600.0));
+        let window = navigator_window(place, area, nav);
+        assert_eq!(window, Rect::from_min_max(pos2(87.0, nav.top()), pos2(162.0, nav.bottom())));
+        assert_eq!(navigator_fraction(window.center(), nav), vec2(0.75, 0.5));
+        assert_eq!(navigator_fraction(pos2(0.0, 1000.0), nav), vec2(0.0, 1.0));
+    }
+
+    #[test]
+    fn centre_on_a_point() {
+        let area = viewport();
+        let size = vec2(4000.0, 2400.0);
+        let mut view = View { zoom: Zoom::Scale(1.0), ..View::default() };
+        // The image's centre in the middle.
+        view.centre_on(vec2(0.5, 0.5), size, area, 1.0);
+        assert_eq!(view.offset, Vec2::ZERO);
+        // Its right edge: as far as the image reaches.
+        view.centre_on(vec2(1.0, 0.5), size, area, 1.0);
+        assert_eq!(view.offset, vec2(-1500.0, 0.0));
+        view.centre_on(vec2(0.25, 0.25), size, area, 1.0);
+        assert_eq!(view.offset, vec2(1000.0, 600.0));
+    }
 
     #[test]
     fn mip_level_nearest_to_the_shown_size() {

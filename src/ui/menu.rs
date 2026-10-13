@@ -156,6 +156,24 @@ impl App {
         self.item(ui, tr!("Fill Entire Window", "Заполнить окно целиком").into(), "4", Cmd::Cover, e.image);
         let keep = self.view.keep;
         self.check_item(ui, tr!("Keep Zoom and Position", "Сохранять масштаб и положение").into(), "L", Cmd::KeepZoom, keep);
+        ui.separator();
+        self.check_item(ui, tr!("Navigator", "Навигатор").into(), "N", Cmd::Navigator, self.navigator);
+        let tip = tr!(
+            "The navigator shows while the image is zoomed or moved and under the pointer, and fades out a moment later",
+            "Навигатор показывается, пока изображение увеличивают или сдвигают, и под указателем, а вскоре после этого гаснет"
+        );
+        ui.add_enabled_ui(self.navigator, |ui| {
+            ui.menu_button(tr!("Navigator Position", "Положение навигатора"), |ui| {
+                for corner in crate::view::Corner::ALL {
+                    self.check_item(ui, corner.label().into(), "", Cmd::NavigatorCorner(corner), self.navigator_corner == corner);
+                }
+            });
+        });
+        ui.add_enabled_ui(self.navigator, |ui| {
+            self.check_item(ui, tr!("Hide Navigator When Idle", "Скрывать навигатор без действий").into(), "", Cmd::NavigatorHides, self.navigator_hides);
+        })
+        .response
+        .on_hover_text(tip);
     }
 
     /// The image's filtering, and the mip levels' light (View → Filtering;

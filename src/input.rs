@@ -124,6 +124,12 @@ pub enum Cmd {
     Info,
     /// The next images keep the zoom and the panning, or no longer do.
     KeepZoom,
+    /// Show the navigator over a zoomed image, or not (N).
+    Navigator,
+    /// The navigator shows only while the view changes, or always.
+    NavigatorHides,
+    /// The navigator goes into this corner of the image area.
+    NavigatorCorner(crate::view::Corner),
     /// Average the mip levels in linear light, or as stored (View →
     /// Filtering); the decoded images are decoded again.
     LinearMips,
@@ -256,6 +262,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::B if letter => ToggleStatusBar,
         Key::I if letter => Info,
         Key::L if letter => KeepZoom,
+        Key::N if letter => Navigator,
         Key::S if m.ctrl && m.shift && !m.alt => SaveAs,
         Key::S if m.ctrl && !m.alt => Save,
         Key::S if letter => Favorite,
@@ -475,6 +482,8 @@ mod tests {
         assert_eq!(command(Key::P, NONE, false), Some(Cmd::Pause));
         assert_eq!(command(Key::P, CTRL, false), Some(Cmd::Print));
         assert_eq!(command(Key::I, NONE, false), Some(Cmd::Info));
+        assert_eq!(command(Key::N, NONE, false), Some(Cmd::Navigator));
+        assert_eq!(command(Key::N, NONE, true), None);
         assert_eq!(command(Key::M, NONE, false), Some(Cmd::ToggleMenuBar));
         assert_eq!(command(Key::M, NONE, true), None);
         assert_eq!(command(Key::F, SHIFT, false), Some(Cmd::Slideshow));

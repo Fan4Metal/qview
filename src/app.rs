@@ -102,6 +102,13 @@ const THUMB_COLUMNS_KEY: &str = "thumb_columns";
 const TREE_WIDTH_KEY: &str = "tree_width";
 const INFO_KEY: &str = "info_panel";
 const FOLDERS_KEY: &str = "folders_folded";
+const NAVIGATOR_KEY: &str = "navigator";
+const NAVIGATOR_HIDES_KEY: &str = "navigator_hides";
+const NAVIGATOR_CORNER_KEY: &str = "navigator_corner";
+/// With `navigator_hides`, how long the navigator stays after the view last
+/// changed, and how long it then takes to fade out.
+const NAVIGATOR_HOLD: f32 = 1.5;
+const NAVIGATOR_FADE: f32 = 0.3;
 const PATH_FOLLOWS_KEY: &str = "path_follows_grid";
 const INFO_WIDTH_KEY: &str = "info_width";
 const HISTOGRAM_KEY: &str = "info_histogram";
@@ -283,6 +290,20 @@ pub struct App {
     pub view: View,
     /// The image area of the last frame.
     pub viewport: Rect,
+    /// The navigator over an image larger than the window (N; persisted).
+    pub navigator: bool,
+    /// It shows only for a moment after the view changes, and under the
+    /// pointer (persisted).
+    pub navigator_hides: bool,
+    /// The corner of the image area it is in (persisted).
+    pub navigator_corner: view::Corner,
+    /// The navigator dragged: from the window's centre to the pointer, so
+    /// that a window grabbed off its centre does not jump.
+    nav_grab: Option<Vec2>,
+    /// The image's place in the last frame, and when it last changed or
+    /// the navigator was under the pointer (`navigator_hides`).
+    nav_place: Rect,
+    nav_active: Instant,
     /// The menu bar; hidden, the context menus offer to show it (M).
     pub show_menu_bar: bool,
     pub show_toolbar: bool,
@@ -806,6 +827,16 @@ impl App {
             partial: HashMap::new(),
             view: View { zoom: mode, mode, ..View::default() },
             viewport: ctx.content_rect(),
+            navigator: cc.storage.and_then(|s| s.get_string(NAVIGATOR_KEY)).as_deref() != Some("false"),
+            navigator_hides: cc.storage.and_then(|s| s.get_string(NAVIGATOR_HIDES_KEY)).as_deref() == Some("true"),
+            navigator_corner: cc
+                .storage
+                .and_then(|s| s.get_string(NAVIGATOR_CORNER_KEY))
+                .and_then(|s| view::Corner::from_name(&s))
+                .unwrap_or_default(),
+            nav_grab: None,
+            nav_place: Rect::NOTHING,
+            nav_active: Instant::now(),
             show_menu_bar: flag(MENU_BAR_KEY),
             show_toolbar: flag(TOOLBAR_KEY),
             show_status_bar: flag(STATUS_BAR_KEY),
@@ -2805,6 +2836,18 @@ impl App {
                     tr!("Reduced from the stored values".into(), "Уменьшение по хранимым значениям".into())
                 });
             }
+            Cmd::Navigator => {
+                self.navigator = !self.navigator;
+                self.nav_active = Instant::now();
+            }
+            Cmd::NavigatorHides => {
+                self.navigator_hides = !self.navigator_hides;
+                self.nav_active = Instant::now();
+            }
+            Cmd::NavigatorCorner(corner) => {
+                self.navigator_corner = corner;
+                self.nav_active = Instant::now();
+            }
             Cmd::KeepZoom => {
                 self.view.keep = !self.view.keep;
                 self.notice(if self.view.keep {
@@ -3765,6 +3808,9 @@ impl App {
             | Cmd::ConfirmDelete
             | Cmd::ToggleToolbar
             | Cmd::ToggleStatusBar
+            | Cmd::Navigator
+            | Cmd::NavigatorHides
+            | Cmd::NavigatorCorner(_)
             | Cmd::Info
             | Cmd::Shortcuts
             | Cmd::About
@@ -4150,6 +4196,8 @@ impl App {
         let response = ui.allocate_rect(rect, Sense::CLICK | Sense::DRAG);
         let painter = ui.painter_at(rect);
 
+        // The navigator, if shown: the wheel zooms about the centre over it.
+        let mut nav_at = None;
         // Still decoding the current image.
         let waiting = self.current.as_ref().is_some_and(|c| {
             !self.cache.contains_key(c) && self.shown.as_ref().is_none_or(|(p, _)| p != c)
@@ -4167,9 +4215,23 @@ impl App {
             if response.dragged_by(PointerButton::Primary) && self.crop.is_none() {
                 self.view.pan(response.drag_delta(), size, rect, ppp);
             }
-            let place = self.view.place(size, rect, ppp);
+            let mut place = self.view.place(size, rect, ppp);
+            // The navigator over an image larger than the window.
+            let navigator = self.navigator
+                && self.crop.is_none()
+                && self.view.pannable(size, rect, ppp).contains(&true);
+            let nav = navigator.then(|| view::navigator_rect(place.size(), rect, self.navigator_corner, ppp));
+            let mut nav_alpha = 0.0;
+            if let Some(nav) = nav {
+                place = self.navigate(&ctx, ui, nav, place, size, rect, ppp);
+                nav_alpha = self.navigator_alpha(&ctx, place);
+                nav_at = Some(nav);
+            }
             self.paint_checker(&painter, place, ppp);
             self.paint_picture(&painter, &picture, place, rect, ppp);
+            if let Some(nav) = nav.filter(|_| nav_alpha > 0.0) {
+                self.paint_navigator(&painter, &picture, nav, place, rect, nav_alpha);
+            }
             if let Some((path, _)) = &self.shown {
                 let picked = self.pick(response.hover_pos(), place, path, size);
                 if picked != self.picked {
@@ -4235,7 +4297,10 @@ impl App {
             if zoom != 0
                 && let Some((_, picture)) = &self.shown
             {
-                let anchor = ctx.pointer_latest_pos().filter(|p| rect.contains(*p)).unwrap_or(rect.center());
+                let anchor = ctx
+                    .pointer_latest_pos()
+                    .filter(|p| rect.contains(*p) && !nav_at.is_some_and(|n: Rect| n.contains(*p)))
+                    .unwrap_or(rect.center());
                 for _ in 0..zoom.unsigned_abs() {
                     self.view.zoom_step(zoom > 0, picture.size(), rect, ppp, anchor);
                 }
@@ -4247,6 +4312,85 @@ impl App {
         if !cropping {
             response.context_menu(|ui| self.context_menu(ui));
         }
+    }
+
+    /// The navigator at `nav` pressed or dragged: the point under the
+    /// pointer goes to the centre of the window (a window grabbed keeps
+    /// where it was grabbed). Returns the image's place after it.
+    #[allow(clippy::too_many_arguments)]
+    fn navigate(&mut self, ctx: &egui::Context, ui: &egui::Ui, nav: Rect, place: Rect, size: Vec2, area: Rect, ppp: f32) -> Rect {
+        let response = ui.interact(nav.expand(2.0), ui.id().with("navigator"), Sense::CLICK | Sense::DRAG);
+        let window = view::navigator_window(place, area, nav);
+        let pressed = response.is_pointer_button_down_on() && ctx.input(|i| i.pointer.primary_down());
+        let mut place = place;
+        match response.interact_pointer_pos().filter(|_| pressed) {
+            Some(p) => {
+                let grab = *self.nav_grab.get_or_insert_with(|| if window.contains(p) { p - window.center() } else { Vec2::ZERO });
+                self.view.centre_on(view::navigator_fraction(p - grab, nav), size, area, ppp);
+                place = self.view.place(size, area, ppp);
+                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+            None => {
+                self.nav_grab = None;
+                if let Some(p) = response.hover_pos() {
+                    let over = if window.contains(p) { egui::CursorIcon::Grab } else { egui::CursorIcon::PointingHand };
+                    ctx.set_cursor_icon(over);
+                }
+            }
+        }
+        if response.hovered() || self.nav_grab.is_some() {
+            self.nav_active = Instant::now();
+        }
+        place
+    }
+
+    /// How opaque the navigator is: always whole, unless it hides when
+    /// idle (`navigator_hides`): then for a moment after the image moves or
+    /// is zoomed, or while it is under the pointer, fading out after.
+    fn navigator_alpha(&mut self, ctx: &egui::Context, place: Rect) -> f32 {
+        if place != self.nav_place {
+            self.nav_place = place;
+            self.nav_active = Instant::now();
+        }
+        if !self.navigator_hides {
+            return 1.0;
+        }
+        let t = self.nav_active.elapsed().as_secs_f32();
+        if t < NAVIGATOR_HOLD {
+            ctx.request_repaint_after(Duration::from_secs_f32(NAVIGATOR_HOLD - t));
+            1.0
+        } else if t < NAVIGATOR_HOLD + NAVIGATOR_FADE {
+            ctx.request_repaint();
+            1.0 - (t - NAVIGATOR_HOLD) / NAVIGATOR_FADE
+        } else {
+            0.0
+        }
+    }
+
+    /// The navigator: the whole image (the same texture, at one of its
+    /// small mip levels) on a dark ground, the part outside the window
+    /// darkened and the window outlined.
+    fn paint_navigator(&self, painter: &egui::Painter, picture: &Picture, nav: Rect, place: Rect, area: Rect, alpha: f32) {
+        let fade = |c: Color32| c.gamma_multiply(alpha);
+        painter.rect_filled(nav.expand(2.0), 3.0, fade(Color32::from_black_alpha(170)));
+        view::paint_tinted(painter, picture.texture.id(), nav, self.view.turns, self.view.flip, fade(Color32::WHITE));
+        let window = view::navigator_window(place, area, nav).intersect(nav);
+        let shade = fade(Color32::from_black_alpha(120));
+        let x = window.x_range();
+        for r in [
+            Rect::from_x_y_ranges(nav.x_range(), nav.top()..=window.top()),
+            Rect::from_x_y_ranges(nav.x_range(), window.bottom()..=nav.bottom()),
+            Rect::from_x_y_ranges(nav.left()..=x.min, window.y_range()),
+            Rect::from_x_y_ranges(x.max..=nav.right(), window.y_range()),
+        ] {
+            if r.is_positive() {
+                painter.rect_filled(r, 0.0, shade);
+            }
+        }
+        // White inside, dark outside: seen on any image.
+        let stroke = |w: f32, c: Color32| egui::Stroke::new(w, fade(c));
+        painter.rect_stroke(window.expand(1.0), 0.0, stroke(1.0, Color32::from_black_alpha(180)), egui::StrokeKind::Inside);
+        painter.rect_stroke(window, 0.0, stroke(1.0, Color32::WHITE), egui::StrokeKind::Inside);
     }
 
     /// The gallery's thumbnail of the current image and the image's size,
@@ -4497,6 +4641,9 @@ impl eframe::App for App {
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
         storage.set_string(INFO_KEY, self.show_info.to_string());
         storage.set_string(FOLDERS_KEY, self.folders_folded.to_string());
+        storage.set_string(NAVIGATOR_KEY, self.navigator.to_string());
+        storage.set_string(NAVIGATOR_HIDES_KEY, self.navigator_hides.to_string());
+        storage.set_string(NAVIGATOR_CORNER_KEY, self.navigator_corner.name().to_string());
         storage.set_string(PATH_FOLLOWS_KEY, self.path_follows_grid.to_string());
         storage.set_string(INFO_WIDTH_KEY, self.info_width.round().to_string());
         storage.set_string(HISTOGRAM_KEY, self.show_histogram.to_string());

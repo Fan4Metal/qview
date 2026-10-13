@@ -33,6 +33,13 @@ fn shortcuts(esc_closes: bool) -> Vec<(&'static str, Vec<(&'static str, &'static
                 ("4", tr!("Fill the entire window (crops)", "Заполнить окно целиком (с обрезкой)")),
                 ("L", tr!("Keep zoom and position for the next images", "Сохранять масштаб и положение для следующих")),
                 (
+                    "N",
+                    tr!(
+                        "The navigator over a zoomed image: where the window is on it; a click or a drag moves there",
+                        "Навигатор над увеличенным изображением: где на нём окно; щелчок или перетаскивание переходит туда"
+                    ),
+                ),
+                (
                     tr!("←  →  ↑  ↓  Drag", "←  →  ↑  ↓  Перетаскивание"),
                     tr!("Scroll a zoomed image", "Прокрутка увеличенного изображения"),
                 ),

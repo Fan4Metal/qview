@@ -251,6 +251,10 @@ The information panel's Colour section shows the pixel under the pointer. Folded
 - **One reading at a time.** While browsing fast with the section open, only the image stopped at is read; the image read before is dropped when the next reading starts.
 - The reading again goes through `loader::read`, the `image` crate's decoder, so these figures hold since a JPEG on disk went to Windows' decoder.
 
+## Navigator
+
+The navigator over a zoomed image is the image's own texture drawn a second time, about 180 points across: the GPU reads one of its small mip levels, which every texture already has, so nothing is decoded, converted or uploaded for it and no memory is added. A frame gets one textured quad and a few rectangles more, and frames are painted only when they are anyway (zooming, panning). Not measured: the bilinear painting of the whole image area takes ~0.05 ms of GPU per frame on the test machine, and this is a small fraction of its pixels. Hiding when idle repaints only while it fades (0.3 s).
+
 ## Measuring
 
 | What | How |
