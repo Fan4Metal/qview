@@ -144,7 +144,8 @@ fn shortcuts(esc_closes: bool) -> Vec<(&'static str, Vec<(&'static str, &'static
                 (tr!("Space  Esc", "Space  Esc"), tr!("In a slideshow: pause / stop", "В слайд-шоу: пауза / стоп")),
                 ("M  T  B", tr!("Show or hide the menu bar / toolbar / status bar", "Строка меню / панель инструментов / строка состояния")),
                 ("I", tr!("Show or hide the information panel (EXIF)", "Панель сведений (EXIF)")),
-                ("F1", tr!("This list", "Этот список")),
+                ("K", tr!("This list", "Этот список")),
+                ("F1", tr!("About the program", "О программе")),
                 (
                     "Esc",
                     if esc_closes {
@@ -266,7 +267,7 @@ impl App {
                     None => place.on_hover_text(tr!("Settings are not saved", "Настройки не сохраняются")),
                 };
                 ui.add_space(4.0);
-                ui.weak(tr!("Keyboard shortcuts: F1", "Сочетания клавиш: F1"));
+                ui.weak(tr!("Keyboard shortcuts: K", "Сочетания клавиш: K"));
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
@@ -305,7 +306,8 @@ impl App {
         if fresh {
             return false;
         }
-        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter)) || modal.should_close()
+        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter) || i.consume_key(egui::Modifiers::NONE, Key::F1))
+            || modal.should_close()
     }
 
     /// Registration with Windows and which types qview opens by default.
@@ -1000,8 +1002,8 @@ fn close_cross(ui: &mut Ui) -> bool {
 
 /// A modal with `title`, a cross that closes it (as in the associations
 /// dialog) and `content`; true when it is closed (the cross, Esc, Enter,
-/// F1 or a click outside). Keys are ignored in the frame the modal opens
-/// (`fresh`).
+/// K, which opens the only one, the Shortcuts list, or a click outside).
+/// Keys are ignored in the frame the modal opens (`fresh`).
 fn info_modal(ctx: &egui::Context, id: &str, title: &str, fresh: bool, content: impl FnOnce(&mut Ui)) -> bool {
     // As wide as the content, measured in the previous frame (egui does not
     // show a new window's first frame), so that the cross sits at the right
@@ -1026,7 +1028,7 @@ fn info_modal(ctx: &egui::Context, id: &str, title: &str, fresh: bool, content: 
         return close;
     }
     let key = ctx.input_mut(|i| {
-        i.consume_key(egui::Modifiers::NONE, Key::Enter) || i.consume_key(egui::Modifiers::NONE, Key::F1)
+        i.consume_key(egui::Modifiers::NONE, Key::Enter) || i.consume_key(egui::Modifiers::NONE, Key::K)
     });
     close || key || modal.should_close()
 }

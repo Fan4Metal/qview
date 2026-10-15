@@ -586,10 +586,10 @@ impl App {
     }
 
     fn help_menu(&mut self, ui: &mut Ui) {
-        self.item(ui, tr!("Keyboard Shortcuts", "Сочетания клавиш").into(), "F1", Cmd::Shortcuts, true);
+        self.item(ui, tr!("Keyboard Shortcuts", "Сочетания клавиш").into(), "K", Cmd::Shortcuts, true);
         ui.separator();
         self.item(ui, tr!("File Associations…", "Сопоставление файлов…").into(), "", Cmd::Associations, true);
-        self.item(ui, tr!("About qview", "О программе").into(), "", Cmd::About, true);
+        self.item(ui, tr!("About qview", "О программе").into(), "F1", Cmd::About, true);
     }
 
     /// Right click on the image: what is done with the mouse; the zoom,

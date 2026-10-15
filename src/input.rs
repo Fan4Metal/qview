@@ -277,7 +277,8 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::Z if m.ctrl && !m.alt && !m.shift => Undo,
         Key::Escape => Escape,
         Key::F5 => Refresh,
-        Key::F1 => Shortcuts,
+        Key::K if letter => Shortcuts,
+        Key::F1 => About,
         _ => return None,
     };
     let repeats = matches!(cmd, Next | Prev | First | Last | Arrow(_) | ZoomIn | ZoomOut | PageUp | PageDown | NextFrame | PrevFrame);
@@ -616,6 +617,9 @@ mod tests {
         assert_eq!(command(Key::Minus, NONE, true), Some(Cmd::ZoomOut));
         assert_eq!(command(Key::F, NONE, true), None);
         assert_eq!(command(Key::Delete, NONE, true), None);
+        assert_eq!(command(Key::F1, NONE, false), Some(Cmd::About));
+        assert_eq!(command(Key::K, NONE, false), Some(Cmd::Shortcuts));
+        assert_eq!(command(Key::K, NONE, true), None);
         assert_eq!(command(Key::F2, NONE, false), Some(Cmd::Rename));
         assert_eq!(command(Key::F2, NONE, true), None);
         assert_eq!(command(Key::Z, Modifiers::CTRL, false), Some(Cmd::Undo));

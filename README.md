@@ -110,7 +110,8 @@ The portable archive, `qview_<version>_portable.zip`, contains the program in a 
 | Reload the image and the folder | `F5` |
 | Show or hide the menu bar / toolbar / status bar | `M` / `T` / `B` |
 | Show or hide the information panel | `I`, the button at the right end of the toolbar |
-| List of shortcuts | `F1` |
+| List of shortcuts | `K` |
+| About the program | `F1` |
 
 The arrow keys scroll an image that is larger than the window in that direction; otherwise they browse. Letter keys also work with the Russian keyboard layout.
 
