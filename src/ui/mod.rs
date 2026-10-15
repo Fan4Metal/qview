@@ -1,6 +1,7 @@
 //! The window around the image: menu bar, toolbar, status bar and dialogs,
 //! all as `impl App` methods, in a dark look.
 
+mod assoc;
 pub mod crop;
 mod dialogs;
 pub mod gallery;

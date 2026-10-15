@@ -310,165 +310,6 @@ impl App {
             || modal.should_close()
     }
 
-    /// Registration with Windows and which types qview opens by default.
-    /// True when closed.
-    fn associations(&mut self, ctx: &egui::Context, fresh: bool) -> bool {
-        use crate::assoc::{self, Status};
-        use crate::filetypes::FILE_TYPES;
-        const ICON: f32 = 24.0;
-        let exe = std::env::current_exe().ok();
-        // Read on every frame: cheap, and it follows choices made in
-        // Settings while the dialog is open.
-        let status = exe.as_deref().map_or(Status::NotRegistered, assoc::status);
-        let defaults = assoc::defaults(exe.as_deref());
-        let px = (ICON * ctx.pixels_per_point()).round() as u32;
-        if self.type_icons.as_ref().is_none_or(|(n, _)| *n != px) {
-            let icons = FILE_TYPES
-                .iter()
-                .map(|t| {
-                    let image = egui::ColorImage::from_rgba_unmultiplied(
-                        [px as usize, px as usize],
-                        &crate::type_icon::rgba(t, px),
-                    );
-                    ctx.load_texture(format!("type_icon_{}_{px}", t.id), image, egui::TextureOptions::LINEAR)
-                })
-                .collect();
-            self.type_icons = Some((px, icons));
-        }
-        let icons = self.type_icons.as_ref().map(|(_, i)| i.clone()).unwrap_or_default();
-        let ru = crate::i18n::lang() == crate::i18n::Lang::Ru;
-
-        enum Action {
-            Register,
-            Choose,
-            Unregister,
-        }
-        let mut action = None;
-        let modal = egui::Modal::new(egui::Id::new("associations")).show(ctx, |ui| {
-            ui.set_width(520.0);
-            // The buttons below fill the row in Russian, so Close is a
-            // cross in the title row.
-            let closed = ui
-                .horizontal(|ui| {
-                    ui.heading(tr!("File Associations", "Сопоставление файлов"));
-                    ui.with_layout(Layout::right_to_left(Align::Center), close_cross).inner
-                })
-                .inner;
-            ui.add_space(6.0);
-            ui.label(match &status {
-                Status::NotRegistered => tr!(
-                    "qview is not registered with Windows yet.".to_string(),
-                    "qview ещё не зарегистрирован в Windows.".to_string()
-                ),
-                Status::Registered => tr!(
-                    "qview is registered for the types below.".to_string(),
-                    "qview зарегистрирован для типов файлов ниже.".to_string()
-                ),
-                Status::OtherCopy(path) => tr!(
-                    format!("Another copy of qview is registered: {path}"),
-                    format!("Зарегистрирована другая копия qview: {path}")
-                ),
-            });
-            ui.add_space(6.0);
-            egui::Grid::new("types").num_columns(4).spacing([12.0, 4.0]).striped(true).show(ui, |ui| {
-                ui.label("");
-                ui.weak(tr!("Type", "Тип"));
-                ui.weak(tr!("Extensions", "Расширения"));
-                ui.weak(tr!("Default", "По умолчанию"));
-                ui.end_row();
-                for (i, t) in FILE_TYPES.iter().enumerate() {
-                    if let Some(icon) = icons.get(i) {
-                        ui.image((icon.id(), egui::vec2(ICON, ICON)));
-                    }
-                    ui.label(if ru { t.name_ru } else { t.name_en });
-                    // RAW has dozens: the common ones and the count.
-                    let shown: Vec<String> = t.extensions.iter().take(6).map(|e| format!(".{e}")).collect();
-                    let more = t.extensions.len().saturating_sub(shown.len());
-                    let text = shown.join(" ");
-                    ui.label(if more > 0 {
-                        tr!(format!("{text} and {more} more"), format!("{text} и ещё {more}"))
-                    } else {
-                        text
-                    });
-                    match defaults.get(i) {
-                        Some(assoc::Opener::Qview) => ui.label("✔"),
-                        Some(assoc::Opener::QviewElsewhere) => ui.label("✔").on_hover_text(tr!(
-                            "qview opens these files, as picked in \"Open with\". Choosing qview for this type \
-                             in Settings gives the files its icon and name.",
-                            "Эти файлы открывает qview, выбранный через «Открыть с помощью». Если выбрать qview \
-                             для этого типа в параметрах Windows, файлы получат его значок и название."
-                        )),
-                        _ => ui.label("—"),
-                    };
-                    ui.end_row();
-                }
-            });
-            ui.add_space(8.0);
-            ui.label(tr!(
-                "Windows lets only the user choose the default program. After registering, \
-                 \"Choose as Default\" opens Settings: there, under \"Set defaults by app\", \
-                 pick qview and the types it should open. Windows also offers qview the next \
-                 time an image is opened.",
-                "Программу по умолчанию Windows разрешает выбирать только пользователю. После \
-                 регистрации кнопка «Выбрать по умолчанию» открывает параметры Windows: там в \
-                 разделе «Задать значения по умолчанию по приложению» выберите qview и нужные типы \
-                 файлов. Кроме того, Windows сама предложит qview при следующем открытии изображения."
-            ));
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                let register = match status {
-                    Status::Registered => tr!("Update Registration", "Обновить регистрацию"),
-                    _ => tr!("Register", "Зарегистрировать"),
-                };
-                if ui.button(register).clicked() {
-                    action = Some(Action::Register);
-                }
-                let choose = egui::Button::new(tr!("Choose as Default…", "Выбрать по умолчанию…"));
-                if ui.add_enabled(status == Status::Registered, choose).clicked() {
-                    action = Some(Action::Choose);
-                }
-                let remove = egui::Button::new(tr!("Unregister", "Удалить регистрацию"));
-                if ui.add_enabled(status != Status::NotRegistered, remove).clicked() {
-                    action = Some(Action::Unregister);
-                }
-            });
-            closed
-        });
-        match action {
-            Some(Action::Register) => {
-                let result = exe
-                    .ok_or_else(|| "the path of the program is unknown".to_string())
-                    .and_then(|e| assoc::register(&e));
-                self.notice(match result {
-                    Ok(()) => tr!("qview is registered".into(), "qview зарегистрирован".into()),
-                    Err(e) => tr!(format!("Registration failed: {e}"), format!("Не удалось зарегистрировать: {e}")),
-                });
-            }
-            Some(Action::Choose) => {
-                if !assoc::open_default_apps() {
-                    self.notice(tr!("Cannot open Settings".into(), "Не удалось открыть параметры".into()));
-                }
-            }
-            Some(Action::Unregister) => {
-                self.notice(match assoc::unregister() {
-                    Ok(()) => tr!("The registration is removed".into(), "Регистрация удалена".into()),
-                    Err(e) => tr!(
-                        format!("Cannot remove the registration: {e}"),
-                        format!("Не удалось удалить регистрацию: {e}")
-                    ),
-                });
-            }
-            None => {}
-        }
-        if modal.inner {
-            return true;
-        }
-        if fresh {
-            return false;
-        }
-        modal.should_close()
-    }
-
     fn confirm_delete_dialog(&mut self, ctx: &egui::Context) {
         let Some(paths) = self.confirm_delete.clone() else { return };
         let mut decision = None;
@@ -987,7 +828,8 @@ fn update_section(ui: &mut Ui, updates: &mut crate::update::Updates) {
     }
 }
 
-fn close_cross(ui: &mut Ui) -> bool {
+/// A cross that closes a dialog; true when clicked.
+pub(super) fn close_cross(ui: &mut Ui) -> bool {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
     let visuals = ui.style().interact(&response);
     if response.hovered() {
@@ -1000,8 +842,7 @@ fn close_cross(ui: &mut Ui) -> bool {
     response.on_hover_text(tr!("Close", "Закрыть")).clicked()
 }
 
-/// A modal with `title`, a cross that closes it (as in the associations
-/// dialog) and `content`; true when it is closed (the cross, Esc, Enter,
+/// A modal with `title`, a cross that closes it (as in About) and `content`; true when it is closed (the cross, Esc, Enter,
 /// K, which opens the only one, the Shortcuts list, or a click outside).
 /// Keys are ignored in the frame the modal opens (`fresh`).
 fn info_modal(ctx: &egui::Context, id: &str, title: &str, fresh: bool, content: impl FnOnce(&mut Ui)) -> bool {

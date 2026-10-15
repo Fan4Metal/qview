@@ -510,6 +510,8 @@ pub struct App {
     /// Icons of the file types in the associations dialog, rasterised for
     /// the display, with the pixel size they were made for.
     pub type_icons: Option<(u32, Vec<TextureHandle>)>,
+    /// What the associations dialog's last button did, shown in it.
+    pub assoc_message: Option<String>,
     /// Commands clicked in menus and on the toolbar, run after drawing.
     pub clicked: Vec<Cmd>,
     first_image_logged: bool,
@@ -951,6 +953,7 @@ impl App {
             start_icon: None,
             about_icon: None,
             type_icons: None,
+            assoc_message: None,
             clicked: Vec::new(),
             first_image_logged: false,
             hwnd,
@@ -2905,6 +2908,7 @@ impl App {
                     _ => Dialog::Shortcuts,
                 });
                 self.dialog_fresh = true;
+                self.assoc_message = None;
             }
         }
     }
