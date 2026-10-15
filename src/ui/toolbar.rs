@@ -114,7 +114,7 @@ impl App {
                             }
                             // What Esc does in the viewer: the gallery, or closing.
                             if matches!(icon, Icon::Gallery) {
-                                response.context_menu(|ui| self.esc_closes_item(ui));
+                                crate::ui::context_menu(&response, |ui| self.esc_closes_item(ui));
                             }
                         }
                     }

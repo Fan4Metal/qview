@@ -396,6 +396,39 @@ pub fn double_clicked(response: &egui::Response) -> bool {
     response.double_clicked() || response.triple_clicked()
 }
 
+/// The right button's press, held back until it is let go (`App`'s
+/// `raw_input_hook`). egui counts a press and a release as a click only
+/// within 6 points and 0.8 s, so a right click with the mouse on the move,
+/// or held a moment, opened no context menu. As Windows does
+/// (WM_CONTEXTMENU on the button's release), egui gets the press together
+/// with the release, where the button is let go: always a click there.
+/// Nothing in qview drags with the right button.
+#[derive(Default)]
+pub struct RightClick {
+    held: bool,
+}
+
+impl RightClick {
+    pub fn hook(&mut self, events: &mut Vec<Event>) {
+        if !events.iter().any(|e| matches!(e, Event::PointerButton { button: PointerButton::Secondary, .. })) {
+            return;
+        }
+        let mut out = Vec::with_capacity(events.len() + 1);
+        for e in events.drain(..) {
+            match e {
+                Event::PointerButton { button: PointerButton::Secondary, pressed: true, .. } => self.held = true,
+                Event::PointerButton { pos, button: PointerButton::Secondary, pressed: false, modifiers } if self.held => {
+                    self.held = false;
+                    out.push(Event::PointerButton { pos, button: PointerButton::Secondary, pressed: true, modifiers });
+                    out.push(e);
+                }
+                e => out.push(e),
+            }
+        }
+        *events = out;
+    }
+}
+
 /// Mouse wheel notches, counted whole across frames: a precise wheel or a
 /// touchpad sends fractions.
 #[derive(Default)]
@@ -444,6 +477,42 @@ mod tests {
     const CTRL: Modifiers = Modifiers::CTRL;
     const SHIFT: Modifiers = Modifiers::SHIFT;
     const ALT: Modifiers = Modifiers::ALT;
+
+    #[test]
+    fn right_press_waits_for_release() {
+        let button = |x: f32, pressed: bool| Event::PointerButton {
+            pos: egui::pos2(x, 0.0),
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: NONE,
+        };
+        let moved = |x: f32| Event::PointerMoved(egui::pos2(x, 0.0));
+        let mut right = RightClick::default();
+        let mut events = vec![moved(10.0), button(10.0, true)];
+        right.hook(&mut events);
+        assert_eq!(events, vec![moved(10.0)]);
+        let mut events = vec![moved(40.0)];
+        right.hook(&mut events);
+        assert_eq!(events, vec![moved(40.0)]);
+        // Pressed and let go where the button is released.
+        let mut events = vec![moved(50.0), button(50.0, false)];
+        right.hook(&mut events);
+        assert_eq!(events, vec![moved(50.0), button(50.0, true), button(50.0, false)]);
+        // A release with no press seen is passed on as it is.
+        let mut events = vec![button(50.0, false)];
+        right.hook(&mut events);
+        assert_eq!(events, vec![button(50.0, false)]);
+        // Other buttons are untouched.
+        let mut events = vec![Event::PointerButton {
+            pos: egui::pos2(0.0, 0.0),
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: NONE,
+        }];
+        let before = events.clone();
+        right.hook(&mut events);
+        assert_eq!(events, before);
+    }
 
     #[test]
     fn key_bindings() {

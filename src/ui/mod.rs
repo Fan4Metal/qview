@@ -21,6 +21,44 @@ pub const DANGER: Color32 = Color32::from_rgb(200, 40, 40);
 /// The star of a favourite image.
 pub const STAR: Color32 = Color32::from_rgb(0xf2, 0xc0, 0x3c);
 
+/// `response.context_menu`, as Windows' menus behave: it opens on the right
+/// button's release wherever the pointer went (`input::RightClick`), and a
+/// press anywhere off the menus closes it, whatever the pointer does next
+/// (egui closes a menu on a click only: a press followed by a drag, such
+/// as panning, left it open). A right click on the widget while its menu
+/// is shown opens it anew at the pointer in the next frame: egui closes a
+/// menu shown in the last frame on any click, so it would only close.
+pub fn context_menu(response: &egui::Response, add: impl FnOnce(&mut egui::Ui)) -> Option<egui::InnerResponse<()>> {
+    use egui::{Popup, SetOpenCommand};
+    let ctx = &response.ctx;
+    let menu = Popup::default_response_id(response);
+    let reopen = menu.with("reopen");
+    let (pressed, pos) = ctx.input(|i| (i.pointer.any_pressed(), i.pointer.interact_pos()));
+    let on_menus = pos
+        .and_then(|p| ctx.layer_id_at(p))
+        .is_some_and(|layer| layer.order == egui::Order::Foreground);
+    if pressed && !on_menus && Popup::is_id_open(ctx, menu) {
+        Popup::close_id(ctx, menu);
+    }
+    let mut open = ctx.data_mut(|d| d.remove_temp::<bool>(reopen)).unwrap_or(false);
+    if response.secondary_clicked() {
+        if ctx.read_response(menu).is_some() {
+            ctx.data_mut(|d| d.insert_temp(reopen, true));
+            ctx.request_repaint();
+        } else {
+            open = true;
+        }
+    }
+    let command = if open {
+        Some(SetOpenCommand::Bool(true))
+    } else if response.clicked() {
+        Some(SetOpenCommand::Bool(false))
+    } else {
+        None
+    };
+    Popup::menu(response).open_memory(command).at_pointer_fixed().show(add)
+}
+
 /// A five-pointed star of radius `r` around `c`, point up: filled with
 /// `fill`, outlined with `outline`. egui fills only convex shapes, so the
 /// fill is the inner pentagon and a triangle for each point.

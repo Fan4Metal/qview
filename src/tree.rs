@@ -599,7 +599,7 @@ impl Tree {
                     let pinned_as = pinned.iter().find(|(p, _)| same_path(p, &path)).map(|(_, k)| *k);
                     let in_quick = quick.as_ref().is_some_and(|q| q.contains(&row));
                     let changeable = node.kind == Kind::Folder && node.depth > 0;
-                    response.context_menu(|ui| {
+                    crate::ui::context_menu(&response, |ui| {
                         if in_quick && ui.button(tr!("Show in Tree", "Отобразить в дереве")).clicked() {
                             action = Some(Action::ShowInTree(path.clone()));
                             ui.close();

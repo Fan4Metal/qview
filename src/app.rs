@@ -27,7 +27,7 @@ use crate::folder::{self, Order, Scan, SortKey};
 use crate::gallery::{self, Cell, Gallery, Scroll};
 use crate::history::{History, Place};
 use crate::i18n::LangChoice;
-use crate::input::{Arrow, Cmd, Mode, Move, Wheel};
+use crate::input::{Arrow, Cmd, Mode, Move, RightClick, Wheel};
 use crate::loader::{Decoded, Loader, Meta, Pixels};
 use crate::selection::Selection;
 use crate::texture::Texture;
@@ -498,6 +498,8 @@ pub struct App {
     pub dialog_fresh: bool,
     notice: Option<(String, Instant)>,
     pub wheel: Wheel,
+    /// The right button's press held back until its release (`RightClick`).
+    right_click: RightClick,
     /// Direction of the last move, to decode ahead in that direction first.
     forward: bool,
     title: String,
@@ -943,6 +945,7 @@ impl App {
             dialog_fresh: false,
             notice: None,
             wheel: Wheel::default(),
+            right_click: RightClick::default(),
             forward: true,
             title: String::new(),
             start_icon: None,
@@ -4310,7 +4313,7 @@ impl App {
             self.menu_picked = self.picked;
         }
         if !cropping {
-            response.context_menu(|ui| self.context_menu(ui));
+            crate::ui::context_menu(&response, |ui| self.context_menu(ui));
         }
     }
 
@@ -4481,6 +4484,10 @@ pub fn file_name(path: &Path) -> String {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.right_click.hook(&mut raw_input.events);
+    }
+
     fn ui(&mut self, root_ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
         let frame_nr = ctx.cumulative_frame_nr();

@@ -320,7 +320,7 @@ impl App {
                         open = clicked;
                         if sections {
                             for response in responses {
-                                response.context_menu(|ui| self.follow_item(ui));
+                                crate::ui::context_menu(&response, |ui| self.follow_item(ui));
                             }
                         }
                     });
@@ -931,7 +931,7 @@ impl App {
             if crate::input::double_clicked(&response) && !modifiers.ctrl && !modifiers.shift && !on_circle {
                 folder = self.folders.get(k).cloned();
             }
-            response.context_menu(|ui| self.folder_menu(ui));
+            crate::ui::context_menu(&response, |ui| self.folder_menu(ui));
         }
         for (i, response, circle) in cells {
             if response.clicked() || response.secondary_clicked() {
@@ -951,7 +951,7 @@ impl App {
             if crate::input::double_clicked(&response) && !modifiers.ctrl && !modifiers.shift && !on_circle {
                 opened = Some(i);
             }
-            response.context_menu(|ui| self.cell_menu(ui));
+            crate::ui::context_menu(&response, |ui| self.cell_menu(ui));
         }
         // A click on the empty space chooses nothing.
         if background.clicked() && !modifiers.ctrl {
@@ -966,7 +966,7 @@ impl App {
             }
         }
         let sections = mixed && self.by_folder;
-        background.context_menu(|ui| {
+        crate::ui::context_menu(&background, |ui| {
             self.show_menu_bar_item(ui);
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
             if sections {
