@@ -175,7 +175,7 @@ pub fn make(path: &Path, side: u32) -> Result<Thumbnail, String> {
         }
         Err(e) => {
             log::debug!("no shell thumbnail of {}: {e}", path.display());
-            let (mut img, meta) = loader::read(path)?;
+            let (mut img, meta) = loader::read_within(path, side)?;
             if img.width() > side || img.height() > side {
                 img = img.thumbnail(side, side);
             }

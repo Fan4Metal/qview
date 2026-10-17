@@ -227,7 +227,12 @@ impl App {
         }
         if let Some(m) = meta {
             let animated = if m.animated { tr!(", animated", ", анимация") } else { "" };
-            image.rows.push((tr!("Format", "Формат"), tr!(format!("{}, {}-bit{animated}", m.format, m.bits), format!("{}, {} бит{animated}", m.format, m.bits))));
+            let format = if m.is_drawing() {
+                tr!(format!("{}, vector", m.format), format!("{}, векторный", m.format))
+            } else {
+                tr!(format!("{}, {}-bit{animated}", m.format, m.bits), format!("{}, {} бит{animated}", m.format, m.bits))
+            };
+            image.rows.push((tr!("Format", "Формат"), format));
             if let Some(alpha) = m.alpha {
                 image.rows.push((tr!("Alpha channel", "Альфа-канал"), if alpha { tr!("yes", "есть") } else { tr!("no", "нет") }.into()));
             }
@@ -241,10 +246,15 @@ impl App {
             let plays = a.loops.map_or_else(|| tr!("endlessly", "бесконечно").to_string(), |n| n.to_string());
             image.rows.push((tr!("Plays", "Проигрываний"), plays));
         }
-        // The texture is smaller when the GPU cannot hold the image.
+        // The texture is smaller when the GPU cannot hold the image; a
+        // drawing's is drawn larger to stay sharp (`svg::view_scale`).
         if let Some(picture) = picture {
             let (tw, th) = picture.texture.size();
-            if tw < picture.meta.width || th < picture.meta.height {
+            if picture.meta.is_drawing() {
+                if (tw, th) != (picture.meta.width, picture.meta.height) {
+                    image.rows.push((tr!("Drawn at", "Отрисовано в"), format!("{tw} × {th}")));
+                }
+            } else if tw < picture.meta.width || th < picture.meta.height {
                 let shown = tr!(format!("{tw} × {th}, the GPU's limit"), format!("{tw} × {th}, предел видеокарты"));
                 image.rows.push((tr!("Shown at", "Показано"), shown));
             }

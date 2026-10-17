@@ -51,6 +51,14 @@ pub struct Meta {
     pub decode_ms: f32,
 }
 
+impl Meta {
+    /// A drawing (`svg`): its size is not of pixels, it has no bit depth,
+    /// and its texture is drawn larger than it.
+    pub fn is_drawing(&self) -> bool {
+        self.format == "SVG"
+    }
+}
+
 /// An image as the GPU takes it: premultiplied BGRA, 8 bits per channel,
 /// the full size first and then the mip levels down to 1x1, each half the
 /// size of the one before (rounded down, at least 1).
@@ -256,6 +264,20 @@ pub fn decode(path: &Path, max_side: usize, count: bool) -> Result<(Pixels, Meta
         meta.histogram = histogram.map(Arc::new);
         (pixels, meta)
     };
+    // A drawing: larger than its size, so that it stays sharp enlarged.
+    if crate::svg::takes(path) {
+        let bytes = crate::archive::read(path).map_err(|e| e.to_string())?;
+        if crate::svg::is_svg(path, &bytes) {
+            let (mut rgba, width, height, mut meta) =
+                draw_svg(path, &bytes, |w, h| crate::svg::view_scale(w, h, max_side))?;
+            for p in rgba.as_chunks_mut::<4>().0 {
+                p.swap(0, 2);
+            }
+            let (pixels, histogram) = with_levels(rgba, width, height, count);
+            meta.histogram = histogram.map(Arc::new);
+            return Ok((pixels, meta));
+        }
+    }
     let wic = crate::wic::takes(path);
     let jpeg = !wic && is_jpeg_file(path);
     if wic || jpeg {
@@ -304,6 +326,48 @@ pub fn read(path: &Path) -> Result<(DynamicImage, Meta), String> {
     read_wic(path, false).map_err(|e| first.unwrap_or(e))
 }
 
+/// `read`, except that a drawing (`svg`) larger than `side` x `side` is
+/// drawn fitted into it, not at its size: a thumbnail.
+pub fn read_within(path: &Path, side: u32) -> Result<(DynamicImage, Meta), String> {
+    if crate::svg::takes(path) {
+        let bytes = crate::archive::read(path).map_err(|e| e.to_string())?;
+        if crate::svg::is_svg(path, &bytes) {
+            return svg_image(path, &bytes, |w, h| (side as f32 / w.max(h) as f32).min(1.0));
+        }
+    }
+    read(path)
+}
+
+/// The drawing `bytes` read from `path`, drawn at `scale(width, height)`
+/// times its size: premultiplied RGBA, the size drawn, and its `Meta`
+/// (with the drawing's own size).
+fn draw_svg(path: &Path, bytes: &[u8], scale: impl FnOnce(u32, u32) -> f32) -> Result<(Vec<u8>, u32, u32, Meta), String> {
+    let svg = crate::svg::Svg::parse(path, bytes, true)?;
+    let (rgba, width, height) = svg.render_scaled(scale(svg.width, svg.height))?;
+    let meta = Meta {
+        width: svg.width,
+        height: svg.height,
+        // Not of pixels: no depth to show (`Meta::is_drawing`).
+        bits: 0,
+        alpha: Some(true),
+        format: "SVG",
+        file_size: bytes.len() as u64,
+        modified: crate::archive::metadata(path).map_or(0, |(_, m)| m),
+        animated: false,
+        histogram: None,
+        decode_ms: 0.0,
+    };
+    Ok((rgba, width, height, meta))
+}
+
+/// `draw_svg` as a straight RGBA image.
+fn svg_image(path: &Path, bytes: &[u8], scale: impl FnOnce(u32, u32) -> f32) -> Result<(DynamicImage, Meta), String> {
+    let (mut rgba, width, height, meta) = draw_svg(path, bytes, scale)?;
+    crate::svg::unpremultiply(&mut rgba);
+    let buffer = image::RgbaImage::from_raw(width, height, rgba).ok_or("bad image size")?;
+    Ok((DynamicImage::ImageRgba8(buffer), meta))
+}
+
 /// `path` decoded by Windows' codecs, upright: premultiplied BGRA with
 /// `bgra` (in an RGBA image only by name), otherwise RGBA. HEIF goes to
 /// libheif first when its DLL is there (`heif`), then to Windows if that
@@ -345,6 +409,10 @@ fn read_image(path: &Path) -> Result<(DynamicImage, Meta), String> {
     // One read of the whole file is faster than buffered reads through
     // the decoder.
     let bytes = crate::archive::read(path).map_err(|e| e.to_string())?;
+    // A drawing at its size (also one not named .svg).
+    if crate::svg::is_svg(path, &bytes) {
+        return svg_image(path, &bytes, |_, _| 1.0);
+    }
     let modified = crate::archive::metadata(path).map_or(0, |(_, m)| m);
     let mut reader = ImageReader::new(Cursor::new(&bytes[..])).with_guessed_format().map_err(|e| e.to_string())?;
     if reader.format().is_none()

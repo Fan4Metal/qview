@@ -450,6 +450,9 @@ pub struct App {
     /// The current image's pixels for the Colour section, read again from
     /// its file on a thread.
     pub colour_pixels: Option<PixelSlot>,
+    /// The visible part of an enlarged drawing, drawn anew at the screen's
+    /// resolution (`detail`).
+    detail: crate::detail::Detail,
     /// The pixel under the pointer, found while the image area is drawn.
     pub picked: Option<Picked>,
     /// The pixel the image's context menu was opened on.
@@ -925,6 +928,7 @@ impl App {
             histogram: None,
             show_colour: cc.storage.and_then(|s| s.get_string(COLOUR_KEY)).as_deref() == Some("true"),
             colour_pixels: None,
+            detail: Default::default(),
             picked: None,
             menu_picked: None,
             stats: None,
@@ -1582,6 +1586,7 @@ impl App {
         if self.colour_pixels.as_ref().is_some_and(|c| paths.contains(&c.path)) {
             self.colour_pixels = None;
         }
+        self.detail.forget(paths);
     }
 
     /// Read the current image's information for the panel, on a thread,
@@ -4001,10 +4006,12 @@ impl App {
         // An image in an archive keeps its format, which is only not saved
         // over.
         let own = edit::Format::of(path).filter(|_| edit::can_overwrite(path) || crate::archive::inside(path));
-        let first = own.unwrap_or(edit::Format::Jpeg);
+        // A drawing is mostly transparent around its shapes: PNG keeps that.
+        let other = if crate::svg::takes(path) { edit::Format::Png } else { edit::Format::Jpeg };
+        let first = own.unwrap_or(other);
         let ext = match own {
             Some(_) => path.extension().unwrap_or_default().to_string_lossy().into_owned(),
-            None => "jpg".to_string(),
+            None => other.extensions()[0].to_string(),
         };
         // Of an image in an archive, beside the archive.
         let dir = crate::archive::folder_of(path).unwrap_or_default();
@@ -4248,7 +4255,7 @@ impl App {
             let place = view.place(size, rect, ppp);
             self.paint_checker(&painter, place, ppp);
             view::paint(&painter, texture, place, 0, false);
-        } else if let Some((_, picture)) = self.shown.clone() {
+        } else if let Some((shown_path, picture)) = self.shown.clone() {
             let size = picture.size();
             if response.dragged_by(PointerButton::Primary) && self.crop.is_none() {
                 self.view.pan(response.drag_delta(), size, rect, ppp);
@@ -4265,8 +4272,25 @@ impl App {
                 nav_alpha = self.navigator_alpha(&ctx, place);
                 nav_at = Some(nav);
             }
+            // A drawing enlarged past its texture: the part on screen drawn
+            // anew, over the image, or instead of it when it covers the
+            // area at this zoom.
+            let (turns, flip) = (self.view.turns, self.view.flip);
+            let detail = picture
+                .meta
+                .is_drawing()
+                .then(|| crate::detail::wanted(&shown_path, picture.texture.size(), place, rect, ppp, turns, flip))
+                .flatten();
+            let covered = detail.as_ref().is_some_and(|(w, visible)| self.detail.covered(w, *visible));
+            let enlarged = detail.is_some();
+            self.detail.want(&ctx, detail);
             self.paint_checker(&painter, place, ppp);
-            self.paint_picture(&painter, &picture, place, rect, ppp);
+            if !covered {
+                self.paint_picture(&painter, &picture, place, rect, ppp);
+            }
+            if let Some(part) = self.detail.part(&shown_path).filter(|_| enlarged) {
+                view::paint(&painter, part.texture.id(), part.drawn.rect(place, turns, flip), turns, flip);
+            }
             if let Some(nav) = nav.filter(|_| nav_alpha > 0.0) {
                 self.paint_navigator(&painter, &picture, nav, place, rect, nav_alpha);
             }
@@ -4560,6 +4584,7 @@ impl eframe::App for App {
         self.poll_favorites_gone();
         self.poll_pinned_gone();
         self.poll_decoded(&ctx, frame);
+        self.detail.poll(&ctx, &self.gl, frame);
         if let Some(gallery) = &mut self.gallery {
             gallery.poll(&self.gl, frame, &ctx);
         }
@@ -4655,6 +4680,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&glow::Context>) {
         self.player = None;
         self.shown = None;
+        self.detail = Default::default();
         self.cache.clear();
         self.pending.clear();
         self.partial.clear();

@@ -28,6 +28,7 @@ png = "0.18"
 # API directly (src/archive.rs): the unrar-ng wrapper pulls in regex with
 # its Unicode tables, ~360 KB more.
 unrar-ng-sys = { version = "0.7.7", default-features = false, features = ["std"] }
+resvg = "0.48.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

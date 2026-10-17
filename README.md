@@ -23,7 +23,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 ## Features
 
 - **Fast**: the first image appears about 0.2 s after start-up, and the neighbouring images are decoded in advance, so that browsing has no delays.
-- **Many formats**: JPEG, PNG, GIF, WebP, TIFF, HEIC and others are read by the program itself, AVIF, camera RAW and other formats through the codecs installed in Windows; animated GIF and WebP are played (see [Supported formats](#supported-formats)).
+- **Many formats**: JPEG, PNG, GIF, WebP, TIFF, HEIC, SVG and others are read by the program itself, AVIF, camera RAW and other formats through the codecs installed in Windows; animated GIF and WebP are played (see [Supported formats](#supported-formats)).
 - **Gallery**: the folder tree and the images of a folder as thumbnails, with sub-folders and comic books as cells, sorting, a filter by name and the choice of several images at once (see [Gallery](#gallery)).
 - **Sorting photos into folders**: favorites gathered from any folders, folders pinned to Quick Access with the keys `Alt+1`–`Alt+9`, moving and copying into a new or any other folder (see [Favorites](#favorites) and [Quick Access](#quick-access)).
 - **Comic books**: CBZ and CBR, as well as ZIP and RAR archives in general, are viewed without unpacking (see [Comic books and archives](#comic-books-and-archives)).
@@ -40,6 +40,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 | Formats | Read by | Needs |
 |---|---|---|
 | JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM) | the program itself | nothing |
+| SVG, SVGZ | the program itself (the [resvg](https://github.com/linebender/resvg) library) | nothing |
 | HEIC, HEIF | the [libheif](https://github.com/strukturag/libheif) and [libde265](https://github.com/strukturag/libde265) libraries supplied with the program | nothing: no extension from the Microsoft Store |
 | AVIF | the Windows codec | the AV1 Video Extension from the Microsoft Store |
 | Camera RAW: CR2, CR3, NEF, ARW, DNG and others | the Windows codec | the Raw Image Extension, included in Windows 11 |
@@ -48,11 +49,12 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 
 - The Windows codecs also take over the files that the program's own decoders and libheif cannot read.
 - AVIF files are always listed; when the extension they need is missing, the image area names it.
+- An SVG drawing is taken to be of the size written in it (its width and height, otherwise its `viewBox`): 100%, the dimensions in the status bar and in the information panel refer to that size, and Fit Image (`2`) does not enlarge a small icon (Fill Window, `3`, does). The drawing is rendered large enough to fill the screen, and zoomed in further, the part in the window is drawn anew at the screen's resolution a moment later, so that it stays sharp at any zoom; text is drawn with the fonts installed in Windows. A rotated or cropped drawing, Convert To and Copy Image give a raster image of the drawing's size; Save As offers PNG first.
 
 Each format registered with Windows gets its own file icon (see [File associations](#file-associations)):
 
 <p align="center">
-  <img src="images/file_types.png" width="520" alt="The file type icons: JPG, PNG, GIF, BMP, TIF, WEBP, ICO, TGA, QOI, PNM, HEIC, AVIF, RAW, JXR, CBZ and CBR">
+  <img src="images/file_types.png" width="520" alt="The file type icons: JPG, PNG, GIF, BMP, TIF, WEBP, ICO, TGA, QOI, PNM, HEIC, AVIF, RAW, JXR, CBZ, CBR and SVG">
 </p>
 
 Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated.
@@ -137,7 +139,7 @@ In the gallery, when a folder's cell has the cursor, the panel describes that fo
 
 ## Rotating and cropping
 
-Rotation (`[`, `]`, the toolbar, View and the context menu) and flipping (`H` horizontally, `V` vertically, View and the context menu) change only the view until it is saved; the status bar then notes the angle or the flip. File → Save (`Ctrl+S`) writes the rotated or flipped image over its file, File → Save As… (`Ctrl+Shift+S`) into another file, whose format follows its extension: JPEG, PNG, WebP (lossless), TIFF or BMP. The name suggested there is that of the original with `_crop` for a cropped image or `_rotate` for a rotated one, `_flip` for one only flipped (`photo_crop.jpg`), numbered if such a file already exists (`photo_crop_2.jpg`), so that no file is replaced by accident. Formats that qview cannot write, such as HEIC, AVIF, RAW and GIF, as well as lossy WebP, are saved through Save As, JPEG being offered by default. Animated images are not edited.
+Rotation (`[`, `]`, the toolbar, View and the context menu) and flipping (`H` horizontally, `V` vertically, View and the context menu) change only the view until it is saved; the status bar then notes the angle or the flip. File → Save (`Ctrl+S`) writes the rotated or flipped image over its file, File → Save As… (`Ctrl+Shift+S`) into another file, whose format follows its extension: JPEG, PNG, WebP (lossless), TIFF or BMP. The name suggested there is that of the original with `_crop` for a cropped image or `_rotate` for a rotated one, `_flip` for one only flipped (`photo_crop.jpg`), numbered if such a file already exists (`photo_crop_2.jpg`), so that no file is replaced by accident. Formats that qview cannot write, such as HEIC, AVIF, RAW and GIF, as well as lossy WebP, are saved through Save As, JPEG being offered by default (PNG for SVG). Animated images are not edited.
 
 File → Convert To (also under More in the context menus of the image and of a thumbnail in the gallery) saves a copy of the image in JPEG, PNG, WebP (lossless), TIFF or BMP next to the original, under the same name with the new extension (`photo.heic` → `photo.jpg`, `photo_2.jpg` if that name is taken), without a dialog; an unsaved rotation or flip is applied to the copy. The original stays unchanged and remains the current image; `Ctrl+Z` deletes the copy.
 

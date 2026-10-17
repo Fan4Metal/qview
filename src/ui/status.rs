@@ -71,7 +71,11 @@ impl App {
                     None if m.animated => tr!(", animated", ", анимация").into(),
                     None => String::new(),
                 };
-                fields.push(format!("{}x{}x{}b {}{animated}", m.width, m.height, m.bits, m.format));
+                if m.is_drawing() {
+                    fields.push(format!("{}x{} {}", m.width, m.height, m.format));
+                } else {
+                    fields.push(format!("{}x{}x{}b {}{animated}", m.width, m.height, m.bits, m.format));
+                }
                 modified(&mut fields, m.modified);
                 // The worker's time, whether the image was decoded ahead or
                 // waited for.

@@ -360,6 +360,25 @@ pub fn image_point(point: Pos2, rect: Rect, turns: u8, flip: bool) -> Option<(Po
     Some((uv.to_pos2(), s))
 }
 
+/// The place on the texture (0 to 1 both ways) of the point `s` of an image
+/// shown mirrored if `flip`, then turned `turns` (0 to 1 across and down
+/// the screen): [`image_point`] without the rectangle, anywhere.
+pub fn uv_at(s: Pos2, turns: u8, flip: bool) -> Pos2 {
+    let lt = corner_uv(0, turns, flip);
+    let (ex, ey) = (corner_uv(1, turns, flip) - lt, corner_uv(3, turns, flip) - lt);
+    lt + ex * s.x + ey * s.y
+}
+
+/// The inverse of [`uv_at`]: where the place `uv` on the texture is shown,
+/// 0 to 1 across and down the screen.
+pub fn shown_at(uv: Pos2, turns: u8, flip: bool) -> Pos2 {
+    let lt = corner_uv(0, turns, flip);
+    let (ex, ey) = (corner_uv(1, turns, flip) - lt, corner_uv(3, turns, flip) - lt);
+    // The edges are unit vectors along the axes, at right angles.
+    let d = uv - lt;
+    pos2(d.dot(ex), d.dot(ey))
+}
+
 /// Squares of the checkerboard behind transparency, in points.
 const CHECKER_CELL: f32 = 8.0;
 
@@ -635,6 +654,15 @@ mod tests {
         let (uv, _) = image_point(p, rect, 0, true).unwrap();
         assert!(near(uv, pos2(0.9, 0.1)), "{uv:?}");
         assert!(image_point(pos2(5.0, 30.0), rect, 0, false).is_none());
+        // `uv_at` agrees, and `shown_at` goes back, every way up.
+        for turns in 0..4 {
+            for flip in [false, true] {
+                let s = pos2(0.3, 0.8);
+                let (uv, _) = image_point(rect.min + s.to_vec2() * rect.size(), rect, turns, flip).unwrap();
+                assert!(near(uv_at(s, turns, flip), uv));
+                assert!(near(shown_at(uv, turns, flip), s));
+            }
+        }
     }
 
     fn corners(v: &View) -> [Pos2; 4] {

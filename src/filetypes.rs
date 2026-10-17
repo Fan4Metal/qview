@@ -26,7 +26,7 @@ pub struct FileType {
 /// What a type's files are and what reads them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Images the `image` crate decodes (`folder::EXTENSIONS`).
+    /// Images the `image` crate decodes, and SVG (`folder::EXTENSIONS`).
     Image,
     /// Images Windows' codecs decode (`wic`).
     Wic,
@@ -218,6 +218,18 @@ pub const FILE_TYPES: &[FileType] = &[
         band: [0x60, 0x30, 0xd0],
         ink: [0xff, 0xff, 0xff],
         kind: Kind::Archive,
+    },
+    // Last, so that the icon IDs of the types before it stay those registered.
+    FileType {
+        id: "svg",
+        label: "SVG",
+        extensions: &["svg", "svgz"],
+        name_en: "SVG Image",
+        name_ru: "Изображение SVG",
+        // amber, dark letters
+        band: [0xff, 0xa8, 0x20],
+        ink: [0x40, 0x20, 0x00],
+        kind: Kind::Image,
     },
 ];
 

@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, mpsc};
 
 /// Extensions of the files listed for browsing (lowercase), the formats
-/// the `image` crate is built with.
+/// the `image` crate is built with and SVG (`svg`).
 pub const EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "dib", "tif", "tiff", "ico", "webp", "tga", "qoi", "pnm",
-    "pbm", "pgm", "ppm", "pam",
+    "pbm", "pgm", "ppm", "pam", "svg", "svgz",
 ];
 
 /// Whether `path` has one of [`EXTENSIONS`], or one Windows' codecs take

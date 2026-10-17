@@ -122,6 +122,19 @@ Measured with `archive_timings` on a real comic book (RAR 1.5-4, stored, 68 page
 - In a solid archive every page before the one wanted is unpacked, so without help the last page cost ~570 ms and the gallery's thumbnails about half a minute. The archive read last keeps an UnRAR cursor after the page read last and the pages unpacked on the way (up to 256 MB): reading on costs only the pages between, the thumbnails of the whole book about one unpacking, and threads wait for the one that unpacks instead of each starting over. The archive stays open only while it is the one shown: UnRAR opens it without sharing deletion, so a cover read for its cell in the parent folder used to leave it locked, and renaming or deleting it failed. Showing another folder lets go of it without waiting for a thread in the middle of a pass (which could take seconds and froze the UI thread); that thread lets go when done.
 - UnRAR adds ~290 KB to the exe (with the static C runtime it needs no `MSVCP140.dll`), the CBR file type's icon ~50 KB more (306 KB before the icons' 256 px layers were stored as PNG, see [Start-up](#start-up)). The `unrar-ng` wrapper was tried first: it depends on `regex` with its default features, which put `regex`'s Unicode tables into the exe (~360 KB), so UnRAR's C API is called directly through `unrar-ng-sys`.
 
+### SVG
+
+Measured with `svg_file` on a 2560x1440 screen: the classic tiger (513x525, 99 KB) and a 48x48 icon of 40 KB with gradients.
+
+| Drawing | Parsed | Drawn at its size | Drawn for the viewer | A part of 3200x1800 at 4x that |
+|---|---|---|---|---|
+| Tiger, 513x525 | 1.3 ms | 5.1 ms | 13.7 ms (1440x1474) | 26 ms |
+| Icon, 48x48 | 0.5 ms | 0.3 ms | 25 ms (1440x1440) | 180 ms |
+
+- The drawing's own size (width and height, else the `viewBox`) is the image's size for the zoom, the panels, cropping and saving, and the viewer's texture is drawn larger, large enough to fill the screen either way up (`svg::view_scale`, at most 40 MP), so that an icon stays sharp at Fill. Zoomed in past that texture, the visible part with a margin of an eighth of the area on each side (the last column of the table, for this screen) is drawn on a thread at one pixel per screen pixel (`detail`) and painted over the image, instead of it once it covers the area at the zoom shown; the part of the previous zoom is painted, scaled, until then, and one part is drawn at a time, the latest wanted next. The cost grows with the pixels and with blur filters (the icon's), not with the zoom. Making the drawn size the image's size was the alternative: a 24 px icon would then fit the window at Fit and be 1440 px at 100%, with its dimensions misstated.
+- The system fonts (398 here) are loaded once, in ~19 ms, and only for a drawing that has text; the size read for the gallery parses without them.
+- resvg (with text, SVGZ and embedded raster images) and the SVG file type's icon added ~1.5 MB to the exe (13.39 to 14.93 MB).
+
 ## Texture upload
 
 | Method | UI thread time per 15 MP photo |

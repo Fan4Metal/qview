@@ -407,6 +407,14 @@ struct Decoded {
 /// `src` decoded upright, with its ICC profile and EXIF data: by the
 /// `image` crate, or by Windows' codecs (no metadata then).
 fn decode(src: &Path, bytes: &[u8]) -> Result<Decoded, String> {
+    // A drawing at its size (`svg`), which the crop refers to.
+    if crate::svg::is_svg(src, bytes) {
+        let svg = crate::svg::Svg::parse(src, bytes, true)?;
+        let mut rgba = svg.render(svg.width, svg.height)?;
+        crate::svg::unpremultiply(&mut rgba);
+        let img = image::RgbaImage::from_raw(svg.width, svg.height, rgba).ok_or("bad image size")?;
+        return Ok(Decoded { img: DynamicImage::ImageRgba8(img), icc: None, exif: None });
+    }
     let first = match (!crate::wic::takes(src)).then(|| decode_image(src, bytes)) {
         Some(Ok(decoded)) => return Ok(decoded),
         Some(Err(e)) => Some(e),

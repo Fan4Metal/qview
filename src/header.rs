@@ -32,6 +32,14 @@ impl Size {
 /// HEIF when its DLL is there (`heif`), and through Windows' codecs (`wic`)
 /// for the formats they take.
 pub fn read(path: &Path) -> Option<Size> {
+    // A drawing: its whole text parsed (no fonts needed for the size).
+    if crate::svg::takes(path) {
+        let bytes = crate::archive::read(path).ok()?;
+        if crate::svg::is_svg(path, &bytes) {
+            let svg = crate::svg::Svg::parse(path, &bytes, false).ok()?;
+            return Some(Size { width: svg.width, height: svg.height, turned: false });
+        }
+    }
     // An image in an archive: from its bytes, by `image` alone.
     if crate::archive::inside(path) {
         let bytes = crate::archive::read(path).ok()?;

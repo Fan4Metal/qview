@@ -635,6 +635,24 @@ pub fn double_click_time() -> f64 {
     unsafe { GetDoubleClickTime() as f64 / 1000.0 }
 }
 
+/// The primary display's resolution in physical pixels, whatever the
+/// process's DPI awareness (`DESKTOPHORZRES`, not virtualised for a process
+/// unaware of DPI, as the loader is before winit makes it aware; read
+/// once; 3840x2160 if Windows does not say).
+pub fn screen_size() -> (f32, f32) {
+    use windows_sys::Win32::Graphics::Gdi::{DESKTOPHORZRES, DESKTOPVERTRES, GetDC, GetDeviceCaps, ReleaseDC};
+    static SIZE: std::sync::OnceLock<(f32, f32)> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        let (w, h) = unsafe {
+            let dc = GetDC(std::ptr::null_mut());
+            let size = (GetDeviceCaps(dc, DESKTOPHORZRES as i32), GetDeviceCaps(dc, DESKTOPVERTRES as i32));
+            ReleaseDC(std::ptr::null_mut(), dc);
+            size
+        };
+        if w > 0 && h > 0 { (w as f32, h as f32) } else { (3840.0, 2160.0) }
+    })
+}
+
 /// Show `text` in a system message box with an error icon, waiting until
 /// it is closed. It needs no window of the app, so it also works when the
 /// app is failing.
