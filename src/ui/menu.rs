@@ -513,7 +513,7 @@ impl App {
             "The file, to paste into Explorer, a messenger or an e-mail",
             "Файл — для вставки в Проводник, мессенджер или письмо"
         );
-        self.item_explained(ui, text, "Ctrl+C", Cmd::Copy, enabled && !self.in_archive(), tip);
+        self.item_explained(ui, text, "Ctrl+C", Cmd::Copy, enabled, tip);
     }
 
     /// The pixels, as shown.

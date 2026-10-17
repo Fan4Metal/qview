@@ -7,7 +7,8 @@
 //! opens what the clipboard holds: files copied in Explorer (the first),
 //! a path as text, or an image, which is saved as a PNG into [`folder`]
 //! and opened from there, so that it can be cropped and saved elsewhere
-//! like any file.
+//! like any file. Copy (Ctrl+C) of images in an archive puts them on it
+//! as files, unpacked into a temporary folder ([`copy_pages`]).
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -43,6 +44,60 @@ pub fn copy_image(job: &edit::Job) -> Result<(), String> {
         raw::set_without_clear(format.get(), &png).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Where the pages of an archive copied as files go ([`copy_pages`]), each
+/// copy into a folder of its own: `qview-copy` in the temporary folder
+/// (not inside [`folder`], which the gallery shows after a paste).
+fn pages_folder() -> PathBuf {
+    std::env::temp_dir().join("qview-copy")
+}
+
+/// Copies older than this are deleted before another is made: pasted
+/// long since.
+const KEEP_PAGES: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Put the images `paths` of an archive on the clipboard as files, as
+/// Ctrl+C puts files on disk: unpacked into a new folder of
+/// [`pages_folder`] under their own names, so that a paste into Explorer or
+/// a message gives those.
+pub fn copy_pages(paths: &[PathBuf]) -> Result<(), String> {
+    let files = unpack(paths, &pages_folder())?;
+    crate::win::copy_files(&files)
+}
+
+/// `paths` (images in an archive, or files) written into a new folder of
+/// `root` (named by the local time) under their names, numbered past one
+/// of the same name from another of the archive's folders; the copies in
+/// `root` older than [`KEEP_PAGES`] deleted first.
+fn unpack(paths: &[PathBuf], root: &Path) -> Result<Vec<PathBuf>, String> {
+    if let Ok(entries) = std::fs::read_dir(root) {
+        let now = std::time::SystemTime::now();
+        for entry in entries.flatten() {
+            let age = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok());
+            if age.is_some_and(|age| age > KEEP_PAGES) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    // Two copies within a second each get a folder.
+    let stamp = crate::win::local_stamp();
+    let dir = (1..)
+        .map(|n| root.join(if n == 1 { stamp.clone() } else { format!("{stamp} ({n})") }))
+        .take(100)
+        .find(|dir| std::fs::create_dir(dir).is_ok())
+        .ok_or_else(|| format!("cannot make a folder in {}", root.display()))?;
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let bytes = crate::archive::read(path).map_err(|e| format!("{}: {e}", crate::app::file_name(path)))?;
+        let ext = path.extension().unwrap_or_default().to_string_lossy();
+        let name = edit::suggested_name(path, &ext, "", |n| dir.join(n).exists());
+        let file = dir.join(name);
+        std::fs::write(&file, bytes).map_err(|e| e.to_string())?;
+        files.push(file);
+    }
+    Ok(files)
 }
 
 /// What the clipboard holds that can be opened, if anything (the menu
@@ -247,5 +302,43 @@ mod tests {
         let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(5, 4, Rgba([1, 2, 3, 4])));
         let png = fast_png(&img).unwrap();
         assert_eq!(image::load_from_memory(&png).unwrap(), img);
+    }
+
+    #[test]
+    fn pages_unpacked_under_their_names() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("qview_copy_pages_{}", std::process::id()));
+        let root = dir.join("copies");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cbz = dir.join("book.cbz");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&cbz).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in [("ch1/001.png", b"one"), ("ch2/001.png", b"two")] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        // A copy of yesterday is deleted; one of now is kept.
+        let old = root.join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        let yesterday = std::time::SystemTime::now() - KEEP_PAGES - std::time::Duration::from_secs(60);
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_WRITE_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS: a folder.
+            let handle = std::fs::OpenOptions::new().access_mode(0x100).custom_flags(0x0200_0000).open(&old).unwrap();
+            handle.set_modified(yesterday).unwrap();
+        }
+        let pages = [cbz.join(r"ch1\001.png"), cbz.join(r"ch2\001.png")];
+        let first = unpack(&pages, &root).unwrap();
+        assert!(!old.exists());
+        let names: Vec<_> = first.iter().map(|p| crate::app::file_name(p)).collect();
+        assert_eq!(names, ["001.png", "001_2.png"]);
+        assert_eq!(std::fs::read(&first[1]).unwrap(), b"two");
+        // Another copy at once: a folder of its own.
+        let second = unpack(&pages[..1], &root).unwrap();
+        assert_ne!(second[0].parent(), first[0].parent());
+        assert_eq!(crate::app::file_name(&second[0]), "001.png");
+        assert!(unpack(&[cbz.join("missing.png")], &root).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

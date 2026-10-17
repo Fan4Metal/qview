@@ -568,7 +568,6 @@ fn changes_files(cmd: Cmd) -> bool {
         cmd,
         Cmd::Delete
             | Cmd::Rename
-            | Cmd::Copy
             | Cmd::ConvertTo(_)
             | Cmd::Edit
             | Cmd::EditWith(_)
@@ -614,6 +613,9 @@ fn acts_on_files(cmd: Cmd) -> bool {
 /// What a clipboard thread did.
 enum Clipped {
     Copied(Result<(), String>),
+    /// Images of an archive copied as files (`clipboard::copy_pages`): how
+    /// many.
+    CopiedPages(usize, Result<(), String>),
     /// The file to open.
     Pasted(Result<PathBuf, String>),
 }
@@ -2792,6 +2794,7 @@ impl App {
                     self.rename = Some(Rename { path, name, error: None, focus: true, select: true });
                 }
             }
+            Cmd::Copy if self.targets().iter().any(|f| crate::archive::inside(f)) => self.copy_pages(ctx),
             Cmd::Copy => {
                 let files = self.targets();
                 let n = files.len();
@@ -3506,6 +3509,24 @@ impl App {
 
     /// Put the current image on the clipboard as it is shown (`as_shown`),
     /// decoded from its file at full size, on a thread.
+    /// Put the images of an archive to copy (`targets`) on the clipboard as
+    /// files, unpacked on a thread (a solid RAR's page may take a while).
+    fn copy_pages(&mut self, ctx: &egui::Context) {
+        if self.clipboard.is_some() {
+            self.notice(tr!("Still copying…".into(), "Копирование ещё идёт…".into()));
+            return;
+        }
+        let files = self.targets();
+        self.notice(tr!("Copying…".into(), "Копирование…".into()));
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Clipped::CopiedPages(files.len(), crate::clipboard::copy_pages(&files)));
+            ctx.request_repaint();
+        });
+        self.clipboard = Some(rx);
+    }
+
     fn copy_image(&mut self, ctx: &egui::Context) {
         if self.clipboard.is_some() {
             self.notice(tr!("Still copying…".into(), "Копирование ещё идёт…".into()));
@@ -3630,6 +3651,11 @@ impl App {
             Clipped::Copied(Err(e)) => {
                 self.notice(tr!(format!("Cannot copy the image: {e}"), format!("Не удалось скопировать изображение: {e}")))
             }
+            Clipped::CopiedPages(1, Ok(())) => self.notice(tr!("Copied to the clipboard".into(), "Скопировано в буфер обмена".into())),
+            Clipped::CopiedPages(n, Ok(())) => {
+                self.notice(tr!(format!("Files copied to the clipboard: {n}"), format!("Скопировано в буфер обмена файлов: {n}")))
+            }
+            Clipped::CopiedPages(_, Err(e)) => self.notice(tr!(format!("Cannot copy: {e}"), format!("Не удалось скопировать: {e}"))),
             Clipped::Pasted(Ok(path)) => self.open(ctx, path),
             Clipped::Pasted(Err(e)) => self.notice(e),
         }
