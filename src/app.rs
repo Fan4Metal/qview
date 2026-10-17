@@ -510,6 +510,9 @@ pub struct App {
     /// display (see `ui::app_icon`).
     pub start_icon: Option<TextureHandle>,
     pub about_icon: Option<TextureHandle>,
+    /// The Licenses window, shown in place of About; closed, About is
+    /// shown again.
+    pub licenses: Option<crate::ui::licenses::LicensesView>,
     /// Icons of the file types in the associations dialog, rasterised for
     /// the display, with the pixel size they were made for.
     pub type_icons: Option<(u32, Vec<TextureHandle>)>,
@@ -958,6 +961,7 @@ impl App {
             title: String::new(),
             start_icon: None,
             about_icon: None,
+            licenses: None,
             type_icons: None,
             assoc_message: None,
             clicked: Vec::new(),

@@ -1,12 +1,14 @@
 r"""
 Builds libheif with libde265 (HEVC) as DLLs for qview into target\heif\bin:
 heif.dll and libde265.dll, with the C runtime linked in (/MT), so they need no
-Visual C++ Redistributable, and a licenses folder with their licences and where
-their sources are. qview loads heif.dll at run time from its own folder
-(src\heif.rs); build.py and make_release.py copy these files next to qview.exe,
-and the installer and the portable archive take them from there.
+Visual C++ Redistributable. qview loads heif.dll at run time from its own
+folder (src\heif.rs); build.py and make_release.py copy these files next to
+qview.exe, and the installer and the portable archive take them from there.
 
-Both libraries are LGPL-3.0: they stay separate DLLs that can be replaced.
+Both libraries are LGPL-3.0: they stay separate DLLs that can be replaced. Their
+licence (licenses\LGPL-3.0.txt) and the source of these tags
+(THIRD_PARTY_LICENSES.md, which a test checks against LIBHEIF and LIBDE265)
+are in the repository and shipped from there.
 
 Needs git and Visual Studio 2022 or later with C++ (the Build Tools' CMake is
 used when cmake is not on PATH). The sources are cloned at the tags below into
@@ -32,7 +34,7 @@ LIBDE265 = ("libde265", "https://github.com/strukturag/libde265", "v1.1.3")
 LIBHEIF = ("libheif", "https://github.com/strukturag/libheif", "v1.23.5")
 
 # What goes next to qview.exe, from BIN.
-FILES = ["heif.dll", "libde265.dll", "licenses"]
+FILES = ["heif.dll", "libde265.dll"]
 
 COMMON = [
     "-DBUILD_SHARED_LIBS=ON",
@@ -129,34 +131,6 @@ def build(lib: tuple[str, str, str], options: list[str]) -> None:
     stamp.write_text(tag)
 
 
-def licenses() -> None:
-    folder = BIN / "licenses"
-    shutil.rmtree(folder, ignore_errors=True)
-    folder.mkdir(parents=True)
-    lines = [
-        "qview reads HEIC/HEIF images with the libraries below, distributed under",
-        "the terms of the GNU Lesser General Public License, version 3 (the texts are",
-        "in the files named after each library). They are the separate files",
-        "heif.dll and libde265.dll, which can be replaced with other builds of the",
-        "same libraries.",
-        "",
-    ]
-    for name, url, tag in (LIBHEIF, LIBDE265):
-        shutil.copy2(SRC / name / "COPYING", folder / f"{name}-COPYING.txt")
-        lines.append(f"{name} {tag.lstrip('v')}, source: {url}/tree/{tag}")
-    lines += ["", "Built by tools/build_heif.py of qview: https://github.com/Fan4Metal/qview", ""]
-    # Not libheif's, but shipped in the same folder: qview.exe reads RAR
-    # archives with RARLab's UnRAR source compiled in (crate unrar-ng-sys).
-    shutil.copy2(Path(__file__).with_name("unrar-license.txt"), folder / "unrar-license.txt")
-    lines += [
-        "qview reads RAR archives (CBR comic books) with the UnRAR source code by",
-        "Alexander Roshal, compiled into qview.exe unmodified; its licence is in",
-        "unrar-license.txt.",
-        "",
-    ]
-    (folder / "README.txt").write_text("\r\n".join(lines), encoding="utf-8", newline="")
-
-
 def ensure() -> Path:
     """Build what is missing; the folder with FILES."""
     PREFIX.mkdir(parents=True, exist_ok=True)
@@ -166,7 +140,6 @@ def ensure() -> Path:
     for dll in ("heif.dll", "libde265.dll"):
         shutil.copy2(PREFIX / "bin" / dll, BIN / dll)
         print(f"{BIN / dll}: {os.path.getsize(BIN / dll) // 1024} KB", flush=True)
-    licenses()
     return BIN
 
 

@@ -6,6 +6,7 @@ pub mod crop;
 mod dialogs;
 pub mod gallery;
 mod info;
+pub mod licenses;
 mod menu;
 mod status;
 mod toolbar;

@@ -1,8 +1,9 @@
 """
 Release build: libheif (build_heif.py, built the first time), cargo build
 --release, the Inno Setup installer (dist\\qview_<version>_Setup.exe) and the
-portable archive (dist\\qview_<version>_portable.zip), both with heif.dll,
-libde265.dll and their licences next to the exe.
+portable archive (dist\\qview_<version>_portable.zip), both with heif.dll and
+libde265.dll next to the exe and the licences (LICENSE, THIRD_PARTY_LICENSES.md
+and the licenses folder, partly written by tools/notices.py).
 
 Runs from any folder: python tools/make_release.py [--no-tests] [--install]
 --install then installs the build silently over the installed copy, to try it.
@@ -32,6 +33,14 @@ ICON = ROOT / "target" / "app.ico"
 
 # Files the installer takes from the repository (see [Files] in setup.iss).
 BUNDLED_FILES = ["LICENSE", "README.md", "README.ru.md"]
+# The licences, shipped by the installer and the portable archive alike.
+LICENSE_FILES = [
+    "LICENSE",
+    "THIRD_PARTY_LICENSES.md",
+    "licenses/LGPL-3.0.txt",
+    "licenses/unrar-license.txt",
+    "licenses/THIRD_PARTY_NOTICES.txt",
+]
 # Folder inside the portable archive, so that extracting "here" does not drop the exe among other files.
 PORTABLE_DIR = "qview"
 
@@ -182,7 +191,7 @@ def installed_exe() -> Path:
 
 
 def check_prerequisites() -> tuple[str, Path]:
-    missing = [name for name in BUNDLED_FILES if not (ROOT / name).is_file()]
+    missing = [name for name in dict.fromkeys(BUNDLED_FILES + LICENSE_FILES) if not (ROOT / name).is_file()]
     if missing:
         raise ReleaseError("files for the installer not found: " + ", ".join(missing))
     cargo = find_cargo()
@@ -199,7 +208,8 @@ def make_portable_zip(version: str) -> Path:
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         z.write(EXE, f"{PORTABLE_DIR}/{EXE.name}")
         z.writestr(f"{PORTABLE_DIR}/app.ron", "")
-        z.write(ROOT / "LICENSE", f"{PORTABLE_DIR}/LICENSE")
+        for name in LICENSE_FILES:
+            z.write(ROOT / name, f"{PORTABLE_DIR}/{name}")
         for name in build_heif.FILES:
             path = EXE.parent / name
             for file in sorted(path.rglob("*")) if path.is_dir() else [path]:

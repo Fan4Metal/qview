@@ -62,13 +62,23 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; libheif with libde265 for HEIC/HEIF (tools\build_heif.py), LGPL: separate
-; DLLs, with their licences and where their sources are.
+; DLLs; their licence and sources in THIRD_PARTY_LICENSES.md and licenses.
 Source: "..\target\release\heif.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\libde265.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\target\release\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
+; The licences (make_release.py's LICENSE_FILES; the exe shows them too).
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_LICENSES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\licenses\LGPL-3.0.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\licenses\unrar-license.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\licenses\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.ru.md"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+; The licences folder of earlier versions, written by build_heif.py.
+Type: files; Name: "{app}\licenses\README.txt"
+Type: files; Name: "{app}\licenses\libheif-COPYING.txt"
+Type: files; Name: "{app}\licenses\libde265-COPYING.txt"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

@@ -1,5 +1,5 @@
 //! Modal dialogs: the delete confirmation, renaming, the list of shortcuts
-//! and About.
+//! and About (with the Licenses window, `licenses`).
 
 use egui::{Align, Key, Layout, RichText, Ui};
 
@@ -211,9 +211,15 @@ impl App {
     }
 
     /// Icon, name, version, a short description, the author, links from
-    /// Cargo.toml when they are set, and where the settings are kept. True
-    /// when closed.
+    /// Cargo.toml when they are set, the licences, and where the settings
+    /// are kept. True when closed.
     fn about(&mut self, ctx: &egui::Context, fresh: bool) -> bool {
+        if let Some(view) = &mut self.licenses {
+            if view.show(ctx) {
+                self.licenses = None;
+            }
+            return false;
+        }
         const ICON: f32 = 64.0;
         const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
         const LICENSE: &str = env!("CARGO_PKG_LICENSE");
@@ -256,6 +262,17 @@ impl App {
                 }
                 if !LICENSE.is_empty() {
                     ui.weak(tr!(format!("{LICENSE} License"), format!("Лицензия {LICENSE}")));
+                }
+                // The texts of all the licences, embedded (`licenses`).
+                if ui
+                    .link(tr!("Licenses…", "Лицензии…"))
+                    .on_hover_text(tr!(
+                        "The licences of qview, of libheif and libde265, of UnRAR and of the libraries and fonts compiled in",
+                        "Лицензии qview, libheif и libde265, UnRAR и встроенных библиотек и шрифтов"
+                    ))
+                    .clicked()
+                {
+                    self.licenses = Some(Default::default());
                 }
                 let place = if crate::portable_dir().is_some() {
                     ui.weak(tr!("Settings: beside the program (portable)", "Настройки: рядом с программой (портативная версия)"))
