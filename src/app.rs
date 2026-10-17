@@ -2002,8 +2002,13 @@ impl App {
             }
         }
         self.files = self.filtered();
+        // The folder with the cursor keeps it in a new order; one gone
+        // leaves it on the cell that took its place.
+        let focused = self.focused_folder();
         self.folders = self.filtered_folders();
-        self.folder_focus = self.folder_focus.filter(|&k| k < self.folders.len());
+        self.folder_focus = focused
+            .and_then(|f| self.folders.iter().position(|g| folder::same_path(g, &f)))
+            .or(self.folder_focus.filter(|&k| k < self.folders.len()));
         // Back in a folder from one of its sub-folders: that one's cell.
         if let Some(left) = self.refocus.take().filter(|_| !self.folders_folded) {
             self.folder_focus = self.folders.iter().position(|f| folder::same_path(f, &left)).or(self.folder_focus);
@@ -3285,7 +3290,7 @@ impl App {
             return (parent, self.listed_folders.clone());
         }
         if !self.sibling_folders.as_ref().is_some_and(|(dir, _)| folder::same_path(dir, &base)) {
-            let subfolders = folder::subfolders(&base);
+            let subfolders = folder::subfolders(&base, self.order());
             self.sibling_folders = Some((base, subfolders));
         }
         (parent, self.sibling_folders.as_ref().map(|(_, f)| f.clone()).unwrap_or_default())

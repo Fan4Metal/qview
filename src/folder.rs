@@ -330,10 +330,30 @@ pub fn insertion_point(files: &[PathBuf], path: &Path, order: Order) -> Option<u
     Some(files.partition_point(|f| compare(&Entry::new(f.clone(), None), &missing, order).is_lt()))
 }
 
-/// The image files of `dir`, unsorted, and with `folders` its sub-folders
-/// that Explorer shows, in its name order (as in the gallery's tree);
-/// symbolic links and junctions are left out, since they can loop.
-fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<PathBuf>, Vec<PathBuf>)> {
+/// `files` in `order`.
+fn in_order(mut files: Vec<Entry>, order: Order) -> Vec<PathBuf> {
+    files.sort_by(|a, b| compare(a, b, order));
+    files.into_iter().map(|e| e.path).collect()
+}
+
+/// Sub-folders in `order`: by name, or by their date modified for either
+/// date (a folder has no date taken); a folder has no size here (nor a
+/// place among the favourites), so those orders leave them in Explorer's
+/// name order.
+fn folders_in(folders: Vec<Entry>, order: Order) -> Vec<PathBuf> {
+    let order = match order.key {
+        SortKey::Name | SortKey::Modified => order,
+        SortKey::Taken => Order { key: SortKey::Modified, ..order },
+        SortKey::Size | SortKey::Added => Order::default(),
+    };
+    in_order(folders, order)
+}
+
+/// The image files of `dir`, and with `folders` its sub-folders that
+/// Explorer shows and its comic book archives, all unsorted (see
+/// [`folders_in`]); symbolic links and junctions are left out, since they
+/// can loop.
+fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<Entry>, Vec<Entry>)> {
     use std::os::windows::fs::MetadataExt;
     let mut files = Vec::new();
     let mut subfolders = Vec::new();
@@ -348,8 +368,7 @@ fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<PathBuf>,
                 && crate::win::is_visible_folder(m.file_attributes())
                 && !entry.file_type().is_ok_and(|t| t.is_symlink())
             {
-                let path = entry.path();
-                subfolders.push((crate::win::wide(path.file_name().unwrap_or_default()), path));
+                subfolders.push(Entry::new(entry.path(), Some(m)));
             }
             continue;
         }
@@ -361,19 +380,16 @@ fn read(dir: &Path, folders: bool) -> std::io::Result<(Vec<Entry>, Vec<PathBuf>,
             // Not hidden, as the sub-folders shown.
             && meta.as_ref().is_some_and(|m| m.file_attributes() & 0x2 == 0)
         {
-            comics.push((crate::win::wide(path.file_name().unwrap_or_default()), path));
+            comics.push(Entry::new(path, meta.as_ref()));
         }
     }
-    subfolders.sort_by(|(a, _), (b, _)| crate::win::logical_cmp(a, b));
-    comics.sort_by(|(a, _), (b, _)| crate::win::logical_cmp(a, b));
-    let names = |list: Vec<(Vec<u16>, PathBuf)>| list.into_iter().map(|(_, p)| p).collect();
-    Ok((files, names(subfolders), names(comics)))
+    Ok((files, subfolders, comics))
 }
 
-/// The visible sub-folders of `dir`, in Explorer's name order (none when
-/// it cannot be read).
-pub fn subfolders(dir: &Path) -> Vec<PathBuf> {
-    read(dir, true).map(|(_, folders, _)| folders).unwrap_or_default()
+/// The visible sub-folders of `dir`, in `order` as the gallery's folder
+/// cells (none when it cannot be read).
+pub fn subfolders(dir: &Path, order: Order) -> Vec<PathBuf> {
+    read(dir, true).map(|(_, folders, _)| folders_in(folders, order)).unwrap_or_default()
 }
 
 /// Image files of `dir`, in `order`. `keep` (the file being shown) is
@@ -385,7 +401,8 @@ pub fn list(dir: &Path, keep: Option<&Path>, order: Order) -> std::io::Result<Ve
 }
 
 /// [`list`], and with `folders` the sub-folders of `dir` that Explorer
-/// shows, in its name order (the gallery's folder cells).
+/// shows (the gallery's folder cells, see [`folders_in`]) and its comic
+/// book archives, in `order` too.
 pub fn list_with_folders(dir: &Path, keep: Option<&Path>, order: Order, folders: bool) -> std::io::Result<Listed> {
     list_with_folders_until(dir, keep, order, folders, &AtomicBool::new(false))
 }
@@ -410,12 +427,12 @@ fn list_with_folders_until(
     if cancel.load(Relaxed) {
         return Err(std::io::ErrorKind::Interrupted.into());
     }
-    files.sort_by(|a, b| compare(a, b, order));
-    Ok((files.into_iter().map(|e| e.path).collect(), subfolders, comics))
+    // The archives' dates taken are not read: their date modified counts.
+    Ok((in_order(files, order), folders_in(subfolders, order), in_order(comics, order)))
 }
 
-/// A folder's images in order, its visible sub-folders and its comic book
-/// archives (`archive::COMICS`), both in Explorer's name order.
+/// A folder's images, its visible sub-folders and its comic book archives
+/// (`archive::COMICS`), each in order.
 pub type Listed = (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>);
 
 /// What a listing holds.
@@ -431,8 +448,8 @@ pub enum Depth {
 
 /// Image files of `dir` and of all its sub-folders. `by_folder`: folder by
 /// folder, a folder's own images in `order`, then those of each of its
-/// sub-folders in Explorer's name order, whatever `order` is; otherwise
-/// all of them in `order`. A sub-folder that cannot be read is skipped.
+/// sub-folders in `order` as the folder cells (see [`folders_in`]);
+/// otherwise all of them in `order`. A sub-folder that cannot be read is skipped.
 /// `found` counts the images found so far; stops when `cancel` is set.
 pub fn list_deep(
     dir: &Path,
@@ -458,7 +475,7 @@ pub fn list_deep(
         }
         files.extend(own);
         found.store(files.len(), Relaxed);
-        for sub in subfolders {
+        for sub in folders_in(subfolders, order.unwrap_or_default()) {
             match walk(&sub, order, files, found, cancel) {
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Err(e),
                 _ => {}
@@ -847,6 +864,56 @@ mod tests {
     }
 
     #[test]
+    fn sorts_folders_and_comic_books() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("qview_folder_order_{}", std::process::id()));
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let age = |days: u64| base - Duration::from_secs(days * 86_400);
+        // Name, size, age in days.
+        let comics = [("x.cbz", 300, 2), ("y.cbz", 100, 1)];
+        let folders = [("A10", 1), ("A9", 3), ("b", 2)];
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, size, days) in comics {
+            let path = dir.join(name);
+            std::fs::write(&path, vec![0u8; size]).unwrap();
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(age(days)).unwrap();
+        }
+        for (name, days) in folders {
+            let path = dir.join(name);
+            std::fs::create_dir(&path).unwrap();
+            // FILE_WRITE_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS: a folder.
+            let handle = std::fs::OpenOptions::new().access_mode(0x100).custom_flags(0x0200_0000).open(&path).unwrap();
+            handle.set_modified(age(days)).unwrap();
+        }
+        let names = |list: Vec<PathBuf>| -> Vec<String> {
+            list.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect()
+        };
+        let listed = |key, descending| {
+            let (_, folders, comics) = list_with_folders(&dir, None, Order { key, descending }, true).unwrap();
+            (names(folders), names(comics))
+        };
+        let (folders, comics) = listed(SortKey::Name, false);
+        assert_eq!(folders, ["A9", "A10", "b"]);
+        assert_eq!(comics, ["x.cbz", "y.cbz"]);
+        let (folders, comics) = listed(SortKey::Name, true);
+        assert_eq!(folders, ["b", "A10", "A9"]);
+        assert_eq!(comics, ["y.cbz", "x.cbz"]);
+        // Oldest first; a folder's date modified stands for its date taken.
+        let (folders, comics) = listed(SortKey::Modified, false);
+        assert_eq!(folders, ["A9", "b", "A10"]);
+        assert_eq!(comics, ["x.cbz", "y.cbz"]);
+        assert_eq!(listed(SortKey::Taken, true).0, ["A10", "b", "A9"]);
+        // A folder has no size: by name, whatever the direction.
+        let (folders, comics) = listed(SortKey::Size, true);
+        assert_eq!(folders, ["A9", "A10", "b"]);
+        assert_eq!(comics, ["x.cbz", "y.cbz"]);
+        assert_eq!(listed(SortKey::Size, false).1, ["y.cbz", "x.cbz"]);
+        assert_eq!(names(subfolders(&dir, Order { key: SortKey::Modified, descending: true })), ["A10", "b", "A9"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn filters_by_words_and_wildcards() {
         assert!(matches("IMG_2024_Beach.jpg", ""));
         assert!(matches("IMG_2024_Beach.jpg", "beach"));
@@ -956,8 +1023,9 @@ mod tests {
         assert_eq!(relative(by_name, true), ["a.jpg", "z.jpg", r"b2\c.png", r"b2\d.png", r"b10\e.gif", r"b10\x\f.bmp"]);
         let by_size = Order { key: SortKey::Size, descending: false };
         assert_eq!(relative(by_size, true), ["z.jpg", "a.jpg", r"b2\d.png", r"b2\c.png", r"b10\e.gif", r"b10\x\f.bmp"]);
+        // The sub-folders in the order too, but never by size.
         let names_down = Order { descending: true, ..by_name };
-        assert_eq!(relative(names_down, true), ["z.jpg", "a.jpg", r"b2\d.png", r"b2\c.png", r"b10\e.gif", r"b10\x\f.bmp"]);
+        assert_eq!(relative(names_down, true), ["z.jpg", "a.jpg", r"b10\e.gif", r"b10\x\f.bmp", r"b2\d.png", r"b2\c.png"]);
         // Not by folder: one order through all of them.
         assert_eq!(relative(by_name, false), ["a.jpg", r"b2\c.png", r"b2\d.png", r"b10\e.gif", r"b10\x\f.bmp", "z.jpg"]);
         assert_eq!(relative(by_size, false), [r"b2\d.png", r"b10\e.gif", r"b10\x\f.bmp", "z.jpg", "a.jpg", r"b2\c.png"]);
