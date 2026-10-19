@@ -10,7 +10,7 @@ The source code of the included builds:
 
 - libheif: <https://github.com/strukturag/libheif/tree/v1.23.5>;
 - libde265: <https://github.com/strukturag/libde265/tree/v1.1.3>;
-- the build script, which fetches these tags and builds them unmodified as DLLs with the C runtime linked in: [`tools/build_heif.py`](tools/build_heif.py).
+- the build script, which fetches these tags and builds them unmodified as DLLs with the C runtime linked in: [`tools/build_heif.py`](https://github.com/Fan4Metal/qview/blob/main/tools/build_heif.py) (in the repository; the installer and the portable archive do not include it).
 
 ## UnRAR
 
@@ -18,4 +18,4 @@ RAR archives and CBR comic books are read with the UnRAR source code by Alexande
 
 ## egui / eframe and the other Rust crates
 
-The user interface uses [egui and eframe](https://github.com/emilk/egui), licensed under the MIT License or the Apache License 2.0, and the program further Rust crates under permissive licenses (MIT, Apache 2.0, BSD, ISC, Zlib, BSL, Unicode), among them [image](https://github.com/image-rs/image) for decoding and [resvg](https://github.com/linebender/resvg) for SVG, compiled into `qview.exe`, together with the fonts egui embeds (Ubuntu Font Licence, SIL Open Font License 1.1, MIT). Their licence texts and copyright notices are in [licenses/THIRD_PARTY_NOTICES.txt](licenses/THIRD_PARTY_NOTICES.txt), written by `tools/notices.py` from `Cargo.lock`; the program also shows them in its About window (**Licenses…**).
+The user interface uses [egui and eframe](https://github.com/emilk/egui), licensed under the MIT License or the Apache License 2.0, and the program further Rust crates under permissive licenses (MIT, Apache 2.0, BSD, ISC, Zlib, BSL, Unicode), among them [image](https://github.com/image-rs/image) for decoding and [resvg](https://github.com/linebender/resvg) for SVG, compiled into `qview.exe`, together with the fonts egui embeds (Ubuntu Font Licence, SIL Open Font License 1.1, MIT). Their licence texts and copyright notices are in [licenses/THIRD_PARTY_NOTICES.txt](licenses/THIRD_PARTY_NOTICES.txt), written by `tools/notices.py` from `Cargo.lock` and `Cargo.toml`; the program also shows them in its About window (**Licenses…**).

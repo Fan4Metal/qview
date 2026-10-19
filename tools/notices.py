@@ -6,7 +6,8 @@ installer and the portable archive ship it. UnRAR, compiled in by the crate
 unrar-ng-sys, has a licence of its own (licenses/unrar-license.txt).
 
 Run it after the dependencies change: python tools/notices.py
-(a test, ui::licenses::tests, fails while the file is older than Cargo.lock).
+(a test, ui::licenses::tests, fails while the file is older than Cargo.lock
+or the dependency sections of Cargo.toml).
 Needs cargo on PATH and the crates in Cargo's registry (any build fetches
 them). No other dependencies.
 """
@@ -79,6 +80,22 @@ def fnv1a64(data: bytes) -> str:
     return f"{h:016x}"
 
 
+def dependency_lines() -> list:
+    """The lines of Cargo.toml's dependency sections (not build or dev ones),
+    trimmed, without blank lines and comments: a feature turned on there
+    changes the crates built without always changing Cargo.lock."""
+    on = False
+    out = []
+    for line in (ROOT / "Cargo.toml").read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            on = line.endswith("dependencies]") and not line.endswith(("build-dependencies]", "dev-dependencies]"))
+            continue
+        if on and line and not line.startswith("#"):
+            out.append(line)
+    return out
+
+
 def lock_hash() -> str:
     # Without carriage returns: git may check Cargo.lock out with either.
     # Without this package's own version: a release changes it, and the
@@ -89,16 +106,18 @@ def lock_hash() -> str:
         for i, line in enumerate(lines)
         if not (i > 0 and lines[i - 1] == b'name = "qview"' and line.startswith(b"version = "))
     ]
-    return fnv1a64(b"\n".join(kept))
+    return fnv1a64(b"\n".join(kept) + b"\n" + "\n".join(dependency_lines()).encode("utf-8"))
 
 
 def crates():
     """The packages compiled into the exe: normal dependencies, for Windows,
-    with the features this build turns on. `cargo metadata`'s resolve also
-    names optional dependencies the build leaves out (image's AV1 encoder),
-    so the set is `cargo tree`'s and only the paths come from the metadata."""
+    with the features this build turns on, without procedural macros and
+    what only they use (syn, quote: run by the compiler, not in the exe).
+    `cargo metadata`'s resolve also names optional dependencies the build
+    leaves out (image's AV1 encoder), so the set is `cargo tree`'s and only
+    the paths come from the metadata."""
     tree = subprocess.run(
-        ["cargo", "tree", "--locked", "-e", "normal", "--target", TARGET, "--prefix", "none", "-f", "{p}"],
+        ["cargo", "tree", "--locked", "-e", "normal,no-proc-macro", "--target", TARGET, "--prefix", "none", "-f", "{p}"],
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -127,8 +146,10 @@ def normalized(text: str) -> str:
 
 
 def license_texts(package):
-    """(file name, text) of the crate's licences: of an `A OR MIT` choice, the
-    MIT text alone when there is one; NOTICE files always."""
+    """(file name, text) of the crate's licences: of a choice (`A OR B`), the
+    MIT text alone when there is one, else the Apache one; every text when
+    the expression also joins one with AND (`(MIT OR Apache-2.0) AND
+    Unicode-3.0` needs the Unicode one too); NOTICE files always."""
     folder = Path(package["manifest_path"]).parent
     files = sorted(f for f in folder.iterdir() if f.is_file() and LICENSE_FILE.match(f.name))
     if package.get("license_file"):
@@ -136,11 +157,13 @@ def license_texts(package):
         if extra.is_file() and extra not in files:
             files.append(extra)
     expression = package.get("license") or ""
-    mit_choice = re.search(r"\bMIT\b", expression) and " OR " in expression.replace("/", " OR ")
-    if mit_choice:
-        mit = [f for f in files if "MIT" in f.name.upper()]
-        if mit:
-            files = mit + [f for f in files if f.name.upper().startswith("NOTICE") and f not in mit]
+    choice = " OR " in expression.replace("/", " OR ") and " AND " not in expression
+    if choice:
+        for spdx, marker in ((r"\bMIT\b", "MIT"), (r"\bApache-2\.0\b", "APACHE")):
+            chosen = [f for f in files if marker in f.name.upper()] if re.search(spdx, expression) else []
+            if chosen:
+                files = chosen + [f for f in files if f.name.upper().startswith("NOTICE") and f not in chosen]
+                break
     texts = [(f.name, f.read_text(encoding="utf-8", errors="replace").strip()) for f in files]
     if texts:
         return texts
@@ -162,11 +185,11 @@ def main():
         "",
         "qview.exe includes the Rust crates below, compiled into it, and the fonts",
         "of its interface. Their licences and copyright notices follow. Where a crate",
-        "offers a choice of licences, the one reproduced here is the one chosen.",
-        "The UnRAR source code that unrar-ng-sys compiles in is under its own licence",
-        "(unrar-license.txt).",
+        "offers a choice of licences, the one reproduced here (MIT, else Apache 2.0)",
+        "is the one chosen. The UnRAR source code that unrar-ng-sys compiles in is",
+        "under its own licence (unrar-license.txt).",
         "",
-        f"Generated by tools/notices.py; Cargo.lock FNV-1a 64: {lock_hash()}",
+        f"Generated by tools/notices.py; Cargo.lock and Cargo.toml FNV-1a 64: {lock_hash()}",
         "",
         "Crates",
         "-" * 6,

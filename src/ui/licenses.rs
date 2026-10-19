@@ -22,7 +22,6 @@ const NOTICES: &str = include_str!("../../licenses/THIRD_PARTY_NOTICES.txt");
 const SIZE: egui::Vec2 = vec2(860.0, 540.0);
 /// The width of the list on the left.
 const LIST: f32 = 200.0;
-const ROW: f32 = 15.0;
 /// The font of the texts.
 const FONT: f32 = 12.0;
 
@@ -66,8 +65,8 @@ pub struct LicensesView {
 }
 
 impl LicensesView {
-    /// Draw the window; whether it is to close (the cross, Esc, a click
-    /// outside).
+    /// Draw the window; whether it is to close (the cross, Esc, Enter, F1
+    /// as About, a click outside).
     pub fn show(&mut self, ctx: &egui::Context) -> bool {
         let modal = egui::Modal::new(egui::Id::new("licenses")).show(ctx, |ui| {
             // Smaller in a smaller window.
@@ -101,7 +100,8 @@ impl LicensesView {
             let inner = text.shrink(6.0);
             // As many characters as fit beside the scroll bar.
             let font = FontId::monospace(FONT);
-            let glyph = ui.fonts_mut(|f| f.glyph_width(&font, 'M'));
+            // A label's height, which `show_rows` must be told exactly.
+            let (glyph, row) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
             let room = inner.width() - ui.spacing().scroll.bar_width - 8.0;
             let columns = ((room / glyph).floor() as usize).max(20);
             if self.lines.is_empty() || columns != self.columns {
@@ -113,14 +113,14 @@ impl LicensesView {
             egui::ScrollArea::vertical()
                 .id_salt(("licenses_text", self.part as u8))
                 .auto_shrink([false, false])
-                .show_rows(&mut text_ui, ROW, self.lines.len(), |ui, rows| {
+                .show_rows(&mut text_ui, row, self.lines.len(), |ui, rows| {
                     for line in &self.lines[rows] {
                         ui.add(egui::Label::new(RichText::new(line.as_ref()).font(font.clone()).color(colour)).extend());
                     }
                 });
             closed
         });
-        modal.inner || modal.should_close()
+        modal.inner || modal.should_close() || super::dialogs::key_closes(ctx, &[egui::Key::Enter, egui::Key::F1])
     }
 
     fn split(&mut self) {
@@ -171,9 +171,32 @@ fn wrap(line: &'static str, columns: usize, out: &mut Vec<Cow<'static, str>>) {
 mod tests {
     use super::*;
 
-    /// tools/notices.py's hash of Cargo.lock: without carriage returns and
-    /// without this package's own version (a release changes it).
-    fn lock_hash(lock: &str) -> String {
+    /// tools/notices.py's `dependency_lines`: Cargo.toml's dependency
+    /// sections (not build or dev ones), trimmed, without blank lines and
+    /// comments.
+    fn dependency_lines(toml: &str) -> Vec<&str> {
+        let mut on = false;
+        let mut out = Vec::new();
+        for line in toml.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                on = line.ends_with("dependencies]")
+                    && !line.ends_with("build-dependencies]")
+                    && !line.ends_with("dev-dependencies]");
+                continue;
+            }
+            if on && !line.is_empty() && !line.starts_with('#') {
+                out.push(line);
+            }
+        }
+        out
+    }
+
+    /// tools/notices.py's hash of Cargo.lock (without carriage returns and
+    /// without this package's own version, which a release changes) and
+    /// of the dependency lines of Cargo.toml (a feature turned on changes
+    /// the crates built without always changing Cargo.lock).
+    fn lock_hash(lock: &str, toml: &str) -> String {
         let lock = lock.replace('\r', "");
         let lines: Vec<&str> = lock.split('\n').collect();
         let kept: Vec<&str> = lines
@@ -183,7 +206,7 @@ mod tests {
             .map(|(_, line)| *line)
             .collect();
         let mut h: u64 = 0xCBF2_9CE4_8422_2325;
-        for b in kept.join("\n").bytes() {
+        for b in format!("{}\n{}", kept.join("\n"), dependency_lines(toml).join("\n")).bytes() {
             h ^= u64::from(b);
             h = h.wrapping_mul(0x0000_0100_0000_01B3);
         }
@@ -193,19 +216,33 @@ mod tests {
     #[test]
     fn notices_follow_cargo_lock() {
         let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock")).unwrap();
-        let hash = lock_hash(&lock);
+        let toml = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+        let hash = lock_hash(&lock, &toml);
         assert!(
-            NOTICES.contains(&format!("Cargo.lock FNV-1a 64: {hash}")),
-            "licenses/THIRD_PARTY_NOTICES.txt is older than Cargo.lock: run python tools/notices.py"
+            NOTICES.contains(&format!("Cargo.lock and Cargo.toml FNV-1a 64: {hash}")),
+            "licenses/THIRD_PARTY_NOTICES.txt is older than Cargo.lock or Cargo.toml: run python tools/notices.py"
         );
     }
 
     #[test]
     fn own_version_leaves_the_hash() {
         let lock = |v: &str| format!("[[package]]\r\nname = \"qview\"\r\nversion = \"{v}\"\r\n");
-        assert_eq!(lock_hash(&lock("0.7.0-dev")), lock_hash(&lock("0.7.0")));
+        assert_eq!(lock_hash(&lock("0.7.0-dev"), ""), lock_hash(&lock("0.7.0"), ""));
         let other = |v: &str| format!("[[package]]\nname = \"egui\"\nversion = \"{v}\"\n");
-        assert_ne!(lock_hash(&other("0.36.1")), lock_hash(&other("0.36.2")));
+        assert_ne!(lock_hash(&other("0.36.1"), ""), lock_hash(&other("0.36.2"), ""));
+    }
+
+    /// A feature turned on changes the hash; comments, build and dev
+    /// dependencies and the package's own fields do not.
+    #[test]
+    fn dependencies_change_the_hash() {
+        let toml = |deps: &str, build: &str| {
+            format!("[package]\nversion = \"1\"\n\n[dependencies]\n# a comment\n{deps}\n\n[build-dependencies]\n{build}\n")
+        };
+        let base = lock_hash("", &toml("image = \"0.25\"", "png = \"1\""));
+        assert_ne!(base, lock_hash("", &toml("image = { version = \"0.25\", features = [\"avif\"] }", "png = \"1\"")));
+        assert_eq!(base, lock_hash("", &toml("image = \"0.25\"", "png = \"2\"")));
+        assert_eq!(base, lock_hash("", &toml("image = \"0.25\"  ", "png = \"1\"").replace("version = \"1\"", "version = \"2\"")));
     }
 
     /// THIRD_PARTY_LICENSES.md names the tags tools/build_heif.py builds

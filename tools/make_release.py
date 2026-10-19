@@ -23,6 +23,7 @@ import zipfile
 from pathlib import Path
 
 import build_heif
+import notices as notices_script
 
 ROOT = Path(__file__).resolve().parent.parent
 CARGO_TOML = ROOT / "Cargo.toml"
@@ -194,6 +195,11 @@ def check_prerequisites() -> tuple[str, Path]:
     missing = [name for name in dict.fromkeys(BUNDLED_FILES + LICENSE_FILES) if not (ROOT / name).is_file()]
     if missing:
         raise ReleaseError("files for the installer not found: " + ", ".join(missing))
+    # The test checks it too, but --no-tests (the usual local install)
+    # skips the tests: stale notices would ship.
+    notices = (ROOT / "licenses" / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8")
+    if f"FNV-1a 64: {notices_script.lock_hash()}" not in notices:
+        raise ReleaseError("licenses/THIRD_PARTY_NOTICES.txt is older than the dependencies: run python tools/notices.py")
     cargo = find_cargo()
     iscc = find_iscc()
     print(f"  cargo:                 {cargo}")

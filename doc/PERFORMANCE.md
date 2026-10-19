@@ -35,6 +35,7 @@ Some later measurements were made on a second machine, an Intel Core i7-12700K w
 - A filter shader (see [Filtering](#filtering)) is never built before the first image is on screen.
 - The icons (the app's and 16 file types', 8 sizes each) were stored as 32-bit BMP layers: 306 KB each, 264 KB of it the 256 px layer, 5.2 MB of an 18 MB exe. The 256 px layer is now a PNG (Windows reads PNG layers in icons since Vista; checked with `PrivateExtractIconsW` from the exe): ~50 KB an icon, 0.85 MB in all, the exe 13.2 MB. The smaller layers stay BMP, which Windows draws without decoding.
 - The C runtime is linked statically (`crt-static`, `.cargo/config.toml`), so that qview needs no Visual C++ Redistributable; it adds ~180 KB to the exe. For start-up it is slightly in favour: an empty program started and ended in 6.31 ms (median of 300 runs) against 6.70 ms with `VCRUNTIME140.dll` and the `api-ms-win-crt-*` DLLs loaded, ~0.4 ms less.
+- The licence texts shown by About → **Licenses…** are embedded as they are (`include_str!`): `licenses/THIRD_PARTY_NOTICES.txt` 198 KB (158 crates and the fonts; 211 KB before proc-macro crates such as `syn` were left out, which run in the compiler and are not in the exe), the LGPL 43 KB, qview's licence, `THIRD_PARTY_LICENSES.md` and UnRAR's licence 5 KB: ~245 KB of the exe. They are read only when the window is shown.
 
 ## Decoding
 

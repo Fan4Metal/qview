@@ -289,6 +289,7 @@ qview построен на следующих проектах с открыт�
 
 - [egui / eframe](https://github.com/emilk/egui): интерфейс и окно программы;
 - [image](https://github.com/image-rs/image): декодирование и кодирование большинства форматов;
+- [resvg](https://github.com/linebender/resvg): отрисовка SVG и SVGZ;
 - [libheif](https://github.com/strukturag/libheif) и [libde265](https://github.com/strukturag/libde265): декодирование HEIC/HEIF;
 - [UnRAR](https://www.rarlab.com/rar_add.htm) Александра Рошала через [unrar-ng-sys](https://github.com/ttys3/unrar.rs): чтение архивов RAR;
 - [Inno Setup](https://jrsoftware.org/isinfo.php): установщик.
