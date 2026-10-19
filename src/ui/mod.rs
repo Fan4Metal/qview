@@ -42,15 +42,22 @@ pub fn context_menu(response: &egui::Response, add: impl FnOnce(&mut egui::Ui)) 
     if pressed && !on_menus && Popup::is_id_open(ctx, menu) {
         Popup::close_id(ctx, menu);
     }
-    let mut open = ctx.data_mut(|d| d.remove_temp::<bool>(reopen)).unwrap_or(false);
+    // Asked for in the frame before, not by a widget not drawn since (a tree
+    // row scrolled away), whose menu would open when it came back.
+    let frame = ctx.cumulative_frame_nr();
+    let mut open = ctx.data_mut(|d| d.remove_temp::<u64>(reopen)).is_some_and(|asked| asked + 2 >= frame);
     if response.secondary_clicked() {
         if ctx.read_response(menu).is_some() {
-            ctx.data_mut(|d| d.insert_temp(reopen, true));
+            ctx.data_mut(|d| d.insert_temp(reopen, frame));
             ctx.request_repaint();
         } else {
             open = true;
         }
     }
+    // Placed at the pointer: with the pointer gone (it left the window in
+    // the frame of a reopening), egui keeps the menu open without a place
+    // and never shows it, while it holds the keys and the wheel.
+    let open = open && ctx.input(|i| i.pointer.hover_pos()).is_some();
     let command = if open {
         Some(SetOpenCommand::Bool(true))
     } else if response.clicked() {

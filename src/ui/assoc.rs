@@ -77,7 +77,8 @@ impl App {
                     "Регистрация qview в Windows для файлов изображений."
                 ));
                 ui.add_space(4.0);
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut ui, |ui| {
+                // Across too: the Types grid needs ~500 points.
+                egui::ScrollArea::both().auto_shrink([false, false]).show(&mut ui, |ui| {
                     egui::Frame::new()
                         .inner_margin(Margin { left: 0, right: 18, top: 0, bottom: 18 })
                         .show(ui, |ui| {
@@ -89,7 +90,7 @@ impl App {
         match action {
             Some(Action::Register) => {
                 let result = exe
-                    .ok_or_else(|| "the path of the program is unknown".to_string())
+                    .ok_or_else(|| tr!("the path of the program is unknown", "путь к программе неизвестен").to_string())
                     .and_then(|e| assoc::register(&e));
                 self.assoc_message = Some(match result {
                     Ok(()) => tr!("qview is registered.".into(), "qview зарегистрирован.".into()),
@@ -309,24 +310,32 @@ fn divider(ui: &mut Ui) {
 
 /// A row of a card: the name with an optional hint under it on the left,
 /// what `control` adds right-aligned in `control_width` points on the
-/// right, centred vertically.
+/// right, centred vertically; in a narrow window, under the text.
 fn row<R>(ui: &mut Ui, title: &str, hint: Option<&str>, control_width: f32, control: impl FnOnce(&mut Ui) -> R) -> R {
     const PAD: f32 = 8.0;
+    /// Less room for the text than this puts the control under it.
+    const MIN_TEXT: f32 = 160.0;
     let width = ui.available_width();
-    let text_width = (width - control_width - 24.0).max(80.0);
+    let beside = width - control_width - 24.0 >= MIN_TEXT;
+    let text_width = if beside { width - control_width - 24.0 } else { width };
     let title = ui.painter().layout(title.to_owned(), FontId::proportional(14.0), super::TEXT, text_width);
     let hint = hint.map(|h| ui.painter().layout(h.to_owned(), FontId::proportional(12.5), super::TEXT_WEAK, text_width));
     let text_height = title.size().y + hint.as_ref().map_or(0.0, |h| 2.0 + h.size().y);
-    let height = text_height.max(ui.spacing().interact_size.y) + 2.0 * PAD;
+    let control_height = ui.spacing().interact_size.y;
+    let height = if beside { text_height.max(control_height) } else { text_height + PAD + control_height } + 2.0 * PAD;
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    let mut y = rect.center().y - text_height / 2.0;
+    let mut y = if beside { rect.center().y - text_height / 2.0 } else { rect.top() + PAD };
     let title_height = title.size().y;
     ui.painter().galley(pos2(rect.left(), y), title, super::TEXT);
     y += title_height + 2.0;
     if let Some(hint) = hint {
         ui.painter().galley(pos2(rect.left(), y), hint, super::TEXT_WEAK);
     }
-    let control_rect = Rect::from_min_max(pos2(rect.right() - control_width, rect.top()), rect.max);
+    let control_rect = if beside {
+        Rect::from_min_max(pos2(rect.right() - control_width, rect.top()), rect.max)
+    } else {
+        Rect::from_min_max(pos2(rect.left(), rect.bottom() - PAD - control_height), pos2(rect.right(), rect.bottom() - PAD))
+    };
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(control_rect).layout(Layout::right_to_left(Align::Center)));
     control(&mut ui)
 }

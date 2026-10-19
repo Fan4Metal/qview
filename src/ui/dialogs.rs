@@ -323,8 +323,7 @@ impl App {
         if fresh {
             return false;
         }
-        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter) || i.consume_key(egui::Modifiers::NONE, Key::F1))
-            || modal.should_close()
+        key_closes(ctx, &[Key::Enter, Key::F1]) || modal.should_close()
     }
 
     fn confirm_delete_dialog(&mut self, ctx: &egui::Context) {
@@ -885,8 +884,23 @@ fn info_modal(ctx: &egui::Context, id: &str, title: &str, fresh: bool, content: 
     if fresh {
         return close;
     }
-    let key = ctx.input_mut(|i| {
-        i.consume_key(egui::Modifiers::NONE, Key::Enter) || i.consume_key(egui::Modifiers::NONE, Key::K)
-    });
+    let key = key_closes(ctx, &[Key::Enter, Key::K]);
     close || key || modal.should_close()
+}
+
+/// A press of one of `keys` without modifiers, taken out of the frame's
+/// events with its repeats: a repeat does not count, or holding the key
+/// that opened a window closed it half a second later.
+pub(super) fn key_closes(ctx: &egui::Context, keys: &[Key]) -> bool {
+    ctx.input_mut(|i| {
+        let mut pressed = false;
+        i.events.retain(|e| match e {
+            egui::Event::Key { key, pressed: true, repeat, modifiers, .. } if keys.contains(key) && modifiers.is_none() => {
+                pressed |= !repeat;
+                false
+            }
+            _ => true,
+        });
+        pressed
+    })
 }

@@ -6,6 +6,8 @@
 //! and arrives only as text. `Ctrl+C` arrives as `Event::Copy` (with Shift
 //! held, Copy Image); `Ctrl+V` is watched for by `win::watch_paste`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,10 +394,16 @@ pub fn keys(ctx: &egui::Context, mode: Mode) -> Vec<Cmd> {
 /// A double click on `response`. egui counts a click soon after a double
 /// click as a triple click, which is not a double click: a click that
 /// selects a thumbnail followed at once by a double click on it would be
-/// lost. Any click of a series after the first counts here.
+/// lost. Any click of a series after the first counts here, except a left
+/// click right after a right one ([`RightClick`]): egui counts the clicks
+/// of every button together, so closing a cell's context menu with a click
+/// on the cell opened the image.
 pub fn double_clicked(response: &egui::Response) -> bool {
-    response.double_clicked() || response.triple_clicked()
+    (response.double_clicked() || response.triple_clicked()) && !AFTER_RIGHT.load(Ordering::Relaxed)
 }
+
+/// The left click of this frame came right after a right click.
+static AFTER_RIGHT: AtomicBool = AtomicBool::new(false);
 
 /// The right button's press, held back until it is let go (`App`'s
 /// `raw_input_hook`). egui counts a press and a release as a click only
@@ -407,20 +415,41 @@ pub fn double_clicked(response: &egui::Response) -> bool {
 #[derive(Default)]
 pub struct RightClick {
     held: bool,
+    /// The last click was the right button's (for [`double_clicked`]).
+    right_last: bool,
 }
 
 impl RightClick {
     pub fn hook(&mut self, events: &mut Vec<Event>) {
-        if !events.iter().any(|e| matches!(e, Event::PointerButton { button: PointerButton::Secondary, .. })) {
+        let wanted = |e: &Event| {
+            matches!(
+                e,
+                Event::PointerButton { button: PointerButton::Primary | PointerButton::Secondary, .. }
+                    | Event::PointerGone
+                    | Event::WindowFocused(false)
+            )
+        };
+        if !events.iter().any(wanted) {
             return;
         }
         let mut out = Vec::with_capacity(events.len() + 1);
         for e in events.drain(..) {
             match e {
                 Event::PointerButton { button: PointerButton::Secondary, pressed: true, .. } => self.held = true,
+                // The release may go to another window (Alt+Tab with the
+                // button held); a later one alone is no click.
+                Event::PointerGone | Event::WindowFocused(false) => {
+                    self.held = false;
+                    out.push(e);
+                }
                 Event::PointerButton { pos, button: PointerButton::Secondary, pressed: false, modifiers } if self.held => {
                     self.held = false;
+                    self.right_last = true;
                     out.push(Event::PointerButton { pos, button: PointerButton::Secondary, pressed: true, modifiers });
+                    out.push(e);
+                }
+                Event::PointerButton { button: PointerButton::Primary, pressed: false, .. } => {
+                    AFTER_RIGHT.store(std::mem::take(&mut self.right_last), Ordering::Relaxed);
                     out.push(e);
                 }
                 e => out.push(e),
@@ -513,6 +542,29 @@ mod tests {
         let before = events.clone();
         right.hook(&mut events);
         assert_eq!(events, before);
+        // A press whose release went to another window is forgotten.
+        let mut events = vec![button(60.0, true), Event::WindowFocused(false)];
+        right.hook(&mut events);
+        let mut events = vec![button(60.0, false)];
+        right.hook(&mut events);
+        assert_eq!(events, vec![button(60.0, false)]);
+    }
+
+    /// A left click right after a right click is no double click; the
+    /// next left click of the series is.
+    #[test]
+    fn left_after_right_is_no_double_click() {
+        let click = |button: PointerButton| {
+            [true, false].map(|pressed| Event::PointerButton { pos: egui::pos2(5.0, 5.0), button, pressed, modifiers: NONE })
+        };
+        let mut right = RightClick::default();
+        let mut after = Vec::new();
+        for button in [PointerButton::Secondary, PointerButton::Primary, PointerButton::Primary] {
+            let mut events = click(button).to_vec();
+            right.hook(&mut events);
+            after.push(AFTER_RIGHT.load(Ordering::Relaxed));
+        }
+        assert_eq!(after, [false, true, false]);
     }
 
     #[test]

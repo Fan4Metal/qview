@@ -4252,8 +4252,10 @@ impl App {
         let response = ui.allocate_rect(rect, Sense::CLICK | Sense::DRAG);
         let painter = ui.painter_at(rect);
 
-        // The navigator, if shown: the wheel zooms about the centre over it.
+        // The navigator, if shown: the wheel zooms about the centre over it,
+        // and a right click there opens the image's menu.
         let mut nav_at = None;
+        let mut nav_response = None;
         // Still decoding the current image.
         let waiting = self.current.as_ref().is_some_and(|c| {
             !self.cache.contains_key(c) && self.shown.as_ref().is_none_or(|(p, _)| p != c)
@@ -4279,9 +4281,11 @@ impl App {
             let nav = navigator.then(|| view::navigator_rect(place.size(), rect, self.navigator_corner, ppp));
             let mut nav_alpha = 0.0;
             if let Some(nav) = nav {
-                place = self.navigate(&ctx, ui, nav, place, size, rect, ppp);
+                let (moved, nav_clicks) = self.navigate(&ctx, ui, nav, place, size, rect, ppp);
+                place = moved;
                 nav_alpha = self.navigator_alpha(&ctx, place);
                 nav_at = Some(nav);
+                nav_response = Some(nav_clicks);
             }
             // A drawing enlarged past its texture: the part on screen drawn
             // anew, over the image, or instead of it when it covers the
@@ -4379,11 +4383,15 @@ impl App {
                 }
             }
         }
-        if response.secondary_clicked() {
+        let menu = match nav_response {
+            Some(nav) => response.union(nav),
+            None => response,
+        };
+        if menu.secondary_clicked() {
             self.menu_picked = self.picked;
         }
         if !cropping {
-            crate::ui::context_menu(&response, |ui| self.context_menu(ui));
+            crate::ui::context_menu(&menu, |ui| self.context_menu(ui));
         }
     }
 
@@ -4391,7 +4399,16 @@ impl App {
     /// pointer goes to the centre of the window (a window grabbed keeps
     /// where it was grabbed). Returns the image's place after it.
     #[allow(clippy::too_many_arguments)]
-    fn navigate(&mut self, ctx: &egui::Context, ui: &egui::Ui, nav: Rect, place: Rect, size: Vec2, area: Rect, ppp: f32) -> Rect {
+    fn navigate(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &egui::Ui,
+        nav: Rect,
+        place: Rect,
+        size: Vec2,
+        area: Rect,
+        ppp: f32,
+    ) -> (Rect, egui::Response) {
         let response = ui.interact(nav.expand(2.0), ui.id().with("navigator"), Sense::CLICK | Sense::DRAG);
         let window = view::navigator_window(place, area, nav);
         let pressed = response.is_pointer_button_down_on() && ctx.input(|i| i.pointer.primary_down());
@@ -4414,7 +4431,7 @@ impl App {
         if response.hovered() || self.nav_grab.is_some() {
             self.nav_active = Instant::now();
         }
-        place
+        (place, response)
     }
 
     /// How opaque the navigator is: always whole, unless it hides when
