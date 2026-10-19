@@ -265,9 +265,27 @@ pub fn copy_file(path: &Path) -> Result<(), String> {
 
 /// `paths` to the clipboard as files, to paste in Explorer.
 pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
+    copy_files_since(paths, None).map(|_| ())
+}
+
+/// The clipboard's change count (`GetClipboardSequenceNumber`): it grows
+/// with whatever any program puts on it.
+pub fn clipboard_sequence() -> u32 {
+    unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() }
+}
+
+/// [`copy_files`] unless the clipboard changed since `sequence` (from
+/// [`clipboard_sequence`]): a copy made on a thread must not replace one
+/// made meanwhile, here or in another program. Whether they were put.
+pub fn copy_files_since(paths: &[PathBuf], sequence: Option<u32>) -> Result<bool, String> {
     let texts = paths.iter().map(|p| p.to_str().ok_or("the path is not valid Unicode")).collect::<Result<Vec<_>, _>>()?;
     let _clipboard = clipboard_win::Clipboard::new_attempts(10).map_err(|e| e.to_string())?;
-    clipboard_win::raw::set_file_list_with(&texts, clipboard_win::options::DoClear).map_err(|e| e.to_string())
+    // Open, nobody changes it now.
+    if sequence.is_some_and(|s| s != clipboard_sequence()) {
+        return Ok(false);
+    }
+    clipboard_win::raw::set_file_list_with(&texts, clipboard_win::options::DoClear).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// Copy `files` into the folder `to` as Explorer does: the shell shows the

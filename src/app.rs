@@ -618,10 +618,14 @@ fn acts_on_files(cmd: Cmd) -> bool {
 
 /// What a clipboard thread did.
 enum Clipped {
-    Copied(Result<(), String>),
+    /// Copy Image; false when something else went on the clipboard while
+    /// it was drawn, which is kept.
+    Copied(Result<bool, String>),
     /// Images of an archive copied as files (`clipboard::copy_pages`): how
-    /// many.
-    CopiedPages(usize, Result<(), String>),
+    /// many; false as for `Copied`.
+    CopiedPages(usize, Result<bool, String>),
+    /// So many of so many pages unpacked so far.
+    Unpacked(usize, usize),
     /// The file to open.
     Pasted(Result<PathBuf, String>),
 }
@@ -3519,10 +3523,10 @@ impl App {
         edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop }
     }
 
-    /// Put the current image on the clipboard as it is shown (`as_shown`),
-    /// decoded from its file at full size, on a thread.
     /// Put the images of an archive to copy (`targets`) on the clipboard as
-    /// files, unpacked on a thread (a solid RAR's page may take a while).
+    /// files, unpacked on a thread (a solid RAR's page may take a while),
+    /// the count in the notice. Another copy meanwhile (Ctrl+C of a file,
+    /// or in another program) stops it.
     fn copy_pages(&mut self, ctx: &egui::Context) {
         if self.clipboard.is_some() {
             self.notice(tr!("Still copying…".into(), "Копирование ещё идёт…".into()));
@@ -3533,12 +3537,20 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(Clipped::CopiedPages(files.len(), crate::clipboard::copy_pages(&files)));
+            let n = files.len();
+            let progress = |i| {
+                let _ = tx.send(Clipped::Unpacked(i, n));
+                ctx.request_repaint();
+            };
+            let done = crate::clipboard::copy_pages(&files, progress);
+            let _ = tx.send(Clipped::CopiedPages(n, done));
             ctx.request_repaint();
         });
         self.clipboard = Some(rx);
     }
 
+    /// Put the current image on the clipboard as it is shown (`as_shown`),
+    /// decoded from its file at full size, on a thread.
     fn copy_image(&mut self, ctx: &egui::Context) {
         if self.clipboard.is_some() {
             self.notice(tr!("Still copying…".into(), "Копирование ещё идёт…".into()));
@@ -3654,17 +3666,42 @@ impl App {
     }
 
     fn poll_clipboard(&mut self, ctx: &egui::Context) {
-        let Some(Ok(done)) = self.clipboard.as_ref().map(mpsc::Receiver::try_recv) else { return };
+        let Some(rx) = &self.clipboard else { return };
+        // The pages' count as it goes, then the outcome.
+        let mut unpacked = None;
+        let done = loop {
+            match rx.try_recv() {
+                Ok(Clipped::Unpacked(i, n)) => unpacked = Some((i, n)),
+                Ok(done) => break Some(done),
+                Err(mpsc::TryRecvError::Empty) => break None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.clipboard = None;
+                    return;
+                }
+            }
+        };
+        if let Some((i, n)) = unpacked.filter(|_| done.is_none()) {
+            self.notice(tr!(format!("Copying… {i} of {n}"), format!("Копирование… {i} из {n}")));
+        }
+        let Some(done) = done else { return };
         self.clipboard = None;
+        let overtaken = || {
+            tr!(
+                "Not copied: something else was put on the clipboard meanwhile".into(),
+                "Не скопировано: тем временем в буфер обмена попало другое".into()
+            )
+        };
         match done {
-            Clipped::Copied(Ok(())) => {
+            Clipped::Unpacked(..) => {}
+            Clipped::Copied(Ok(true)) => {
                 self.notice(tr!("Image copied to the clipboard".into(), "Изображение скопировано в буфер обмена".into()))
             }
+            Clipped::Copied(Ok(false)) | Clipped::CopiedPages(_, Ok(false)) => self.notice(overtaken()),
             Clipped::Copied(Err(e)) => {
                 self.notice(tr!(format!("Cannot copy the image: {e}"), format!("Не удалось скопировать изображение: {e}")))
             }
-            Clipped::CopiedPages(1, Ok(())) => self.notice(tr!("Copied to the clipboard".into(), "Скопировано в буфер обмена".into())),
-            Clipped::CopiedPages(n, Ok(())) => {
+            Clipped::CopiedPages(1, Ok(true)) => self.notice(tr!("Copied to the clipboard".into(), "Скопировано в буфер обмена".into())),
+            Clipped::CopiedPages(n, Ok(true)) => {
                 self.notice(tr!(format!("Files copied to the clipboard: {n}"), format!("Скопировано в буфер обмена файлов: {n}")))
             }
             Clipped::CopiedPages(_, Err(e)) => self.notice(tr!(format!("Cannot copy: {e}"), format!("Не удалось скопировать: {e}"))),

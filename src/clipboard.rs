@@ -23,8 +23,11 @@ use crate::edit;
 const PNG_NAMES: [&str; 2] = ["PNG", "image/png"];
 
 /// Put `job`'s image (see `edit::render`) on the clipboard. Windows' codecs
-/// may decode it, so the calling thread has COM initialised.
-pub fn copy_image(job: &edit::Job) -> Result<(), String> {
+/// may decode it, so the calling thread has COM initialised. False when
+/// something else was put on the clipboard while it was drawn (here or in
+/// another program), which is left there.
+pub fn copy_image(job: &edit::Job) -> Result<bool, String> {
+    let sequence = crate::win::clipboard_sequence();
     let img = edit::render(job)?;
     // A DIB's size is a u32.
     if (img.width() as u64) * (img.height() as u64) * 4 > u32::MAX as u64 {
@@ -36,6 +39,10 @@ pub fn copy_image(job: &edit::Job) -> Result<(), String> {
     drop(img);
     let dib = dib_v5(&rgba);
     let _clipboard = clipboard_win::Clipboard::new_attempts(10).map_err(|e| e.to_string())?;
+    // Open, nobody changes it now.
+    if crate::win::clipboard_sequence() != sequence {
+        return Ok(false);
+    }
     raw::empty().map_err(|e| e.to_string())?;
     raw::set_without_clear(formats::CF_DIBV5, &dib).map_err(|e| e.to_string())?;
     if let Some(png) = png
@@ -43,7 +50,7 @@ pub fn copy_image(job: &edit::Job) -> Result<(), String> {
     {
         raw::set_without_clear(format.get(), &png).map_err(|e| e.to_string())?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Where the pages of an archive copied as files go ([`copy_pages`]), each
@@ -60,22 +67,66 @@ const KEEP_PAGES: std::time::Duration = std::time::Duration::from_secs(24 * 60 *
 /// Put the images `paths` of an archive on the clipboard as files, as
 /// Ctrl+C puts files on disk: unpacked into a new folder of
 /// [`pages_folder`] under their own names, so that a paste into Explorer or
-/// a message gives those.
-pub fn copy_pages(paths: &[PathBuf]) -> Result<(), String> {
-    let files = unpack(paths, &pages_folder())?;
-    crate::win::copy_files(&files)
+/// a message gives those; `progress` hears how many are unpacked. False,
+/// and nothing left behind, when something else was put on the clipboard
+/// meanwhile (a solid RAR's pages may take a while): that copy stays.
+pub fn copy_pages(paths: &[PathBuf], mut progress: impl FnMut(usize)) -> Result<bool, String> {
+    let sequence = crate::win::clipboard_sequence();
+    let overtaken = || crate::win::clipboard_sequence() != sequence;
+    // A solid RAR stays open for the pass, though another folder is shown.
+    let _hold = crate::archive::hold(paths);
+    let Some((dir, files)) = unpack(paths, &pages_folder(), &overtaken, &mut progress)? else {
+        return Ok(false);
+    };
+    let put = crate::win::copy_files_since(&files, Some(sequence));
+    if !matches!(put, Ok(true)) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    put
+}
+
+/// The files on the clipboard now (`CF_HDROP`), if any.
+fn files_on_clipboard() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(_clipboard) = clipboard_win::Clipboard::new_attempts(10) {
+        let _ = raw::get_file_list_path(&mut paths);
+    }
+    paths
+}
+
+/// `name` as Windows takes a file name: the characters it refuses (from
+/// an archive made elsewhere: `?`, `:`, which would write an alternate
+/// stream) as `_`, no dot or space at the end, a device's name (`aux.png`)
+/// with `_` before it.
+fn windows_name(name: &str) -> String {
+    let name: String = name.chars().map(|c| if c < ' ' || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
+    let name = name.trim_end_matches(['.', ' ']);
+    match crate::folder::check_name(name) {
+        Ok(()) => name.to_string(),
+        Err(_) if name.is_empty() => "_".to_string(),
+        Err(_) => format!("_{name}"),
+    }
 }
 
 /// `paths` (images in an archive, or files) written into a new folder of
-/// `root` (named by the local time) under their names, numbered past one
-/// of the same name from another of the archive's folders; the copies in
-/// `root` older than [`KEEP_PAGES`] deleted first.
-fn unpack(paths: &[PathBuf], root: &Path) -> Result<Vec<PathBuf>, String> {
+/// `root` (named by the local time) under their names ([`windows_name`]),
+/// numbered past one of the same name from another of the archive's
+/// folders; the copies in `root` older than [`KEEP_PAGES`] deleted first.
+/// The folder and its files; None when `stop` said so before the end. The
+/// folder is removed again when it is not finished.
+fn unpack(
+    paths: &[PathBuf],
+    root: &Path,
+    stop: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(usize),
+) -> Result<Option<(PathBuf, Vec<PathBuf>)>, String> {
     if let Ok(entries) = std::fs::read_dir(root) {
         let now = std::time::SystemTime::now();
+        // Not those still on the clipboard, however old.
+        let pasting = files_on_clipboard();
         for entry in entries.flatten() {
             let age = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok());
-            if age.is_some_and(|age| age > KEEP_PAGES) {
+            if age.is_some_and(|age| age > KEEP_PAGES) && !pasting.iter().any(|p| p.starts_with(entry.path())) {
                 let _ = std::fs::remove_dir_all(entry.path());
             }
         }
@@ -88,16 +139,34 @@ fn unpack(paths: &[PathBuf], root: &Path) -> Result<Vec<PathBuf>, String> {
         .take(100)
         .find(|dir| std::fs::create_dir(dir).is_ok())
         .ok_or_else(|| format!("cannot make a folder in {}", root.display()))?;
-    let mut files = Vec::with_capacity(paths.len());
-    for path in paths {
-        let bytes = crate::archive::read(path).map_err(|e| format!("{}: {e}", crate::app::file_name(path)))?;
-        let ext = path.extension().unwrap_or_default().to_string_lossy();
-        let name = edit::suggested_name(path, &ext, "", |n| dir.join(n).exists());
-        let file = dir.join(name);
-        std::fs::write(&file, bytes).map_err(|e| e.to_string())?;
-        files.push(file);
+    let filled = fill(paths, &dir, stop, progress);
+    match filled {
+        Ok(Some(files)) => Ok(Some((dir, files))),
+        other => {
+            let _ = std::fs::remove_dir_all(&dir);
+            other.map(|_| None)
+        }
     }
-    Ok(files)
+}
+
+/// [`unpack`]'s writing of the files into `dir`.
+fn fill(paths: &[PathBuf], dir: &Path, stop: &dyn Fn() -> bool, progress: &mut dyn FnMut(usize)) -> Result<Option<Vec<PathBuf>>, String> {
+    let mut files = Vec::with_capacity(paths.len());
+    for (i, path) in paths.iter().enumerate() {
+        if stop() {
+            return Ok(None);
+        }
+        let shown = crate::app::file_name(path);
+        let bytes = crate::archive::read(path).map_err(|e| format!("{shown}: {e}"))?;
+        let safe = PathBuf::from(windows_name(&shown));
+        let ext = safe.extension().unwrap_or_default().to_string_lossy().into_owned();
+        let name = edit::suggested_name(&safe, &ext, "", |n| dir.join(n).exists());
+        let file = dir.join(&name);
+        std::fs::write(&file, bytes).map_err(|e| format!("{name}: {e}"))?;
+        files.push(file);
+        progress(i + 1);
+    }
+    Ok(Some(files))
 }
 
 /// What the clipboard holds that can be opened, if anything (the menu
@@ -329,16 +398,36 @@ mod tests {
             handle.set_modified(yesterday).unwrap();
         }
         let pages = [cbz.join(r"ch1\001.png"), cbz.join(r"ch2\001.png")];
-        let first = unpack(&pages, &root).unwrap();
+        let unpack = |pages: &[PathBuf], stop: &dyn Fn() -> bool| {
+            let mut counted = 0;
+            let done = unpack(pages, &root, stop, &mut |n| counted = n);
+            done.map(|d| d.map(|(dir, files)| (dir, files, counted)))
+        };
+        let (first_dir, first, counted) = unpack(&pages, &|| false).unwrap().unwrap();
         assert!(!old.exists());
+        assert_eq!(counted, 2);
         let names: Vec<_> = first.iter().map(|p| crate::app::file_name(p)).collect();
         assert_eq!(names, ["001.png", "001_2.png"]);
         assert_eq!(std::fs::read(&first[1]).unwrap(), b"two");
         // Another copy at once: a folder of its own.
-        let second = unpack(&pages[..1], &root).unwrap();
-        assert_ne!(second[0].parent(), first[0].parent());
+        let (_, second, _) = unpack(&pages[..1], &|| false).unwrap().unwrap();
+        assert_ne!(second[0].parent(), Some(first_dir.as_path()));
         assert_eq!(crate::app::file_name(&second[0]), "001.png");
-        assert!(unpack(&[cbz.join("missing.png")], &root).is_err());
+        // A failure or a stop leaves no folder behind.
+        let folders = || std::fs::read_dir(&root).unwrap().count();
+        let before = folders();
+        assert!(unpack(&[pages[0].clone(), cbz.join("missing.png")], &|| false).is_err());
+        assert!(unpack(&pages, &|| true).unwrap().is_none());
+        assert_eq!(folders(), before);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn names_windows_takes() {
+        assert_eq!(windows_name("001.png"), "001.png");
+        assert_eq!(windows_name("What?.jpg"), "What_.jpg");
+        assert_eq!(windows_name("Chapter 1: Start.jpg"), "Chapter 1_ Start.jpg");
+        assert_eq!(windows_name("aux.png"), "_aux.png");
+        assert_eq!(windows_name("a <b>.png. "), "a _b_.png");
     }
 }

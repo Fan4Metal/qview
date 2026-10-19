@@ -82,6 +82,17 @@ pub fn release_unless(dir: &Path) {
     rar::release_unless(dir);
 }
 
+/// Keeps the solid RAR archives of `paths` open while it lives (see
+/// `rar::solid`), so that a pass over their pages unpacks each once.
+pub struct Hold {
+    _archives: rar::Hold,
+}
+
+/// A [`Hold`] of the archives of `paths` (images in archives).
+pub fn hold(paths: &[PathBuf]) -> Hold {
+    Hold { _archives: rar::hold(paths.iter().filter_map(|p| split(p).map(|(archive, _)| archive)).collect()) }
+}
+
 /// Whether `path` is an image in an archive.
 pub fn inside(path: &Path) -> bool {
     split(path).is_some()
@@ -479,8 +490,49 @@ mod rar {
         /// reading thread holds for a whole pass.
         static SHOWN: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+        /// Archives a pass over many of their pages holds (`hold`): kept as
+        /// if shown until it is done.
+        static HELD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+        fn is_held(archive: &Path) -> bool {
+            HELD.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|a| a == archive)
+        }
+
         fn is_shown(archive: &Path) -> bool {
-            SHOWN.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(archive)
+            SHOWN.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(archive) || is_held(archive)
+        }
+
+        /// Keeps `archives` open after a read while it lives.
+        pub struct Hold(Vec<PathBuf>);
+
+        /// Keep `archives` open and their pages until the `Hold` is
+        /// dropped, though another folder is shown: Copy of a book's pages
+        /// went on after the user left it, and each page was unpacked from
+        /// the start of the archive.
+        pub fn hold(mut archives: Vec<PathBuf>) -> Hold {
+            archives.sort();
+            archives.dedup();
+            HELD.lock().unwrap_or_else(|e| e.into_inner()).extend(archives.iter().cloned());
+            Hold(archives)
+        }
+
+        impl Drop for Hold {
+            fn drop(&mut self) {
+                {
+                    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+                    for archive in &self.0 {
+                        if let Some(i) = held.iter().position(|a| a == archive) {
+                            held.remove(i);
+                        }
+                    }
+                }
+                // Let go of one no longer shown, as `release_unless` would
+                // have (on the thread that held it, which may wait).
+                let mut slot = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                if slot.as_ref().is_some_and(|s| !is_shown(&s.archive)) {
+                    *slot = None;
+                }
+            }
         }
 
         fn stamp(archive: &Path) -> Option<(u64, u64)> {
@@ -595,13 +647,13 @@ mod rar {
                 Err(TryLockError::Poisoned(e)) => e.into_inner(),
                 Err(TryLockError::WouldBlock) => return,
             };
-            if slot.as_ref().is_some_and(|s| s.archive != dir) {
+            if slot.as_ref().is_some_and(|s| s.archive != dir && !is_held(&s.archive)) {
                 *slot = None;
             }
         }
     }
 
-    pub use solid::release_unless;
+    pub use solid::{Hold, hold, release_unless};
 }
 
 /// One of the formats the `image` crate reads (`folder::EXTENSIONS`): the
@@ -732,6 +784,15 @@ mod tests {
             // solid one was held open by UnRAR, which shares no deletion).
             release_unless(&dir);
             let moved = dir.join(format!("moved_{name}"));
+            if name == "Solid.CBR" {
+                // Held for a pass over its pages: kept open though another
+                // folder is shown, let go when the pass ends.
+                let held = hold(&[items[0].path.clone(), items[1].path.clone()]);
+                assert_eq!(size(read(&items[0].path).unwrap()), (4, 3));
+                release_unless(&dir);
+                assert!(std::fs::rename(&cbr, &moved).is_err(), "held open");
+                drop(held);
+            }
             std::fs::rename(&cbr, &moved).unwrap();
             // A cover read for its cell in that folder leaves it closed.
             assert_eq!(size(read(&moved.join("a.png")).unwrap()), (4, 3));
