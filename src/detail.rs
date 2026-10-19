@@ -162,10 +162,18 @@ impl Detail {
         self.part.as_ref().filter(|p| p.drawn.path == path)
     }
 
-    /// `paths` changed on disk: nothing drawn of them is kept.
+    /// `paths` changed on disk (saved, read again with F5, renamed or
+    /// replaced): nothing drawn of them is kept, and a part being drawn of
+    /// one is dropped, with the drawing it parsed.
     pub fn forget(&mut self, paths: &[PathBuf]) {
         if self.part.as_ref().is_some_and(|p| paths.contains(&p.drawn.path)) {
             self.part = None;
+        }
+        if self.drawing.as_ref().is_some_and(|(w, _)| paths.contains(&w.path)) {
+            self.drawing = None;
+        }
+        if self.next.as_ref().is_some_and(|w| paths.contains(&w.path)) {
+            self.next = None;
         }
         if self.svg.as_ref().is_some_and(|(p, _)| paths.contains(p)) {
             self.svg = None;

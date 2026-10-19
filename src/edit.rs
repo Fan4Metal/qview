@@ -463,7 +463,7 @@ fn encode(img: &DynamicImage, format: Format, icc: Option<Vec<u8>>, exif: Option
         Format::Jpeg => {
             let mut encoder = JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY);
             metadata(&mut encoder, icc, exif);
-            img.write_with_encoder(encoder)?;
+            on_white(img).write_with_encoder(encoder)?;
         }
         Format::Png => {
             let mut encoder = PngEncoder::new(&mut out);
@@ -487,6 +487,26 @@ fn encode(img: &DynamicImage, format: Format, icc: Option<Vec<u8>>, exif: Option
         }
     }
     Ok(out.into_inner())
+}
+
+/// `img` laid on white where it is transparent, for JPEG, which has no
+/// alpha: the encoder drops it, and the transparent pixels came out in
+/// whatever colour they held (black for a drawing, most of it).
+fn on_white(img: &DynamicImage) -> std::borrow::Cow<'_, DynamicImage> {
+    if !img.color().has_alpha() {
+        return std::borrow::Cow::Borrowed(img);
+    }
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+    for p in rgba.as_raw().as_chunks::<4>().0 {
+        let a = u32::from(p[3]);
+        rgb.extend(p[..3].iter().map(|&c| ((u32::from(c) * a + 255 * (255 - a) + 127) / 255) as u8));
+    }
+    match image::RgbImage::from_raw(width, height, rgb) {
+        Some(rgb) => std::borrow::Cow::Owned(DynamicImage::ImageRgb8(rgb)),
+        None => std::borrow::Cow::Borrowed(img),
+    }
 }
 
 /// `img` with 8 bits per channel, as WebP and BMP take it.
@@ -537,6 +557,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Transparent pixels come out white in a JPEG, half-transparent ones
+    /// between their colour and white.
+    #[test]
+    fn jpeg_lays_transparency_on_white() {
+        let img = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(16, 16, |x, _| match x / 8 {
+            0 => image::Rgba([0, 0, 0, 0]),
+            _ => image::Rgba([0, 0, 0, 128]),
+        }));
+        let bytes = encode(&img, Format::Jpeg, None, None).unwrap();
+        let back = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        let grey = |x: u32| back.get_pixel(x, 8).0;
+        assert!(grey(3).iter().all(|&c| c >= 250), "{:?}", grey(3));
+        assert!(grey(12).iter().all(|&c| c.abs_diff(127) <= 4), "{:?}", grey(12));
     }
 
     fn jpeg(w: u32, h: u32) -> Vec<u8> {

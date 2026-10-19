@@ -8,7 +8,7 @@
 //! system fonts, loaded once, and only for a drawing that has text.
 
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::{Arc, LazyLock};
 
 use resvg::{tiny_skia, usvg};
@@ -17,8 +17,18 @@ use resvg::{tiny_skia, usvg};
 /// is scaled down to it.
 pub const MAX_SIDE: u32 = 16384;
 
+/// The most pixels a drawing is taken to have: a file of a hundred bytes
+/// can say 100000x100000, and saving, Copy Image, printing and the colour
+/// picker draw it at its size (16384x16384 would be 1 GB each).
+const MAX_PIXELS: f32 = 64e6;
+
 /// The most pixels the viewer's texture of a drawing gets (`view_scale`).
 const VIEW_PIXELS: f32 = 40e6;
+
+/// The most an SVGZ is unpacked to: a few megabytes of gzip can hold
+/// gigabytes, and every thread that reads the file (thumbnails, headers,
+/// the decoders) would try to hold them.
+const MAX_UNPACKED: u64 = 64 << 20;
 
 /// Whether `path` is named as an SVG (an image in an archive too).
 pub fn takes(path: &Path) -> bool {
@@ -58,27 +68,34 @@ pub struct Svg {
 }
 
 impl Svg {
-    /// Parse `bytes` (SVG, or SVGZ compressed) read from `path`; images it
-    /// links to are looked for beside the file. With `text`, the system
-    /// fonts are given to the text it has; without, text is left out (the
-    /// size does not depend on it).
-    pub fn parse(path: &Path, bytes: &[u8], text: bool) -> Result<Self, String> {
+    /// Parse `bytes` (SVG, or SVGZ compressed) read from `path`. With
+    /// `whole`, images it links to are looked for beside the file and the
+    /// system fonts given to the text it has; without, for its size alone
+    /// (`header`), which depends on neither, both are left out.
+    pub fn parse(path: &Path, bytes: &[u8], whole: bool) -> Result<Self, String> {
         let data: Cow<[u8]> = if bytes.starts_with(&[0x1f, 0x8b]) {
-            usvg::decompress_svgz(bytes).map_err(|e| e.to_string())?.into()
+            unpack(bytes, MAX_UNPACKED)?.into()
         } else {
             bytes.into()
         };
-        let mut options = usvg::Options::default();
+        let image_href_resolver = if whole {
+            resolver()
+        } else {
+            usvg::ImageHrefResolver { resolve_data: Box::new(|_, _, _| None), resolve_string: Box::new(|_, _| None) }
+        };
+        let mut options = usvg::Options { image_href_resolver, ..Default::default() };
         if !crate::archive::inside(path) {
             options.resources_dir = path.parent().map(Path::to_path_buf);
         }
-        if text && contains(&data, b"<text") {
+        // Loose: `<svg:text>` too, and a drawing in an `<image>` may have
+        // text; a false match costs the fonts' loading once.
+        if whole && (contains(&data, b"text") || contains(&data, b"image")) {
             options.fontdb = FONTS.clone();
         }
         let tree = usvg::Tree::from_data(&data, &options).map_err(|e| e.to_string())?;
         let size = tree.size();
         let (w, h) = (size.width(), size.height());
-        let fit = (MAX_SIDE as f32 / w.max(h)).min(1.0);
+        let fit = (MAX_SIDE as f32 / w.max(h)).min((MAX_PIXELS / (w * h)).sqrt()).min(1.0);
         let side = |v: f32| ((v * fit).round() as u32).clamp(1, MAX_SIDE);
         Ok(Self { width: side(w), height: side(h), tree })
     }
@@ -115,6 +132,59 @@ impl Svg {
         let (w, h) = (side(self.width), side(self.height));
         Ok((self.render(w, h)?, w, h))
     }
+}
+
+/// The SVG of an SVGZ, refused past `limit` bytes (`usvg::decompress_svgz`
+/// has no limit).
+fn unpack(bytes: &[u8], limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut data = Vec::new();
+    flate2::read::GzDecoder::new(bytes).take(limit + 1).read_to_end(&mut data).map_err(|e| e.to_string())?;
+    if data.len() as u64 > limit {
+        return Err(format!("unpacks to more than {} MB", limit >> 20));
+    }
+    Ok(data)
+}
+
+/// What a drawing's `<image>` may show: an image in its data (`data:`
+/// URL), or a file beside it or in a folder under it, never one named by
+/// an absolute or UNC path or reached by `..` (usvg's own resolver takes
+/// any: a downloaded drawing could make every thumbnail reach a server for
+/// it, as browsers never let an SVG shown as an image do), and none in an
+/// archive. A drawing among them is unpacked within `MAX_UNPACKED` too.
+fn resolver() -> usvg::ImageHrefResolver<'static> {
+    usvg::ImageHrefResolver {
+        resolve_data: Box::new(image_data),
+        resolve_string: Box::new(|href, options| {
+            let dir = options.resources_dir.as_ref()?;
+            let href = Path::new(href);
+            if !href.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+                return None;
+            }
+            let path = dir.join(href);
+            let file = std::fs::metadata(&path).ok()?;
+            if !file.is_file() || file.len() > MAX_UNPACKED {
+                return None;
+            }
+            image_data("text/plain", Arc::new(std::fs::read(&path).ok()?), options)
+        }),
+    }
+}
+
+/// usvg's own reading of an image's data, except that a drawing goes
+/// through `unpack`.
+fn image_data(mime: &str, data: Arc<Vec<u8>>, options: &usvg::Options) -> Option<usvg::ImageKind> {
+    let text = data.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<');
+    let svg = mime == "image/svg+xml" || (mime == "text/plain" && (text || data.starts_with(&[0x1f, 0x8b])));
+    if !svg {
+        return usvg::ImageHrefResolver::default_data_resolver()(mime, data, options);
+    }
+    let data: Cow<[u8]> = if data.starts_with(&[0x1f, 0x8b]) {
+        unpack(&data, MAX_UNPACKED).ok()?.into()
+    } else {
+        data.as_slice().into()
+    };
+    usvg::Tree::from_data_nested(&data, options).ok().map(usvg::ImageKind::SVG)
 }
 
 /// How much larger than its size the viewer draws a drawing of `width` x
@@ -182,11 +252,63 @@ mod tests {
         for y in 0..40 {
             assert_eq!(&part[y * 160..(y + 1) * 160], &whole[y * 320 + 160..(y + 1) * 320], "row {y}");
         }
-        // Too large a size is scaled down to `MAX_SIDE`, proportions kept.
+        // Too large a size is scaled down to `MAX_SIDE` and `MAX_PIXELS`,
+        // proportions kept.
         let huge = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="50000"/>"#;
         let svg = Svg::parse(Path::new("h.svg"), huge, false).unwrap();
-        assert_eq!((svg.width, svg.height), (MAX_SIDE, MAX_SIDE / 2));
+        assert_eq!((svg.width, svg.height), (11314, 5657));
+        let long = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="1000"/>"#;
+        let svg = Svg::parse(Path::new("l.svg"), long, false).unwrap();
+        assert_eq!((svg.width, svg.height), (MAX_SIDE, 164));
         assert!(Svg::parse(Path::new("bad.svg"), b"<svg", false).is_err());
+    }
+
+    #[test]
+    fn unpacks_svgz_within_a_limit() {
+        use std::io::Write;
+        let gzip = |data: &[u8]| {
+            let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(data).unwrap();
+            encoder.finish().unwrap()
+        };
+        let svg = Svg::parse(Path::new("a.svgz"), &gzip(SQUARE), false).unwrap();
+        assert_eq!((svg.width, svg.height), (40, 20));
+        // Spaces after the drawing, a thousand times smaller packed.
+        let mut padded = SQUARE.to_vec();
+        padded.resize(4 << 20, b' ');
+        let packed = gzip(&padded);
+        assert!(packed.len() < 64 << 10);
+        assert_eq!(unpack(&packed, 4 << 20).unwrap(), padded);
+        assert!(unpack(&packed, 1 << 20).is_err());
+    }
+
+    /// An image beside the drawing or under it is shown; one reached by
+    /// `..` or an absolute path is not.
+    #[test]
+    fn links_only_to_images_beside_it() {
+        let root = std::env::temp_dir().join(format!("qview_svg_test_{}", std::process::id()));
+        let dir = root.join("drawing");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let red = image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]));
+        for png in [dir.join("sub").join("red.png"), root.join("red.png")] {
+            red.save(&png).unwrap();
+        }
+        let drawn = |path: &Path, href: &str| {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="4" height="4"><image width="4" height="4" xlink:href="{href}"/></svg>"#
+            );
+            let svg = Svg::parse(path, svg.as_bytes(), true).unwrap();
+            svg.render(4, 4).unwrap()[3] != 0
+        };
+        let beside = dir.join("a.svg");
+        let absolute = root.join("red.png").to_string_lossy().into_owned();
+        let results = (
+            drawn(&beside, "sub/red.png"),
+            drawn(&beside, "../red.png"),
+            drawn(&beside, &absolute),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(results, (true, false, false));
     }
 
     /// Text is drawn with the system fonts (Arial is in every Windows).
@@ -194,8 +316,8 @@ mod tests {
     fn draws_text() {
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="60" height="30">
             <text x="2" y="24" font-family="Arial" font-size="24" fill="black">Ag</text></svg>"#;
-        let inked = |text: bool| {
-            let svg = Svg::parse(Path::new("t.svg"), svg, text).unwrap();
+        let inked = |whole: bool| {
+            let svg = Svg::parse(Path::new("t.svg"), svg, whole).unwrap();
             svg.render(svg.width, svg.height).unwrap().as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count()
         };
         assert!(inked(true) > 50);

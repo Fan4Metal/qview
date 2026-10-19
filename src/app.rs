@@ -1870,6 +1870,9 @@ impl App {
         }
         rekey(&mut self.cache, pairs);
         rekey(&mut self.partial, pairs);
+        // Drawn again: a new name may be another drawing's old one.
+        let both: Vec<PathBuf> = pairs.iter().flat_map(|(old, new)| [old.clone(), new.clone()]).collect();
+        self.detail.forget(&both);
         if let Some(gallery) = &mut self.gallery {
             rekey(&mut gallery.cache, pairs);
         }
@@ -2187,9 +2190,7 @@ impl App {
             view.next_image();
         }
         let size = egui::vec2(meta.width as f32, meta.height as f32);
-        // The scale refers to the file; the texture may be shrunk.
-        let scale = view.scale(size, self.viewport, ctx.pixels_per_point()) * pixels.width as f32 / meta.width as f32;
-        view::mip_level(scale)
+        view::mip_level(texel_scale(view.scale(size, self.viewport, ctx.pixels_per_point()), meta.width, pixels.width))
     }
 
     /// Upload the levels the texture of `path` lacks.
@@ -2207,7 +2208,8 @@ impl App {
         let Some(path) = self.current.clone() else { return };
         let Some(Slot::Ready(picture)) = self.cache.get(&path) else { return };
         let base = picture.texture.base_level();
-        if base > 0 && view::mip_level(self.view.scale(picture.size(), self.viewport, ctx.pixels_per_point())) < base {
+        let scale = self.view.scale(picture.size(), self.viewport, ctx.pixels_per_point());
+        if base > 0 && view::mip_level(texel_scale(scale, picture.meta.width, picture.texture.size().0)) < base {
             self.complete(&path);
         }
     }
@@ -2831,6 +2833,7 @@ impl App {
                 if let Some(path) = &self.current {
                     // Decoded again; the old picture stays until then.
                     self.cache.remove(path);
+                    self.detail.forget(std::slice::from_ref(path));
                 }
                 let dir = match &self.current {
                     Some(path) if !self.mixed() => path.parent().map(Path::to_path_buf),
@@ -4188,14 +4191,18 @@ impl App {
         let texture = &picture.texture;
         // The zoom shown (2.0 is 200%).
         let zoom = self.view.scale(picture.size(), area, ppp);
+        // Of the texture: a drawing's is larger than the file.
+        let texels = texel_scale(zoom, picture.meta.width, texture.size().0);
+        // A drawing has no pixels to show as squares.
+        let pixelated = texels > 1.0 && !picture.meta.is_drawing();
         let trace = log::log_enabled!(log::Level::Debug);
         // Bilinear is the texture's own, through a program only to be
         // timed; bicubic at 100% gives the pixels as they are, as the mesh
         // does for a sixteenth of the work; pixelated only enlarged.
         let wanted = match self.filter {
             Filter::Bilinear => trace,
-            Filter::Bicubic => zoom != 1.0,
-            Filter::Pixels => zoom > 1.0,
+            Filter::Bicubic => texels != 1.0,
+            Filter::Pixels => pixelated,
         };
         let program = match self.programs.get(&self.filter) {
             _ if !wanted => None,
@@ -4224,7 +4231,7 @@ impl App {
         let (turns, flip) = (self.view.turns, self.view.flip);
         // GL_NEAREST only where the pixelated program cannot be made.
         let failed = matches!(self.programs.get(&Filter::Pixels), Some(None));
-        texture.set_smooth(!(self.filter == Filter::Pixels && zoom > 1.0 && failed));
+        texture.set_smooth(!(self.filter == Filter::Pixels && pixelated && failed));
         match program {
             Some(program) => {
                 let uv = std::array::from_fn(|i| view::corner_uv(i, turns, flip));
@@ -4539,6 +4546,14 @@ impl App {
             self.title = title;
         }
     }
+}
+
+/// Screen pixels per texel of a texture `texture_width` wide of an image
+/// `width` wide shown at `scale` (screen pixels per pixel of the file):
+/// larger when the texture is shrunk, smaller when it is drawn larger than
+/// the file (a drawing).
+fn texel_scale(scale: f32, width: u32, texture_width: u32) -> f32 {
+    scale * width as f32 / texture_width.max(1) as f32
 }
 
 /// The file name of `path` for display.

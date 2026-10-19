@@ -2307,6 +2307,7 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "flate2",
  "glow",
  "image",
  "log",

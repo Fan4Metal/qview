@@ -29,6 +29,8 @@ png = "0.18"
 # its Unicode tables, ~360 KB more.
 unrar-ng-sys = { version = "0.7.7", default-features = false, features = ["std"] }
 resvg = "0.48.1"
+# SVGZ unpacked within a limit (src/svg.rs); the backend usvg already uses.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
