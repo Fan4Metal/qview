@@ -38,13 +38,39 @@ def is_ours(proc: psutil.Process) -> bool:
     return exe.name.lower() == "qview.exe" and TARGET in exe.resolve().parents
 
 
+def post_close(pid: int) -> None:
+    """WM_CLOSE posted to the top-level windows of `pid`, as the window's close button does, so that
+    it saves its settings: those with a title but the system's (the input method's, the OpenGL
+    driver's, winit's message target); the visible ones, else (a window hidden in the tray) the
+    hidden ones. taskkill without /F skipped a minimized window, which then could only be killed."""
+    import ctypes
+    from ctypes import wintypes
+
+    service = ("IME", "MSCTFIME UI", "NVOpenGLPbuffer", "Winit Thread Event Target")
+    user32 = ctypes.windll.user32
+    visible, hidden = [], []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, name, 64)
+        if owner.value == pid and user32.GetWindowTextLengthW(hwnd) > 0 and name.value not in service:
+            (visible if user32.IsWindowVisible(hwnd) else hidden).append(hwnd)
+        return True
+
+    user32.EnumWindows(each, 0)
+    for hwnd in visible or hidden:
+        user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+
+
 def close_running() -> None:
     for proc in psutil.process_iter():
         if not is_ours(proc):
             continue
         print(f"Closing qview.exe (PID {proc.pid})", flush=True)
-        # taskkill without /F sends WM_CLOSE, as the window's close button does.
-        subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True)
+        post_close(proc.pid)
         try:
             proc.wait(timeout=3)
         except psutil.TimeoutExpired:
