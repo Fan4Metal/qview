@@ -1401,6 +1401,8 @@ impl App {
         if let Some(dir) = self.dir.clone() {
             self.place = self.index;
             self.centre_after_scan = true;
+            // The Move to Folder menu's folders, read in the old order.
+            self.sibling_folders = None;
             self.scan = Some(self.scan_dir(dir, self.current.clone(), ctx));
         }
     }
