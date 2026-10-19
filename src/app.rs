@@ -69,6 +69,8 @@ pub fn ink_on(bg: Color32) -> Color32 {
 const NOTICE_TIME: Duration = Duration::from_secs(4);
 /// A window cloaked at start-up is shown after this at the latest.
 const UNCLOAK_TIMEOUT: Duration = Duration::from_secs(1);
+/// Frames the window paints, cloaked, before it is shown at start-up.
+const PAINTED_TO_SHOW: u64 = 3;
 /// A spinner appears when an image takes longer than this.
 const SPINNER_DELAY: Duration = Duration::from_millis(250);
 /// Images decoded ahead in the direction of travel: the first always, the
@@ -729,9 +731,10 @@ enum Handed {
     Print(Result<Vec<PathBuf>, String>),
 }
 
-/// The window is cloaked at start-up until its first maximized frame is on
-/// screen (see `App::new`), and when restored from minimized with a new
-/// file until that image is on screen (see `instance`).
+/// The window is cloaked at start-up until it has painted a few frames,
+/// maximized when it is to be (see `App::new`), and when restored from
+/// minimized with a new file until that image is on screen (see
+/// `instance`).
 struct Cloak {
     /// Uncloaked at this time at the latest, so that it can never stay
     /// invisible.
@@ -740,8 +743,8 @@ struct Cloak {
     maximized: bool,
     /// Wait for the current image (or its error) to be on screen.
     image: bool,
-    /// The frame in which the window was cloaked: a later frame starts
-    /// once that one has been presented.
+    /// Uncloaked at the start of this frame at the earliest: the frames
+    /// before it have been presented.
     frame: u64,
 }
 
@@ -788,24 +791,29 @@ impl App {
             win::dark_caption(hwnd);
             crate::instance::listen(ctx, hwnd);
         }
+        // eframe shows the window after its first frame, but Windows shows
+        // it before that frame reaches the screen: it flashed white for a
+        // moment. So it is cloaked now, while still hidden, and uncloaked in
+        // `ui` once it has painted `PAINTED_TO_SHOW` frames.
         // A window saved maximized is created normal (see
         // `main::MAXIMIZE_WHEN_SHOWN`). Showing and maximizing it now would
-        // show it before it is painted (a white flash); maximizing it after
-        // eframe shows it makes it appear in two steps (the normal size,
-        // then the maximized one). So it is maximized now but cloaked,
-        // painted unseen at its final size, and uncloaked in `ui` once a
-        // maximized frame is on screen.
+        // show it before it is painted; maximizing it after eframe shows it
+        // makes it appear in two steps (the normal size, then the maximized
+        // one). So it is maximized now, cloaked, painted unseen at its final
+        // size, and uncloaked only once it is maximized.
         let mut cloak = None;
-        if let Some(hwnd) = hwnd
-            && crate::MAXIMIZE_WHEN_SHOWN.swap(false, std::sync::atomic::Ordering::Relaxed)
-        {
+        if let Some(hwnd) = hwnd {
             win::cloak(hwnd, true);
-            let normal = cc.storage.and_then(|s| s.get_string(WINDOW_NORMAL_KEY)).and_then(|v| {
-                let n: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-                <[i32; 4]>::try_from(n).ok()
-            });
-            win::show_maximized(hwnd, normal, crate::DEFAULT_SIZE);
-            cloak = Some(Cloak { until: Instant::now() + UNCLOAK_TIMEOUT, maximized: true, image: false, frame: 0 });
+            let maximized = crate::MAXIMIZE_WHEN_SHOWN.swap(false, std::sync::atomic::Ordering::Relaxed);
+            if maximized {
+                let normal = cc.storage.and_then(|s| s.get_string(WINDOW_NORMAL_KEY)).and_then(|v| {
+                    let n: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    <[i32; 4]>::try_from(n).ok()
+                });
+                win::show_maximized(hwnd, normal, crate::DEFAULT_SIZE);
+            }
+            let frame = ctx.cumulative_frame_nr() + PAINTED_TO_SHOW;
+            cloak = Some(Cloak { until: Instant::now() + UNCLOAK_TIMEOUT, maximized, image: false, frame });
         }
         let flag = |key: &str| cc.storage.and_then(|s| s.get_string(key)).as_deref() != Some("false");
         let mode = cc.storage.and_then(|s| s.get_string(ZOOM_KEY)).and_then(|v| Zoom::from_name(&v)).unwrap_or(Zoom::Fit);
@@ -4540,7 +4548,7 @@ impl App {
     /// frame, so what is true now was painted in the previous one.
     fn uncloak(&mut self, ctx: &egui::Context) {
         let Some(cloak) = &self.cloak else { return };
-        let ready = ctx.cumulative_frame_nr() > cloak.frame
+        let ready = ctx.cumulative_frame_nr() >= cloak.frame
             && (!cloak.maximized || ctx.input(|i| i.viewport().maximized == Some(true)))
             && (!cloak.image || self.current_on_screen());
         if ready || Instant::now() >= cloak.until {
@@ -4652,7 +4660,7 @@ impl eframe::App for App {
             self.open(&ctx, path);
         }
         if received.cloaked {
-            self.cloak = Some(Cloak { until: Instant::now() + UNCLOAK_TIMEOUT, maximized: false, image: true, frame: frame_nr });
+            self.cloak = Some(Cloak { until: Instant::now() + UNCLOAK_TIMEOUT, maximized: false, image: true, frame: frame_nr + 1 });
             ctx.request_repaint();
         }
         self.poll_scan(&ctx);

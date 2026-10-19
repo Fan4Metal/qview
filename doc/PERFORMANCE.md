@@ -30,7 +30,7 @@ Some later measurements were made on a second machine, an Intel Core i7-12700K w
 - The loader is created and the file from the command line is requested before `eframe::run_native`, so decoding overlaps window creation; window creation, not decoding, is the limit.
 - The renderer is glow, not wgpu, and eframe's default features (accesskit, wgpu) are off.
 - The window icon is rasterised by `build.rs` at build time; rasterising it at start-up took 6 ms.
-- A window saved maximized is created normal, cloaked, maximized and shown once a maximized frame is presented, which avoids a white flash rather than saving time.
+- The window is cloaked at start-up and shown once it has painted three frames (a window saved maximized is created normal, maximized while cloaked and shown once maximized), which avoids a white flash rather than saving time: Windows showed the window before its first frame reached the screen. It is seen about three refresh periods later than before (an estimate: 12.5 ms at 240 Hz, 50 ms at 60 Hz; not measured).
 - The WIC decoder list (`wic::extensions`) is warmed by a thread in `main`.
 - A filter shader (see [Filtering](#filtering)) is never built before the first image is on screen.
 - The icons (the app's and 16 file types', 8 sizes each) were stored as 32-bit BMP layers: 306 KB each, 264 KB of it the 256 px layer, 5.2 MB of an 18 MB exe. The 256 px layer is now a PNG (Windows reads PNG layers in icons since Vista; checked with `PrivateExtractIconsW` from the exe): ~50 KB an icon, 0.85 MB in all, the exe 13.2 MB. The smaller layers stay BMP, which Windows draws without decoding.
