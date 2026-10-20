@@ -71,6 +71,7 @@ impl App {
         self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, e.edited);
         self.item(ui, tr!("Save As…", "Сохранить как…").into(), "Ctrl+Shift+S", Cmd::SaveAs, e.edit);
         self.convert_menu(ui);
+        self.pdf_item(ui);
         self.editor_items(ui, e.file && self.crop.is_none());
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
@@ -525,6 +526,25 @@ impl App {
         self.item_explained(ui, tr!("Copy Image", "Копировать картинку").into(), "Ctrl+Shift+C", Cmd::CopyImage, enabled, tip);
     }
 
+    /// Save as PDF: the images chosen, or all those listed; Stop Making PDF
+    /// while one is made.
+    pub(super) fn pdf_item(&mut self, ui: &mut Ui) {
+        if self.making_pdf() {
+            self.item(ui, tr!("Stop Making PDF", "Остановить создание PDF").into(), "", Cmd::StopPdf, true);
+            return;
+        }
+        let n = self.pdf_count();
+        let text = match n {
+            0 | 1 => tr!("Save as PDF…", "Сохранить в PDF…").into(),
+            n => tr!(format!("Save {n} Images as PDF…"), format!("Сохранить изображения ({n}) в PDF…")),
+        };
+        let tip = tr!(
+            "One PDF, a page each: the images chosen in the gallery, else all those listed. JPEG and PNG go in without recompression",
+            "Один PDF, по странице на изображение: выбранные в галерее, иначе все показанные. JPEG и PNG вкладываются без пересжатия"
+        );
+        self.item_explained(ui, text, "Ctrl+Shift+P", Cmd::SavePdf, n > 0 && self.crop.is_none(), tip);
+    }
+
     pub(super) fn print_item(&mut self, ui: &mut Ui, enabled: bool) {
         let text = match self.several() {
             Some(n) => tr!(format!("Print {n} Images…"), format!("Печать изображений ({n})…")),
@@ -672,6 +692,7 @@ impl App {
             ui.separator();
             self.transfer_menu(ui, true, enabled && self.crop.is_none());
             self.convert_menu(ui);
+            self.pdf_item(ui);
             self.print_item(ui, enabled);
             self.wallpaper_item(ui, enabled);
         });

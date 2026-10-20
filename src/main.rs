@@ -27,6 +27,7 @@ mod info;
 mod input;
 mod instance;
 mod loader;
+mod pdf;
 mod print;
 mod rename;
 mod selection;

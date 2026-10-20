@@ -126,6 +126,10 @@ fn shortcuts(esc_closes: bool) -> Vec<(&'static str, Vec<(&'static str, &'static
                     tr!("Open the clipboard's image, file or path", "Открыть изображение, файл или путь из буфера обмена"),
                 ),
                 ("Ctrl+P", tr!("Print the image as shown, or those chosen", "Печать изображения, как оно показано, или выбранных")),
+                (
+                    "Ctrl+Shift+P",
+                    tr!("Save the images listed, or those chosen, as one PDF", "Сохранить показанные или выбранные изображения в один PDF"),
+                ),
                 ("Ctrl+O", tr!("Open a file", "Открыть файл")),
                 (
                     "F5",

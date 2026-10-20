@@ -220,6 +220,16 @@ struct Saving {
     results: Vec<Result<edit::Saved, String>>,
 }
 
+/// A PDF being made on a thread (File → Save as PDF, see `pdf`).
+struct Pdfing {
+    dst: PathBuf,
+    total: usize,
+    /// Pages written so far.
+    done: usize,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    rx: mpsc::Receiver<crate::pdf::Progress>,
+}
+
 /// Several files being renamed at once (F2 with several images chosen in
 /// the gallery): a name and the first number (see `rename::numbered`).
 pub struct BatchRename {
@@ -368,6 +378,8 @@ pub struct App {
     /// The frame of C over the current image, while it is cropped.
     pub crop: Option<Crop>,
     saving: Option<Saving>,
+    /// Save as PDF under way.
+    pdf: Option<Pdfing>,
     /// The current file was saved over: when it is decoded again, the
     /// view's rotation, now in the file, is dropped.
     reloading: Option<PathBuf>,
@@ -902,6 +914,7 @@ impl App {
             crop: None,
             saving: None,
             reloading: None,
+            pdf: None,
             history: History::default(),
             favorites: Favorites::load(crate::settings_dir().map(|d| d.join(favorites::FILE))),
             pinned: Favorites::load_pinned(crate::settings_dir().map(|d| d.join(favorites::PINNED_FILE))),
@@ -2791,6 +2804,8 @@ impl App {
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::ConvertTo(format) => self.convert(ctx, format),
+            Cmd::SavePdf => self.save_pdf(ctx, frame),
+            Cmd::StopPdf => self.stop_pdf(),
             Cmd::Edit => self.open_in_editor(ctx, None),
             Cmd::EditWith(k) => {
                 if let Some(editor) = self.menu_editors.get(k).cloned() {
@@ -4219,6 +4234,136 @@ impl App {
         }
     }
 
+    /// How many images File → Save as PDF would put in (`pdf_pages`).
+    pub fn pdf_count(&self) -> usize {
+        match self.targets().len() {
+            n if n > 1 => n,
+            _ => self.files.len(),
+        }
+    }
+
+    /// The images of Save as PDF: those chosen in the gallery when more
+    /// than one is, else every image listed, in the order shown.
+    fn pdf_pages(&self) -> Vec<PathBuf> {
+        let chosen = self.targets();
+        if chosen.len() > 1 { chosen } else { self.files.clone() }
+    }
+
+    /// A PDF is being made.
+    pub fn making_pdf(&self) -> bool {
+        self.pdf.is_some()
+    }
+
+    /// Save `pdf_pages` as one PDF, a page each, into a file the user
+    /// picks (named after the folder, the archive or the favourites); on a
+    /// thread, `poll_pdf` counting the pages in a notice.
+    fn save_pdf(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        if let Some(p) = &self.pdf {
+            let (done, total) = (p.done, p.total);
+            self.notice(tr!(format!("Making the PDF: {done} of {total} pages…"), format!("Создание PDF: {done} из {total} страниц…")));
+            return;
+        }
+        let pages = self.pdf_pages();
+        let Some(first) = pages.first() else { return };
+        // Where the images are: an archive's folder, a favourite's folder.
+        let (dir, title) = match self.dir.as_deref() {
+            Some(d) if self.archive => (crate::archive::folder_of(d), d.file_stem()),
+            Some(d) if !favorites::is_virtual(d) => (Some(d.to_path_buf()), d.file_name()),
+            _ => (crate::archive::folder_of(first), None),
+        };
+        let dir = dir.unwrap_or_default();
+        // English whatever the language, as file names go; a drive's root
+        // has no name.
+        let title = match title {
+            Some(t) => t.to_string_lossy().into_owned(),
+            None if self.in_favorites() => "Favorites".into(),
+            None => "Images".into(),
+        };
+        let name = edit::suggested_name(Path::new(&format!("{title}.pdf")), "pdf", "", |n| dir.join(n).exists());
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(tr!("Save as PDF", "Сохранить в PDF"))
+            .set_file_name(name)
+            .add_filter("PDF", &["pdf"])
+            .set_parent(frame);
+        if !dir.as_os_str().is_empty() {
+            dialog = dialog.set_directory(&dir);
+        }
+        let Some(mut dst) = dialog.save_file() else { return };
+        if !dst.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+            dst.as_mut_os_string().push(".pdf");
+        }
+        let total = pages.len();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let job = crate::pdf::Job { pages, dst: dst.clone(), title };
+        let (ctx, stop_flag) = (ctx.clone(), stop.clone());
+        std::thread::spawn(move || {
+            // Windows' codecs may decode the images.
+            let _com = win::com_init();
+            let result = crate::pdf::make(&job, &stop_flag, |n| {
+                let _ = tx.send(crate::pdf::Progress::Pages(n));
+                ctx.request_repaint();
+            });
+            let _ = tx.send(crate::pdf::Progress::Done(result));
+            ctx.request_repaint();
+        });
+        self.notice(tr!(format!("Making the PDF: 0 of {total} pages…"), format!("Создание PDF: 0 из {total} страниц…")));
+        self.pdf = Some(Pdfing { dst, total, done: 0, stop, rx });
+    }
+
+    /// Give up the PDF being made (File → Stop Making PDF); its file is not
+    /// left behind.
+    fn stop_pdf(&mut self) {
+        if let Some(p) = &self.pdf {
+            p.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// The pages of the PDF being made counted in the notice, and the
+    /// outcome.
+    fn poll_pdf(&mut self) {
+        let Some(p) = &mut self.pdf else { return };
+        let before = p.done;
+        let mut finished = None;
+        for progress in p.rx.try_iter() {
+            match progress {
+                crate::pdf::Progress::Pages(n) => p.done = n,
+                crate::pdf::Progress::Done(result) => finished = Some(result),
+            }
+        }
+        let (done, total) = (p.done, p.total);
+        let Some(result) = finished else {
+            if done != before {
+                self.notice(tr!(format!("Making the PDF: {done} of {total} pages…"), format!("Создание PDF: {done} из {total} страниц…")));
+            }
+            return;
+        };
+        let Pdfing { dst, total, .. } = self.pdf.take().expect("checked above");
+        let name = file_name(&dst);
+        self.notice(match result {
+            Ok(size) => {
+                let size = crate::format::file_size(size);
+                tr!(format!("Saved as PDF: {name}, {total} pages, {size}"), format!("Сохранено в PDF: {name}, страниц: {total}, {size}"))
+            }
+            Err(e) if e.is_empty() => tr!("Making the PDF stopped".into(), "Создание PDF остановлено".into()),
+            Err(e) => tr!(format!("Cannot save the PDF: {e}"), format!("Не удалось сохранить PDF: {e}")),
+        });
+    }
+
+    /// The PDF being made given up at exit, its temporary file deleted by
+    /// its thread (it stops between pages; at most a few seconds).
+    fn end_pdf(&mut self) {
+        let Some(p) = self.pdf.take() else { return };
+        p.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let until = Instant::now() + Duration::from_secs(5);
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            match p.rx.recv_timeout(left) {
+                Ok(crate::pdf::Progress::Pages(_)) => {}
+                _ => break,
+            }
+        }
+    }
+
     /// An image is being saved.
     pub fn saving(&self) -> bool {
         self.saving.is_some()
@@ -4677,6 +4822,7 @@ impl eframe::App for App {
         self.poll_clipboard(&ctx);
         self.poll_handed();
         self.poll_save(&ctx);
+        self.poll_pdf();
         self.poll_opening();
         self.updates.poll();
         self.handle_drop(&ctx);
@@ -4761,6 +4907,7 @@ impl eframe::App for App {
 
     /// The textures are deleted now, while the GL context still lives.
     fn on_exit(&mut self, _gl: Option<&glow::Context>) {
+        self.end_pdf();
         self.player = None;
         self.shown = None;
         self.detail = Default::default();

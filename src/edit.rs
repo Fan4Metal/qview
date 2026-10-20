@@ -78,7 +78,7 @@ pub fn can_overwrite(path: &Path) -> bool {
 }
 
 /// A WebP whose image is lossless (a "VP8L" chunk, not "VP8 ").
-fn webp_lossless(b: &[u8]) -> bool {
+pub(crate) fn webp_lossless(b: &[u8]) -> bool {
     if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WEBP" {
         return false;
     }
@@ -247,7 +247,7 @@ pub fn turned_orientation(orientation: u8, turns: u8, mirror: bool) -> u8 {
 /// The JPEG segments before the image data: (marker, offset of its first
 /// 0xFF, offset of its payload, offset past its end). Fill bytes (more
 /// 0xFF) may come before a marker.
-fn jpeg_segments(b: &[u8]) -> Option<Vec<(u8, usize, usize, usize)>> {
+pub(crate) fn jpeg_segments(b: &[u8]) -> Option<Vec<(u8, usize, usize, usize)>> {
     let mut segments = Vec::new();
     let mut i = 2;
     loop {
@@ -398,15 +398,15 @@ fn transform(job: &Job, img: DynamicImage) -> Result<DynamicImage, String> {
 }
 
 /// An image decoded upright, with the metadata carried into the new file.
-struct Decoded {
-    img: DynamicImage,
-    icc: Option<Vec<u8>>,
-    exif: Option<Vec<u8>>,
+pub(crate) struct Decoded {
+    pub img: DynamicImage,
+    pub icc: Option<Vec<u8>>,
+    pub exif: Option<Vec<u8>>,
 }
 
 /// `src` decoded upright, with its ICC profile and EXIF data: by the
 /// `image` crate, or by Windows' codecs (no metadata then).
-fn decode(src: &Path, bytes: &[u8]) -> Result<Decoded, String> {
+pub(crate) fn decode(src: &Path, bytes: &[u8]) -> Result<Decoded, String> {
     // A drawing at its size (`svg`), which the crop refers to.
     if crate::svg::is_svg(src, bytes) {
         let svg = crate::svg::Svg::parse(src, bytes, true)?;
@@ -492,7 +492,7 @@ fn encode(img: &DynamicImage, format: Format, icc: Option<Vec<u8>>, exif: Option
 /// `img` laid on white where it is transparent, for JPEG, which has no
 /// alpha: the encoder drops it, and the transparent pixels came out in
 /// whatever colour they held (black for a drawing, most of it).
-fn on_white(img: &DynamicImage) -> std::borrow::Cow<'_, DynamicImage> {
+pub(crate) fn on_white(img: &DynamicImage) -> std::borrow::Cow<'_, DynamicImage> {
     if !img.color().has_alpha() {
         return std::borrow::Cow::Borrowed(img);
     }
@@ -510,7 +510,7 @@ fn on_white(img: &DynamicImage) -> std::borrow::Cow<'_, DynamicImage> {
 }
 
 /// `img` with 8 bits per channel, as WebP and BMP take it.
-fn eight_bit(img: &DynamicImage) -> std::borrow::Cow<'_, DynamicImage> {
+pub(crate) fn eight_bit(img: &DynamicImage) -> std::borrow::Cow<'_, DynamicImage> {
     use image::ColorType::*;
     use std::borrow::Cow;
     match img.color() {

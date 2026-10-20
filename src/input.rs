@@ -98,6 +98,11 @@ pub enum Cmd {
     Save,
     /// Save it into a file the user picks (Ctrl+Shift+S).
     SaveAs,
+    /// Save the images listed, or those chosen in the gallery, as one PDF
+    /// (Ctrl+Shift+P).
+    SavePdf,
+    /// Give up the PDF being made.
+    StopPdf,
     /// Open the current image, or those chosen, in the editor chosen last
     /// (Ctrl+E); with none chosen, with Windows' "edit" verb.
     Edit,
@@ -254,6 +259,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::V if letter => FlipVertical,
         Key::P if letter => Pause,
         Key::P if m.ctrl && !m.alt && !m.shift => Print,
+        Key::P if m.ctrl && m.shift && !m.alt => SavePdf,
         Key::Period if letter => NextFrame,
         Key::Comma if letter => PrevFrame,
         Key::F if m.ctrl && !m.shift && !m.alt => Find,
@@ -603,6 +609,8 @@ mod tests {
         assert_eq!(command(Key::V, CTRL, false), None);
         assert_eq!(command(Key::P, NONE, false), Some(Cmd::Pause));
         assert_eq!(command(Key::P, CTRL, false), Some(Cmd::Print));
+        assert_eq!(command(Key::P, CTRL | SHIFT, false), Some(Cmd::SavePdf));
+        assert_eq!(gallery_command(Key::P, CTRL | SHIFT, false), Some(Cmd::SavePdf));
         assert_eq!(command(Key::I, NONE, false), Some(Cmd::Info));
         assert_eq!(command(Key::N, NONE, false), Some(Cmd::Navigator));
         assert_eq!(command(Key::N, NONE, true), None);

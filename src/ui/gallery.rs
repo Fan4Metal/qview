@@ -973,6 +973,9 @@ impl App {
                 self.follow_item(ui);
             }
             self.new_folder_item(ui);
+            if !self.files.is_empty() {
+                self.pdf_item(ui);
+            }
             if let Some(dir) = self.pinnable_dir() {
                 ui.separator();
                 self.pin_item(ui, dir, true);

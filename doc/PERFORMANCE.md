@@ -269,6 +269,20 @@ The information panel's Colour section shows the pixel under the pointer. Folded
 
 The navigator over a zoomed image is the image's own texture drawn a second time, about 180 points across: the GPU reads one of its small mip levels, which every texture already has, so nothing is decoded, converted or uploaded for it and no memory is added. A frame gets one textured quad and a few rectangles more, and frames are painted only when they are anyway (zooming, panning). Not measured: the bilinear painting of the whole image area takes ~0.05 ms of GPU per frame on the test machine, and this is a small fraction of its pixels. Hiding when idle repaints only while it fades (0.3 s).
 
+## Saving as PDF
+
+File → Save as PDF writes the PDF itself (`src/pdf.rs`, no crate): a page per image, the objects of each page written as it comes, one image in memory at a time. A JPEG (baseline or progressive, 8 bits, grey or colour, upright or turned by its EXIF orientation) is the PDF's `DCTDecode` stream byte for byte, and a PNG without transparency gives its `IDAT` data as a `FlateDecode` stream with the PNG predictors; only other images are decoded and encoded (lossy sources as JPEG at quality 92, the others as fast PNG data). Measured with `pdf_timings` on the test machine, the files cached:
+
+| Folder | Pages | Files | PDF | Time |
+|---|---|---|---|---|
+| Screenshots and photos, 31 PNG and 8 JPEG | 39 | 164 MB | 164 MB | 185–270 ms (5–7 ms a page) |
+| Wallpapers, 26 PNG, 8 JPEG, 1 WebP | 35 | 178 MB | 175 MB | 890–970 ms (25–28 ms a page) |
+| A test set of every kind, 800x600, 12 of 18 decoded | 18 | 3.1 MB | 0.3 MB | 294 ms (16 ms a page) |
+
+- A page taken as it is costs about as much as reading and writing its file; the time goes on the pages that are decoded (transparent PNG, GIF, BMP, TIFF, WebP, HEIC, SVG, a mirrored or CMYK JPEG).
+- The PDF is checked by `pypdf` in strict mode: the cross-reference table, every image decoded, the page sizes and turns.
+- The exe grew by ~64 KB (15 352 320 to 15 418 368 bytes): the encoders, `flate2` and the JPEG and PNG readers were already in it.
+
 ## Measuring
 
 | What | How |
@@ -291,6 +305,7 @@ The navigator over a zoomed image is the image's own texture drawn a second time
 | The frames and delays of an animation | `$env:QVIEW_ANIM_FILE="<gif or webp>"; cargo test --release file_frames -- --ignored --nocapture` |
 | The information panel's reading of one file | `$env:QVIEW_INFO_FILE="<file>"; cargo test --release info_file -- --ignored --nocapture` |
 | The installed WIC decoders | `cargo test codec_list -- --ignored --nocapture` |
+| A folder saved as one PDF: time per page, size against the files (`QVIEW_PDF_OUT` keeps it) | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release pdf_timings -- --ignored --nocapture` |
 | Windows' Print Pictures dialog opened for a file, and its `Drop` timed | `$env:QVIEW_PRINT_FILE="<file>"; cargo test print_dialog -- --ignored --nocapture` |
 
 A GUI program started from PowerShell gets no console; with `Start-Process -RedirectStandardError <log>` the trace goes to a file.

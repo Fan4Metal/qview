@@ -31,7 +31,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - **Information panel**: the details of the file and the image, the EXIF data with the location on a map, a histogram and the colour under the pointer (see [Information panel](#information-panel)).
 - **Editing**: rotating, flipping and cropping, saved over the file or as another file, without recompression for a JPEG that is only rotated or flipped; conversion to other formats (see [Rotating and cropping](#rotating-and-cropping)).
 - **Accurate display**: 100% shows one image pixel per screen pixel at any display scaling, reduced images are smoothed, and the filtering (bilinear, bicubic or pixelated) and the background are chosen in the View menu (see [Viewing](#viewing)).
-- **Slideshow, clipboard, printing and desktop background** (see [the section of that name](#slideshow-clipboard-printing-and-desktop-background)).
+- **Slideshow, clipboard, PDF, printing and desktop background**: a folder or the chosen images are saved as one PDF, JPEG and PNG without recompression (see [the section of that name](#slideshow-clipboard-pdf-printing-and-desktop-background)).
 - **Keyboard control**: the viewer and the gallery are controlled entirely from the keyboard, and there is no settings dialog: the few options are in the menus (see [Keyboard shortcuts](#keyboard-shortcuts)).
 - **Russian and English**: the interface follows the language of Windows; another one is chosen in Help → About qview.
 - **Privacy**: no network access beyond the optional update check (see [Update check and privacy](#update-check-and-privacy)).
@@ -318,9 +318,9 @@ The format is recognised by the contents of the file rather than its extension, 
 
 </details>
 
-### Slideshow, clipboard, printing and desktop background
+### Slideshow, clipboard, PDF, printing and desktop background
 
-View → Slideshow → Start (`Shift+F`) shows the images of the folder one after another in full screen. Copy Image (`Ctrl+Shift+C`) and Paste (`Ctrl+V`) exchange images with other programs, Print… (`Ctrl+P`) opens the Windows Print Pictures dialog, and Set as Desktop Background makes the image the desktop background, all in the File menu.
+View → Slideshow → Start (`Shift+F`) shows the images of the folder one after another in full screen. Copy Image (`Ctrl+Shift+C`) and Paste (`Ctrl+V`) exchange images with other programs, Save as PDF… (`Ctrl+Shift+P`) puts the images into one PDF file, Print… (`Ctrl+P`) opens the Windows Print Pictures dialog, and Set as Desktop Background makes the image the desktop background, all in the File menu.
 
 <details>
 <summary>Slideshow</summary>
@@ -333,6 +333,15 @@ View → Slideshow → Start (`Shift+F`, also from the gallery) shows the images
 <summary>Clipboard</summary>
 
 File → Copy Image (`Ctrl+Shift+C`) puts the image on the clipboard as it is shown, rotated, flipped and, while cropping, cropped, at the full size of the file, for pasting into other programs; an image with transparency is also put there as PNG. Anything copied meanwhile, in qview or in another program, is left on the clipboard. File → Paste (`Ctrl+V`) opens what the clipboard holds: a file copied in Explorer, a path copied as text, or an image, such as a screenshot, which is saved as a PNG file named `Clipboard <date> <time>.png` in the `qview` folder of the temporary folder and can then be cropped and saved elsewhere with Save As.
+
+</details>
+
+<details>
+<summary>Saving as PDF</summary>
+
+File → Save as PDF… (`Ctrl+Shift+P`; also under More in the context menus and in the context menu of the gallery's background) saves the images into one PDF file, a page each, in the order shown: all the images listed (the folder, with its sub-folders when they are listed, the favorites, or the pages of a comic book), or, in the gallery, the chosen images when there are several. The file is chosen in a dialog, named after the folder or the archive. Each page has the size of its image at the resolution stored in the file (96 dpi when the file has none), and the PDF has a bookmark with the file name for each page.
+
+A JPEG is placed in the PDF as it is, turned through the page when its EXIF orientation says so, and a PNG without transparency as its compressed data, so neither is recompressed and the PDF is about as large as the files; such a page takes about as long as copying its file. Other images are decoded and placed on white where they are transparent: those compressed with loss (WebP, HEIC, AVIF, RAW) as JPEG at quality 92, the others (PNG with transparency, GIF, BMP, TIFF, lossless WebP, SVG) without loss. The colour profiles are kept. The progress is shown in the status bar, and File → Stop Making PDF stops it; the PDF is written into a temporary file that replaces the chosen one only when it is complete.
 
 </details>
 
@@ -421,6 +430,7 @@ The arrow keys scroll an image that is larger than the window in that direction;
 | Copy the file to the clipboard | `Ctrl+C` |
 | Copy the image as shown to the clipboard | `Ctrl+Shift+C` |
 | Print the image as shown, or the chosen images | `Ctrl+P` |
+| Save the images listed, or the chosen images, as one PDF | `Ctrl+Shift+P` |
 | Open an image, file or path from the clipboard | `Ctrl+V`, `Shift+Insert` |
 | Add to / remove from the favorites | `S` |
 | Open a file | `Ctrl+O`, or dropping a file onto the window |

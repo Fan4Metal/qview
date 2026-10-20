@@ -227,6 +227,13 @@ fn coding<S: At + ?Sized>(src: &S) -> (Option<(f64, f64)>, Option<JpegCoding>) {
     (None, None)
 }
 
+/// What a PDF page of the file `bytes` takes from its metadata: the dots
+/// per inch it asks to be printed at, and its ICC profile.
+pub fn print_metadata(bytes: &[u8]) -> (Option<(f64, f64)>, Option<Vec<u8>>) {
+    let (exif, icc) = found_in(bytes, || from_image(std::io::Cursor::new(bytes)), || None);
+    (exif.and_then(|e| e.dpi).or_else(|| coding(bytes).0), icc)
+}
+
 /// When the photo in `path` was taken, as a FILETIME (its local time on
 /// this computer's clock); None when its metadata does not say.
 pub fn taken(path: &Path) -> Option<u64> {
