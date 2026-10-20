@@ -30,7 +30,9 @@ impl App {
             file: self.current.is_some(),
             image: self.shown.is_some(),
             edit: self.editable().is_some() && !self.saving(),
-            edited: self.editable().is_some() && !self.saving() && (self.view.changed() || self.crop.is_some()),
+            edited: self.editable().is_some()
+                && !self.saving()
+                && (self.view.changed() || self.crop.is_some() || self.annotating.as_ref().is_some_and(|a| !a.marks.is_empty())),
             prev: self.index.is_some_and(|i| i > 0),
             next: self.index.is_some_and(|i| i + 1 < n),
             any: n > 0,
@@ -72,7 +74,7 @@ impl App {
         self.item(ui, tr!("Save As…", "Сохранить как…").into(), "Ctrl+Shift+S", Cmd::SaveAs, e.edit);
         self.convert_menu(ui);
         self.pdf_item(ui);
-        self.editor_items(ui, e.file && self.crop.is_none());
+        self.editor_items(ui, e.file && !self.editing_image());
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
         self.print_item(ui, e.file);
@@ -80,16 +82,19 @@ impl App {
         ui.separator();
         self.copy_item(ui, e.file);
         self.copy_image_item(ui, e.file);
-        let paste = crate::clipboard::can_paste() && self.crop.is_none();
+        let paste = crate::clipboard::can_paste() && !self.editing_image();
         self.item(ui, tr!("Paste", "Вставить").into(), "Ctrl+V", Cmd::Paste, paste);
         self.rename_item(ui, e.file);
-        let undo = !self.undo.is_empty() && self.crop.is_none();
-        self.item(ui, self.undo_label().into(), "Ctrl+Z", Cmd::Undo, undo);
+        let (label, undo) = match &self.annotating {
+            Some(a) => (tr!("Undo Mark", "Отменить пометку"), !a.undo.is_empty()),
+            None => (self.undo_label(), !self.undo.is_empty() && self.crop.is_none()),
+        };
+        self.item(ui, label.into(), "Ctrl+Z", Cmd::Undo, undo);
         self.delete_item(ui, e.file);
         self.check_item(ui, tr!("Confirm Deletion", "Подтверждать удаление").into(), "", Cmd::ConfirmDelete, self.confirm_deletion);
         ui.separator();
-        self.transfer_menu(ui, false, e.file && self.crop.is_none());
-        self.transfer_menu(ui, true, e.file && self.crop.is_none());
+        self.transfer_menu(ui, false, e.file && !self.editing_image());
+        self.transfer_menu(ui, true, e.file && !self.editing_image());
         ui.separator();
         self.item(ui, tr!("Exit", "Выход").into(), "Ctrl+W", Cmd::Close, true);
     }
@@ -111,6 +116,7 @@ impl App {
         ui.menu_button(tr!("Zoom", "Масштаб"), |ui| self.zoom_items(ui, &e));
         self.rotate_menu(ui, &e);
         self.crop_item(ui, &e);
+        self.annotate_item(ui, &e);
         self.animation_menu(ui);
         ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
@@ -255,6 +261,20 @@ impl App {
     fn flip_items(&mut self, ui: &mut Ui, e: &Enabled) {
         self.item(ui, tr!("Flip Horizontally", "Отразить по горизонтали").into(), "H", Cmd::FlipHorizontal, e.image);
         self.item(ui, tr!("Flip Vertically", "Отразить по вертикали").into(), "V", Cmd::FlipVertical, e.image);
+    }
+
+    /// Marks over the image: frames, arrows, pixelated areas, text.
+    fn annotate_item(&mut self, ui: &mut Ui, e: &Enabled) {
+        let on = self.annotating.is_some();
+        let tip = tr!(
+            "Frames, ellipses, arrows, pixelated areas and text over the image, saved into it",
+            "Рамки, овалы, стрелки, пикселизация и надписи поверх изображения, сохраняемые в него"
+        );
+        let button = Button::new(tr!("Mark Up", "Пометки")).shortcut_text("A").selected(on);
+        if ui.add_enabled(e.edit, button).on_hover_text(tip).clicked() {
+            self.clicked.push(Cmd::Annotate);
+            ui.close();
+        }
     }
 
     fn crop_item(&mut self, ui: &mut Ui, e: &Enabled) {
@@ -542,7 +562,7 @@ impl App {
             "One PDF, a page each: the images chosen in the gallery, else all those listed. JPEG and PNG go in without recompression",
             "Один PDF, по странице на изображение: выбранные в галерее, иначе все показанные. JPEG и PNG вкладываются без пересжатия"
         );
-        self.item_explained(ui, text, "Ctrl+Shift+P", Cmd::SavePdf, n > 0 && self.crop.is_none(), tip);
+        self.item_explained(ui, text, "Ctrl+Shift+P", Cmd::SavePdf, n > 0 && !self.editing_image(), tip);
     }
 
     pub(super) fn print_item(&mut self, ui: &mut Ui, enabled: bool) {
@@ -627,6 +647,7 @@ impl App {
         });
         self.rotate_menu(ui, &e);
         self.crop_item(ui, &e);
+        self.annotate_item(ui, &e);
         if e.edited {
             self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, true);
         }
@@ -684,13 +705,13 @@ impl App {
     pub(super) fn file_items(&mut self, ui: &mut Ui, enabled: bool) {
         self.copy_item(ui, enabled);
         self.rename_item(ui, enabled);
-        self.transfer_menu(ui, false, enabled && self.crop.is_none());
+        self.transfer_menu(ui, false, enabled && !self.editing_image());
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, enabled);
         ui.menu_button(tr!("More", "Ещё"), |ui| {
             self.copy_image_item(ui, enabled);
             self.open_in_editor_item(ui, enabled);
             ui.separator();
-            self.transfer_menu(ui, true, enabled && self.crop.is_none());
+            self.transfer_menu(ui, true, enabled && !self.editing_image());
             self.convert_menu(ui);
             self.pdf_item(ui);
             self.print_item(ui, enabled);

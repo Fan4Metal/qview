@@ -100,6 +100,7 @@ const FILTER_KEY: &str = "filter";
 const LINEAR_MIPS_KEY: &str = "linear_mips";
 const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
+const MARK_PRESETS_KEY: &str = "mark_presets";
 const THUMB_COLUMNS_KEY: &str = "thumb_columns";
 const TREE_WIDTH_KEY: &str = "tree_width";
 const INFO_KEY: &str = "info_panel";
@@ -377,6 +378,13 @@ pub struct App {
     pub undo: Vec<Undo>,
     /// The frame of C over the current image, while it is cropped.
     pub crop: Option<Crop>,
+    /// The marks of A over the current image, while it is marked.
+    pub annotating: Option<crate::annotate::Annotating>,
+    /// The tool and style marked with last, for the next image.
+    mark_style: crate::annotate::Style,
+    /// The user's presets of marks (the marking bar's Presets), kept as
+    /// `mark_presets`.
+    pub mark_presets: Vec<crate::annotate::Preset>,
     saving: Option<Saving>,
     /// Save as PDF under way.
     pdf: Option<Pdfing>,
@@ -912,6 +920,13 @@ impl App {
             confirm_edit: None,
             undo: Vec::new(),
             crop: None,
+            annotating: None,
+            mark_style: crate::annotate::default_style(),
+            mark_presets: cc
+                .storage
+                .and_then(|s| s.get_string(MARK_PRESETS_KEY))
+                .map(|text| text.lines().filter_map(crate::annotate::Preset::parse).collect())
+                .unwrap_or_default(),
             saving: None,
             reloading: None,
             pdf: None,
@@ -2684,6 +2699,9 @@ impl App {
         if self.crop.is_some() && self.run_in_crop(ctx, frame, cmd) {
             return;
         }
+        if self.annotating.is_some() && self.run_in_annotate(ctx, frame, cmd) {
+            return;
+        }
         if self.gallery_open && self.run_in_gallery(ctx, cmd) {
             return;
         }
@@ -2801,6 +2819,9 @@ impl App {
             }
             Cmd::Undo => self.undo(ctx),
             Cmd::Crop => self.start_crop(),
+            Cmd::Annotate => self.start_annotate(ctx),
+            // Only while marking (`run_in_annotate`).
+            Cmd::MarkTool(_) | Cmd::MarkColour(_) | Cmd::MarkSizeStep(_) => {}
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::ConvertTo(format) => self.convert(ctx, format),
@@ -3543,9 +3564,14 @@ impl App {
                 let crop = (!crate::crop::is_whole(c.rect, turned)).then(|| crate::crop::pixels(c.rect, turned));
                 ([picture.meta.width, picture.meta.height], crop)
             }
+            (Some((_, picture)), None) => ([picture.meta.width, picture.meta.height], None),
             _ => ([0, 0], None),
         };
-        edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop }
+        let marks = match (&shown, &self.annotating) {
+            (Some(_), Some(a)) => a.marks.clone(),
+            _ => Vec::new(),
+        };
+        edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop, marks }
     }
 
     /// Put the images of an archive to copy (`targets`) on the clipboard as
@@ -3823,6 +3849,8 @@ impl App {
             if self.focused_folder().is_some() { Mode::GalleryFolder } else { Mode::Gallery }
         } else if self.crop.is_some() {
             Mode::Crop
+        } else if self.annotating.is_some() {
+            Mode::Annotate
         } else if self.slideshow.is_some() {
             Mode::Slideshow
         } else {
@@ -3875,6 +3903,131 @@ impl App {
             // are reset as for any next image.
             self.view.next_image();
         }
+    }
+
+    /// Start marking the image on screen (A): the bar above it, the image
+    /// as large as the window allows, and the image read again on a thread
+    /// for the pixelated areas' blocks.
+    fn start_annotate(&mut self, ctx: &egui::Context) {
+        if self.shown.as_ref().is_some_and(|(p, pic)| self.current.as_ref() == Some(p) && pic.meta.animated) {
+            self.notice(tr!("Animated images cannot be edited".into(), "Анимированные изображения не редактируются".into()));
+            return;
+        }
+        let Some((path, picture)) = self.editable() else { return };
+        self.end_crop();
+        let size = self.view.rotated(picture.size());
+        let mut a = crate::annotate::Annotating::new(path.clone(), size, self.view.zoom, self.view.offset);
+        a.set_style(self.mark_style.clone());
+        let (job, blocks) = (self.as_shown(path), a.blocks.clone());
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            // Windows' codecs may decode it.
+            let _com = win::com_init();
+            let _ = tx.send(crate::annotate::read_mosaics(&job, &blocks));
+            ctx.request_repaint();
+        });
+        a.mosaics_rx = Some(rx);
+        self.annotating = Some(a);
+        self.view.zoom = Zoom::Fill;
+        self.view.offset = Vec2::ZERO;
+    }
+
+    /// Stop marking, the marks dropped; the zoom and panning are as they
+    /// were before.
+    pub fn end_annotate(&mut self) {
+        if let Some(a) = self.annotating.take() {
+            self.view.zoom = a.zoom;
+            self.view.offset = a.offset;
+            self.mark_style = a.style();
+        }
+    }
+
+    /// Marking ends when its image is no longer on screen.
+    fn check_annotate(&mut self) {
+        let Some(a) = &self.annotating else { return };
+        if self.editable().is_some_and(|(p, _)| p == a.path) {
+            return;
+        }
+        let same = self.current.as_ref() == Some(&a.path);
+        self.end_annotate();
+        if !same {
+            self.view.next_image();
+        }
+    }
+
+    /// The image is being cropped or marked: browsing and the file
+    /// commands wait.
+    pub fn editing_image(&self) -> bool {
+        self.crop.is_some() || self.annotating.is_some()
+    }
+
+    /// Carry out `cmd` while marking: the tools, colours and sizes, Ctrl+Z
+    /// and Delete of marks, Save; Esc (or Cancel) twice gives up the marks.
+    /// Browsing, turning and the file commands wait. False for the
+    /// commands that work as in the viewer.
+    fn run_in_annotate(&mut self, ctx: &egui::Context, frame: &eframe::Frame, cmd: Cmd) -> bool {
+        const DISCARD_TIME: Duration = Duration::from_secs(4);
+        let Some(a) = &mut self.annotating else { return false };
+        match cmd {
+            Cmd::Escape | Cmd::Annotate => {
+                a.typing = None;
+                let n = a.marks.len();
+                if n == 0 || a.discard_asked.is_some_and(|t| t.elapsed() < DISCARD_TIME) {
+                    self.end_annotate();
+                } else {
+                    a.discard_asked = Some(Instant::now());
+                    self.notice(tr!(
+                        format!("Marks: {n}. Press Esc or Cancel again to discard them"),
+                        format!("Пометок: {n}. Нажмите Esc или «Отмена» ещё раз, чтобы удалить их")
+                    ));
+                }
+            }
+            Cmd::Save => self.save(ctx, frame, false),
+            Cmd::SaveAs => self.save(ctx, frame, true),
+            Cmd::Undo => {
+                a.undo();
+            }
+            Cmd::Delete => {
+                a.delete_selected();
+            }
+            Cmd::MarkTool(tool) => {
+                a.finish_typing();
+                a.tool = tool;
+            }
+            Cmd::MarkColour(i) => {
+                if let Some(&colour) = crate::annotate::COLOURS.get(usize::from(i)) {
+                    a.set_colour(colour);
+                }
+            }
+            Cmd::MarkSizeStep(up) => a.step_size(up),
+            // Panning, never browsing.
+            Cmd::Arrow(arrow) => {
+                let ppp = ctx.pixels_per_point();
+                let can = self.shown.as_ref().map_or([false; 2], |(_, p)| self.view.pannable(p.size(), self.viewport, ppp));
+                return !can[usize::from(matches!(arrow, Arrow::Up | Arrow::Down))];
+            }
+            Cmd::ZoomIn
+            | Cmd::ZoomOut
+            | Cmd::Actual
+            | Cmd::Fit
+            | Cmd::Fill
+            | Cmd::Cover
+            | Cmd::FullScreen
+            | Cmd::WindowFullScreen
+            | Cmd::ToggleMenuBar
+            | Cmd::ToggleToolbar
+            | Cmd::ToggleStatusBar
+            | Cmd::Info
+            | Cmd::Shortcuts
+            | Cmd::About
+            | Cmd::CopyImage
+            | Cmd::Wallpaper
+            | Cmd::Print
+            | Cmd::Close => return false,
+            _ => {}
+        }
+        true
     }
 
     /// Carry out `cmd` while cropping: browsing and the file commands wait
@@ -3954,8 +4107,13 @@ impl App {
             .as_ref()
             .filter(|c| !crate::crop::is_whole(c.rect, turned))
             .map(|c| crate::crop::pixels(c.rect, turned));
+        // Text being typed is a mark.
+        if let Some(a) = &mut self.annotating {
+            a.finish_typing();
+        }
+        let marks = self.annotating.as_ref().filter(|a| a.path == path).map(|a| a.marks.clone()).unwrap_or_default();
         let dst = if !as_new && edit::can_overwrite(&path) {
-            if !self.view.changed() && crop.is_none() {
+            if !self.view.changed() && crop.is_none() && marks.is_empty() {
                 self.notice(tr!(
                     "Nothing to save: the image is neither turned, mirrored nor cropped".into(),
                     "Нечего сохранять: изображение не повёрнуто, не отражено и не обрезано".into()
@@ -3964,7 +4122,9 @@ impl App {
             }
             path.clone()
         } else {
-            let suffix = if crop.is_some() {
+            let suffix = if !marks.is_empty() {
+                "_marked"
+            } else if crop.is_some() {
                 "_crop"
             } else if self.view.turns != 0 {
                 "_rotate"
@@ -3977,7 +4137,7 @@ impl App {
             dst
         };
         let size = [picture.meta.width, picture.meta.height];
-        let job = edit::Job { src: path, dst, size, turns: self.view.turns, flip: self.view.flip, crop };
+        let job = edit::Job { src: path, dst, size, turns: self.view.turns, flip: self.view.flip, crop, marks };
         self.start_save(ctx, vec![job], false);
     }
 
@@ -4020,7 +4180,7 @@ impl App {
         let (turns, flip) = if self.editable().is_some() { (self.view.turns, self.view.flip) } else { (0, false) };
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let name = edit::suggested_name(&path, format.extensions()[0], "", |n| dir.join(n).exists());
-        let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, flip, crop: None };
+        let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, flip, crop: None, marks: Vec::new() };
         self.start_save(ctx, vec![job], true);
     }
 
@@ -4039,7 +4199,7 @@ impl App {
                 });
                 let dst = dir.join(name);
                 planned.insert(dst.to_string_lossy().to_lowercase());
-                edit::Job { src, dst, size: [0, 0], turns: 0, flip: false, crop: None }
+                edit::Job { src, dst, size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new() }
             })
             .collect();
         let n = jobs.len();
@@ -4124,6 +4284,9 @@ impl App {
                 self.push_undo(Undo::Save(vec![(job.dst.clone(), saved.before)]));
                 if self.crop.as_ref().is_some_and(|c| c.path == job.src) {
                     self.end_crop();
+                }
+                if self.annotating.as_ref().is_some_and(|a| a.path == job.src) {
+                    self.end_annotate();
                 }
                 self.written(ctx, std::slice::from_ref(&job.dst));
                 if convert {
@@ -4462,13 +4625,14 @@ impl App {
             view::paint(&painter, texture, place, 0, false);
         } else if let Some((shown_path, picture)) = self.shown.clone() {
             let size = picture.size();
-            if response.dragged_by(PointerButton::Primary) && self.crop.is_none() {
+            let editing = self.crop.is_some() || self.annotating.is_some();
+            if response.dragged_by(PointerButton::Primary) && !editing {
                 self.view.pan(response.drag_delta(), size, rect, ppp);
             }
             let mut place = self.view.place(size, rect, ppp);
             // The navigator over an image larger than the window.
             let navigator = self.navigator
-                && self.crop.is_none()
+                && !editing
                 && self.view.pannable(size, rect, ppp).contains(&true);
             let nav = navigator.then(|| view::navigator_rect(place.size(), rect, self.navigator_corner, ppp));
             let mut nav_alpha = 0.0;
@@ -4512,6 +4676,8 @@ impl App {
             }
             if let Some(crop) = &mut self.crop {
                 crate::ui::crop::frame(crop, &response, &painter, place, self.view.rotated(size));
+            } else if let Some(a) = &mut self.annotating {
+                crate::ui::annotate::overlay(a, &response, &painter, place, self.view.rotated(size));
             } else if self.view.pannable(size, rect, ppp).contains(&true) && response.hovered() {
                 ctx.set_cursor_icon(if response.dragged() {
                     egui::CursorIcon::Grabbing
@@ -4542,7 +4708,7 @@ impl App {
             }
         }
 
-        let cropping = self.crop.is_some();
+        let cropping = self.crop.is_some() || self.annotating.is_some();
         if crate::input::double_clicked(&response) && self.image_clicked && !cropping {
             self.clicked.push(Cmd::Gallery);
         }
@@ -4837,7 +5003,8 @@ impl eframe::App for App {
             // But the gallery's filter, while it is typed in: the keys are
             // its own then.
             let typing = std::mem::take(&mut self.filter_focused)
-                || ctx.memory(|m| m.has_focus(egui::Id::new(crate::ui::gallery::FILTER_ID)));
+                || ctx.memory(|m| m.has_focus(egui::Id::new(crate::ui::gallery::FILTER_ID)))
+                || self.annotating.as_ref().is_some_and(|a| a.typing.is_some());
             if let Some(id) = ctx.memory(|m| m.focused()).filter(|_| !typing) {
                 ctx.memory_mut(|m| m.surrender_focus(id));
             }
@@ -4851,6 +5018,7 @@ impl eframe::App for App {
             self.sync_shown();
         }
         self.check_crop();
+        self.check_annotate();
         self.complete_current_if_needed(&ctx);
         self.animate(&ctx);
         self.slideshow_tick(&ctx);
@@ -4880,6 +5048,9 @@ impl eframe::App for App {
         // In full screen too: it has the frame's size and buttons.
         if self.crop.is_some() {
             self.crop_bar(root_ui);
+        }
+        if self.annotating.is_some() {
+            self.annotate_bar(root_ui);
         }
         if self.gallery_open {
             self.gallery_ui(root_ui);
@@ -4935,6 +5106,8 @@ impl eframe::App for App {
         storage.set_string(FILTER_KEY, self.filter.name().to_string());
         storage.set_string(ZOOM_KEY, self.view.mode.name().unwrap_or("fit").to_string());
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
+        let presets: Vec<String> = self.mark_presets.iter().map(crate::annotate::Preset::to_line).collect();
+        storage.set_string(MARK_PRESETS_KEY, presets.join("\n"));
         storage.set_string(THUMB_COLUMNS_KEY, self.thumb_columns.unwrap_or(0).to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
         storage.set_string(INFO_KEY, self.show_info.to_string());

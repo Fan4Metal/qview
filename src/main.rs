@@ -3,6 +3,7 @@
 #[macro_use]
 mod i18n;
 mod anim;
+mod annotate;
 mod app;
 mod archive;
 mod assoc;

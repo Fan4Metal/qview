@@ -93,6 +93,15 @@ pub enum Cmd {
     Undo,
     /// Crop the image (C), or stop cropping.
     Crop,
+    /// Draw marks over the image (A): frames, arrows, pixelated areas,
+    /// text; or stop (asking first when there are marks).
+    Annotate,
+    /// While marking: what a drag draws (R, E, L, A, D, P, T).
+    MarkTool(crate::annotate::Tool),
+    /// While marking: the colour of `annotate::COLOURS` (1 to 6).
+    MarkColour(u8),
+    /// While marking: a step of the size up (]) or down ([).
+    MarkSizeStep(bool),
     /// Save the image turned and cropped over its file (Ctrl+S), and while
     /// cropping with Enter.
     Save,
@@ -275,6 +284,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::S if m.ctrl && !m.alt => Save,
         Key::S if letter => Favorite,
         Key::C if letter => Crop,
+        Key::A if letter => Annotate,
         Key::G if letter => Gallery,
         Key::Enter if plain && !m.shift => Gallery,
         Key::W if m.ctrl && !m.alt => Close,
@@ -357,6 +367,40 @@ pub fn crop_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
     }
 }
 
+/// The command of a key press while marking (`annotate`): the tools,
+/// colours and sizes, Enter saves, Delete takes out the mark chosen; the
+/// other keys are the viewer's (see [`command`]), of which `App` lets few
+/// through.
+pub fn annotate_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
+    use crate::annotate::Tool;
+    let letter = !m.ctrl && !m.alt && !m.shift;
+    if letter && !repeat {
+        let tool = match key {
+            Key::R => Some(Tool::Rect),
+            Key::E => Some(Tool::Ellipse),
+            Key::L => Some(Tool::Line),
+            Key::A => Some(Tool::Arrow),
+            Key::D => Some(Tool::Pen),
+            Key::P => Some(Tool::Pixelate),
+            Key::T => Some(Tool::Text),
+            _ => None,
+        };
+        if let Some(tool) = tool {
+            return Some(Cmd::MarkTool(tool));
+        }
+        if let Some(n) = digit(key).filter(|&n| usize::from(n) <= crate::annotate::COLOURS.len()) {
+            return Some(Cmd::MarkColour(n - 1));
+        }
+        match key {
+            Key::OpenBracket => return Some(Cmd::MarkSizeStep(false)),
+            Key::CloseBracket => return Some(Cmd::MarkSizeStep(true)),
+            Key::Enter => return Some(Cmd::Save),
+            _ => {}
+        }
+    }
+    command(key, m, repeat)
+}
+
 /// Where the keys go.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -366,6 +410,8 @@ pub enum Mode {
     /// open it, not the image.
     GalleryFolder,
     Crop,
+    /// Marks being drawn (`annotate`).
+    Annotate,
     /// A slideshow: Space pauses it instead of browsing.
     Slideshow,
 }
@@ -378,6 +424,7 @@ pub fn keys(ctx: &egui::Context, mode: Mode) -> Vec<Cmd> {
         Mode::Gallery => gallery_command,
         Mode::GalleryFolder => folder_command,
         Mode::Crop => crop_command,
+        Mode::Annotate => annotate_command,
         Mode::Slideshow => slideshow_command,
     };
     ctx.input(|i| {
@@ -641,6 +688,20 @@ mod tests {
         assert_eq!(command(Key::S, CTRL | SHIFT, false), Some(Cmd::SaveAs));
         assert_eq!(command(Key::S, CTRL, true), None);
         assert_eq!(command(Key::C, NONE, false), Some(Cmd::Crop));
+        assert_eq!(command(Key::A, NONE, false), Some(Cmd::Annotate));
+        assert_eq!(command(Key::A, NONE, true), None);
+        use crate::annotate::Tool;
+        assert_eq!(annotate_command(Key::A, NONE, false), Some(Cmd::MarkTool(Tool::Arrow)));
+        assert_eq!(annotate_command(Key::P, NONE, false), Some(Cmd::MarkTool(Tool::Pixelate)));
+        assert_eq!(annotate_command(Key::L, NONE, false), Some(Cmd::MarkTool(Tool::Line)));
+        assert_eq!(annotate_command(Key::D, NONE, false), Some(Cmd::MarkTool(Tool::Pen)));
+        assert_eq!(annotate_command(Key::Num1, NONE, false), Some(Cmd::MarkColour(0)));
+        assert_eq!(annotate_command(Key::Num6, NONE, false), Some(Cmd::MarkColour(5)));
+        assert_eq!(annotate_command(Key::Num7, NONE, false), command(Key::Num7, NONE, false));
+        assert_eq!(annotate_command(Key::CloseBracket, NONE, false), Some(Cmd::MarkSizeStep(true)));
+        assert_eq!(annotate_command(Key::Enter, NONE, false), Some(Cmd::Save));
+        assert_eq!(annotate_command(Key::Z, CTRL, false), Some(Cmd::Undo));
+        assert_eq!(annotate_command(Key::S, CTRL, false), Some(Cmd::Save));
         assert_eq!(command(Key::E, CTRL, false), Some(Cmd::Edit));
         assert_eq!(command(Key::C, SHIFT, false), None);
         assert_eq!(crop_command(Key::Enter, NONE, false), Some(Cmd::Save));

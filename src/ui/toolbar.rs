@@ -30,6 +30,8 @@ enum Icon {
     RotateLeft,
     RotateRight,
     Crop,
+    /// Marks over the image (a frame and an arrow into it).
+    Annotate,
     /// Open in the editor (a pencil).
     Edit,
     ZoomIn,
@@ -46,7 +48,8 @@ impl App {
         let prev = self.index.is_some_and(|i| i > 0);
         let next = self.index.is_some_and(|i| i + 1 < self.files.len());
         // Browsing and the file waits while an image is cropped.
-        let cropping = self.crop.is_some();
+        let cropping = self.editing_image();
+        let (marking, cropping_only) = (self.annotating.is_some(), self.crop.is_some());
         let (prev, next) = (prev && !cropping, next && !cropping);
         let file = self.current.is_some() && !cropping;
         // As the turns: while browsing fast the image on screen is often not
@@ -93,6 +96,7 @@ impl App {
                                 (Icon::RotateLeft, Cmd::RotateLeft, tr!("Rotate Left ([)", "Повернуть влево ([)").into(), has_image),
                                 (Icon::RotateRight, Cmd::RotateRight, tr!("Rotate Right (])", "Повернуть вправо (])").into(), has_image),
                                 (Icon::Crop, Cmd::Crop, tr!("Crop (C)", "Обрезать (C)").into(), crop),
+                                (Icon::Annotate, Cmd::Annotate, tr!("Mark Up (A)", "Пометки (A)").into(), crop),
                                 edit,
                             ],
                             vec![
@@ -107,7 +111,9 @@ impl App {
                             divider(ui);
                         }
                         for (icon, cmd, tip, enabled) in group.iter() {
-                            let on = (matches!(icon, Icon::Gallery) && gallery) || (matches!(icon, Icon::Crop) && cropping);
+                            let on = (matches!(icon, Icon::Gallery) && gallery)
+                                || (matches!(icon, Icon::Crop) && cropping_only)
+                                || (matches!(icon, Icon::Annotate) && marking);
                             let response = icon_button(ui, *icon, tip, *enabled, on);
                             if response.clicked() {
                                 self.clicked.push(*cmd);
@@ -248,6 +254,13 @@ fn paint_icon(painter: &Painter, icon: Icon, c: Pos2, color: Color32) {
             let p = |x: f32, y: f32| c + vec2(x, y);
             painter.add(Shape::line(vec![p(-4.5, -8.0), p(-4.5, 4.5), p(8.0, 4.5)], stroke));
             painter.add(Shape::line(vec![p(-8.0, -4.5), p(4.5, -4.5), p(4.5, 8.0)], stroke));
+        }
+        Icon::Annotate => {
+            // A frame, and an arrow from the bottom left pointing into it.
+            let p = |x: f32, y: f32| c + vec2(x, y);
+            painter.add(Shape::closed_line(vec![p(-2.0, -8.0), p(8.0, -8.0), p(8.0, 2.0), p(-2.0, 2.0)], stroke));
+            painter.line_segment([p(-8.0, 8.0), p(-0.5, 0.5)], stroke);
+            painter.add(Shape::convex_polygon(vec![p(1.0, -1.0), p(-5.0, 0.0), p(0.0, 5.0)], color, Stroke::NONE));
         }
         Icon::Edit => {
             // A pencil from the bottom left, its point down: along `d`, as

@@ -61,6 +61,21 @@ fn shortcuts(esc_closes: bool) -> Vec<(&'static str, Vec<(&'static str, &'static
             ],
         ),
         (
+            tr!("Marks", "Пометки"),
+            vec![
+                ("A", tr!("Mark up the image: frames, lines, arrows, drawing, pixelation, text", "Пометки на изображении: рамки, линии, стрелки, рисование, пикселизация, текст")),
+                (
+                    "R  E  L  A  D  P  T",
+                    tr!("Frame / ellipse / line / arrow / pen / pixelate / text", "Рамка / овал / линия / стрелка / карандаш / пикселизация / текст"),
+                ),
+                ("1 – 6", tr!("Colour (any one from the picker in the bar)", "Цвет (любой — пикером на панели)")),
+                ("[  ]", tr!("Smaller / larger: line, text or blocks (or the slider in the bar)", "Меньше / больше: линия, текст или блоки (или ползунок на панели)")),
+                ("Shift", tr!("While drawing: a square, a circle, a line at 45°", "При рисовании: квадрат, круг, линия под 45°")),
+                ("Delete  Ctrl+Z", tr!("Delete the chosen mark / undo the last change", "Удалить выбранную пометку / отменить последнее изменение")),
+                ("Enter  Esc", tr!("Save / cancel (twice when there are marks)", "Сохранить / отменить (дважды, если есть пометки)")),
+            ],
+        ),
+        (
             tr!("Animation", "Анимация"),
             vec![
                 ("P", tr!("Pause / play", "Приостановить / продолжить")),

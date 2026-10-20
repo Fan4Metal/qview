@@ -60,6 +60,11 @@ static FONTS: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
     Arc::new(fonts)
 });
 
+/// The fonts of this computer (see `FONTS`), for text marks too.
+pub fn system_fonts() -> Arc<usvg::fontdb::Database> {
+    FONTS.clone()
+}
+
 /// A parsed drawing and the size it is taken to have.
 pub struct Svg {
     tree: usvg::Tree,

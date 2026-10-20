@@ -135,6 +135,8 @@ pub struct Job {
     pub turns: u8,
     pub flip: bool,
     pub crop: Option<[u32; 4]>,
+    /// Drawn over it last (see `annotate`), in pixels of the image turned.
+    pub marks: Vec<crate::annotate::Mark>,
 }
 
 /// The contents of a file before it was saved over, for Ctrl+Z.
@@ -159,7 +161,7 @@ pub fn save(job: &Job) -> Result<Saved, String> {
             .to_string()
     })?;
     let bytes = crate::archive::read(&job.src).map_err(|e| e.to_string())?;
-    let lossless = (job.crop.is_none() && format == Format::Jpeg && bytes.starts_with(&[0xff, 0xd8]))
+    let lossless = (job.crop.is_none() && job.marks.is_empty() && format == Format::Jpeg && bytes.starts_with(&[0xff, 0xd8]))
         .then(|| turn_jpeg(&bytes, job.turns, job.flip))
         .flatten();
     let (out, lossless) = match lossless {
@@ -378,9 +380,10 @@ pub fn render_png(job: &Job) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// `img`, decoded upright from `job.src`, mirrored, turned and cropped.
+/// `img`, decoded upright from `job.src`, mirrored, turned, cropped and
+/// marked.
 fn transform(job: &Job, img: DynamicImage) -> Result<DynamicImage, String> {
-    if job.crop.is_some() && [img.width(), img.height()] != job.size {
+    if (job.crop.is_some() || !job.marks.is_empty()) && [img.width(), img.height()] != job.size {
         return Err(tr!("The file has changed on disk; open it again", "Файл изменился на диске; откройте его заново").into());
     }
     let img = if job.flip { img.fliph() } else { img };
@@ -390,11 +393,12 @@ fn transform(job: &Job, img: DynamicImage) -> Result<DynamicImage, String> {
         3 => img.rotate270(),
         _ => img,
     };
-    match job.crop {
-        Some([x, y, w, h]) if x + w <= img.width() && y + h <= img.height() && w > 0 && h > 0 => Ok(img.crop_imm(x, y, w, h)),
-        Some(_) => Err(tr!("the crop is outside the image", "рамка выходит за изображение").into()),
-        None => Ok(img),
-    }
+    let img = match job.crop {
+        Some([x, y, w, h]) if x + w <= img.width() && y + h <= img.height() && w > 0 && h > 0 => img.crop_imm(x, y, w, h),
+        Some(_) => return Err(tr!("the crop is outside the image", "рамка выходит за изображение").into()),
+        None => img,
+    };
+    crate::annotate::draw(img, &job.marks)
 }
 
 /// An image decoded upright, with the metadata carried into the new file.
@@ -676,7 +680,7 @@ mod tests {
         asymmetric().save(&src).unwrap();
         let original = std::fs::read(&src).unwrap();
         // Turned right the image is 2x3; its middle row.
-        let job = Job { src: src.clone(), dst: src.clone(), size: [3, 2], turns: 1, flip: false, crop: Some([0, 1, 2, 1]) };
+        let job = Job { src: src.clone(), dst: src.clone(), size: [3, 2], turns: 1, flip: false, crop: Some([0, 1, 2, 1]), marks: Vec::new() };
         let saved = save(&job).unwrap();
         assert!(!saved.lossless);
         let expected = asymmetric().rotate90().crop_imm(0, 1, 2, 1);
@@ -690,13 +694,13 @@ mod tests {
 
         // Into a new file, as JPEG: the turn is in the pixels.
         let dst = dir.join("b.jpg");
-        let job = Job { src: src.clone(), dst: dst.clone(), size: [3, 2], turns: 2, flip: false, crop: None };
+        let job = Job { src: src.clone(), dst: dst.clone(), size: [3, 2], turns: 2, flip: false, crop: None, marks: Vec::new() };
         let saved = save(&job).unwrap();
         assert!(saved.before.is_none());
         assert_eq!((image::open(&dst).unwrap().width(), image::open(&dst).unwrap().height()), (3, 2));
 
         // A JPEG only turned stays as it was but for its orientation.
-        let job = Job { src: dst.clone(), dst: dst.clone(), size: [3, 2], turns: 1, flip: false, crop: None };
+        let job = Job { src: dst.clone(), dst: dst.clone(), size: [3, 2], turns: 1, flip: false, crop: None, marks: Vec::new() };
         assert!(save(&job).unwrap().lossless);
         assert_eq!(decoded(&std::fs::read(&dst).unwrap()).width(), 2);
         // Mirrored too.
@@ -706,18 +710,18 @@ mod tests {
         assert_eq!(decoded(&std::fs::read(&dst).unwrap()), before.fliph());
 
         // Mirrored and turned anew: as the view shows it.
-        let job = Job { src: src.clone(), dst: dir.join("m.png"), size: [3, 2], turns: 1, flip: true, crop: None };
+        let job = Job { src: src.clone(), dst: dir.join("m.png"), size: [3, 2], turns: 1, flip: true, crop: None, marks: Vec::new() };
         save(&job).unwrap();
         let expected = asymmetric().fliph().rotate90();
         assert_eq!(image::open(dir.join("m.png")).unwrap().to_rgb8(), expected.to_rgb8());
         std::fs::remove_file(dir.join("m.png")).unwrap();
 
         // A file changed since the crop was chosen is not cropped.
-        let job = Job { src: src.clone(), dst: src.clone(), size: [30, 20], turns: 0, flip: false, crop: Some([0, 0, 1, 1]) };
+        let job = Job { src: src.clone(), dst: src.clone(), size: [30, 20], turns: 0, flip: false, crop: Some([0, 0, 1, 1]), marks: Vec::new() };
         assert!(save(&job).is_err());
         assert!(save(&Job { dst: dir.join("c.gif"), ..job }).is_err());
         // Without a crop the size is not needed (the gallery has none).
-        let job = Job { src: src.clone(), dst: dir.join("d.bmp"), size: [0, 0], turns: 0, flip: false, crop: None };
+        let job = Job { src: src.clone(), dst: dir.join("d.bmp"), size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new() };
         assert!(save(&job).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -728,7 +732,7 @@ mod tests {
         let src = dir.join("a.jpg");
         std::fs::write(&src, turn_jpeg(&jpeg(40, 10), 1, false).unwrap()).unwrap();
         // Upright it is 10x40; its top half.
-        let job = Job { src: src.clone(), dst: src.clone(), size: [10, 40], turns: 0, flip: false, crop: Some([0, 0, 10, 20]) };
+        let job = Job { src: src.clone(), dst: src.clone(), size: [10, 40], turns: 0, flip: false, crop: Some([0, 0, 10, 20]), marks: Vec::new() };
         save(&job).unwrap();
         let bytes = std::fs::read(&src).unwrap();
         let img = decoded(&bytes);

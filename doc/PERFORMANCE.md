@@ -283,6 +283,20 @@ File → Save as PDF writes the PDF itself (`src/pdf.rs`, no crate): a page per 
 - The PDF is checked by `pypdf` in strict mode: the cross-reference table, every image decoded, the page sizes and turns.
 - The exe grew by ~64 KB (15 352 320 to 15 418 368 bytes): the encoders, `flate2` and the JPEG and PNG readers were already in it.
 
+## Marks
+
+Marking (A, `src/annotate.rs`) costs nothing until it is started: no font is loaded and no state is kept. Started, the image is read again on a thread, as saving reads it (`edit::render`), and the averages of its blocks are counted once for every block side the block size can give, powers of two from 4 to 1024 (`annotate::mosaic`, `annotate::blocks`): a pixelated area on screen is that mosaic, a pixel per block, enlarged with nearest filtering and cut to the area, so dragging it costs nothing; saving averages the same blocks of the same pixels. Text is drawn by resvg into a small image, for the screen when it changes and again when saving, in any of the system fonts: their database (the one SVG text uses) and the list of families are loaded on the thread that reads the mosaics, so the UI thread does not wait for them. Frames, ellipses, lines, arrows and freehand lines are egui shapes on screen and tiny-skia paths in the file. Measured with `marks_sheet` on a 3840x2160 JPEG:
+
+| Step | Time |
+|---|---|
+| The image read again (thread) | 65–67 ms |
+| Its mosaics for blocks of 4 to 1024 (thread; 14 ms for three sizes before the size became continuous) | 43 ms |
+| The system fonts loaded (thread; ~300 files' headers) | 17 ms |
+| Another text (for the screen, on each change) | 2.4 ms |
+| 17 marks drawn into the image when saving (2 pixelated areas, 10 texts in four fonts, a freehand line of 200 points) | 58 ms |
+
+- The exe grew by ~95 KB (15 418 368 to 15 515 136 bytes): resvg, usvg, tiny-skia and the encoders were already in it for SVG and saving.
+
 ## Measuring
 
 | What | How |
@@ -306,6 +320,7 @@ File → Save as PDF writes the PDF itself (`src/pdf.rs`, no crate): a page per 
 | The information panel's reading of one file | `$env:QVIEW_INFO_FILE="<file>"; cargo test --release info_file -- --ignored --nocapture` |
 | The installed WIC decoders | `cargo test codec_list -- --ignored --nocapture` |
 | A folder saved as one PDF: time per page, size against the files (`QVIEW_PDF_OUT` keeps it) | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release pdf_timings -- --ignored --nocapture` |
+| Marks of every kind drawn on a file, timed (with the mosaics and the text), into a PNG | `$env:QVIEW_BENCH_FILE="<file>"; $env:QVIEW_MARKS_OUT="<png>"; cargo test --release marks_sheet -- --ignored --nocapture` |
 | Windows' Print Pictures dialog opened for a file, and its `Drop` timed | `$env:QVIEW_PRINT_FILE="<file>"; cargo test print_dialog -- --ignored --nocapture` |
 
 A GUI program started from PowerShell gets no console; with `Start-Process -RedirectStandardError <log>` the trace goes to a file.

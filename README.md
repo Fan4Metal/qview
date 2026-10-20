@@ -29,7 +29,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 - **Sorting photos into folders**: favorites gathered from any folders, folders pinned to Quick Access with the keys `Alt+1`–`Alt+9`, moving and copying into a new or any other folder (see [Favorites](#favorites) and [Quick Access](#quick-access)).
 - **Comic books**: CBZ and CBR, as well as ZIP and RAR archives in general, are viewed without unpacking (see [Comic books and archives](#comic-books-and-archives)).
 - **Information panel**: the details of the file and the image, the EXIF data with the location on a map, a histogram and the colour under the pointer (see [Information panel](#information-panel)).
-- **Editing**: rotating, flipping and cropping, saved over the file or as another file, without recompression for a JPEG that is only rotated or flipped; conversion to other formats (see [Rotating and cropping](#rotating-and-cropping)).
+- **Editing**: rotating, flipping and cropping, saved over the file or as another file, without recompression for a JPEG that is only rotated or flipped; marks over the image (frames, ellipses, lines, arrows, freehand drawing, pixelation and text); conversion to other formats (see [Rotating, cropping and marks](#rotating-cropping-and-marks)).
 - **Accurate display**: 100% shows one image pixel per screen pixel at any display scaling, reduced images are smoothed, and the filtering (bilinear, bicubic or pixelated) and the background are chosen in the View menu (see [Viewing](#viewing)).
 - **Slideshow, clipboard, PDF, printing and desktop background**: a folder or the chosen images are saved as one PDF, JPEG and PNG without recompression (see [the section of that name](#slideshow-clipboard-pdf-printing-and-desktop-background)).
 - **Keyboard control**: the viewer and the gallery are controlled entirely from the keyboard, and there is no settings dialog: the few options are in the menus (see [Keyboard shortcuts](#keyboard-shortcuts)).
@@ -156,9 +156,9 @@ In the gallery, when a folder's cell has the cursor, the panel describes that fo
 
 </details>
 
-### Rotating and cropping
+### Rotating, cropping and marks
 
-Rotation (`[`, `]`, the toolbar, View and the context menu) and flipping (`H` horizontally, `V` vertically, View and the context menu) change only the view until it is saved; the status bar then notes the angle or the flip. File → Save (`Ctrl+S`) writes the rotated or flipped image over its file, File → Save As… (`Ctrl+Shift+S`) into another file. Crop (`C`) shows a frame over the image. File → Convert To saves a copy in another format, and File → Edit With opens the image in another program.
+Rotation (`[`, `]`, the toolbar, View and the context menu) and flipping (`H` horizontally, `V` vertically, View and the context menu) change only the view until it is saved; the status bar then notes the angle or the flip. File → Save (`Ctrl+S`) writes the rotated or flipped image over its file, File → Save As… (`Ctrl+Shift+S`) into another file. Crop (`C`) shows a frame over the image, and Mark Up (`A`) draws frames, ellipses, lines, arrows, freehand lines, pixelated areas and text over it. File → Convert To saves a copy in another format, and File → Edit With opens the image in another program.
 
 <details>
 <summary>Saving: formats and file names</summary>
@@ -175,6 +175,17 @@ A file is never overwritten in place: the new image is written to a temporary fi
 <summary>Cropping</summary>
 
 Crop (`C`, the toolbar button, View and the context menu) shows a frame over the middle of the image, inside its edges, and a bar above it. The frame is moved by dragging inside it and resized by its edges and corners; dragging outside it draws a new one. The bar sets the proportions (free, those of the image, 1:1, 4:3, 3:2, 16:9 and their portrait forms), shows the size of the frame in pixels and holds Save (`Enter`), Save As… and Cancel (`Esc`). While cropping, browsing and the file commands are unavailable; rotating and flipping move the frame with the image, and the zoom keys and `Ctrl+wheel` work as usual.
+
+</details>
+
+<details>
+<summary>Marks</summary>
+
+Mark Up (`A`, the toolbar button, View and the context menu) shows the image as large as the window allows and a bar above it in two rows: the tools, Undo, Delete, Save (`Enter`), Save As… and Cancel (`Esc`); then six colours and a colour picker for any other, a slider for the size, the text styles and the presets. A drag on the image draws a mark of the tool chosen: a frame (`R`), an ellipse (`E`), a line (`L`), an arrow (`A`), from where the drag starts to the head, a freehand line (`D`, with round ends) or a pixelated area (`P`); with `Shift` held, a square, a circle or a line or arrow at a multiple of 45°. With the text tool (`T`), a click places text: it is typed into a field below it, `Shift+Enter` starting a new line, and `Enter` or a click elsewhere finishing it; a click on existing text, or a double click with any tool, edits it again. The six colours are also chosen with `1`–`6`. The slider sets the size of what the tool draws, or of the mark chosen, shown in pixels of the image: the width of lines, the height of text or the side of the pixelation's blocks, each kept apart (lines from under a pixel to some 250 pixels on a 4K image, text up to about 1000). `[` and `]` change it in steps. Sizes start relative to the image, so that marks look alike on a screenshot and on a large photo. Text is drawn with an outline, on a plate of its colour (black or white letters, whichever stands out) or plain, in any font installed in Windows (Segoe UI bold by default), chosen in a list that narrows as a name is typed, bold and italic beside it; a font missing on another computer falls back to Segoe UI. Presets take a tool with its colour, size, text style and font in one click: Save Current Style adds the tool's present style to the list, kept between runs (× removes one).
+
+A click on a mark chooses it: it is then moved by dragging, a frame, an ellipse or an area resized by its edges and corners, a line or an arrow by its ends, and a new colour or width applies to it; `Delete` removes it. `Ctrl+Z` undoes the last change of the marks. Pixelated areas cover the image under them in blocks averaged from the image, aligned to its pixel grid, and always lie under the other marks.
+
+Save (`Ctrl+S`, `Enter`) draws the marks into the image and writes it over the file, Save As… into another file, `_marked` being added to the suggested name; the image is encoded anew as described above, and `Ctrl+Z` restores the file after saving. What is saved is what was shown: the same shapes, the same text and the same blocks. Copy Image, Print… and Set as Desktop Background take the image with its marks. `Esc` or Cancel leaves without saving, asking to press it again when there are marks. While marking, browsing, rotating and the file commands are unavailable; the zoom keys and `Ctrl+wheel` work as usual.
 
 </details>
 
@@ -419,6 +430,7 @@ The arrow keys scroll an image that is larger than the window in that direction;
 | Rotate left / right | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
 | Flip horizontally / vertically | `H` / `V` |
 | Crop | `C` (`Enter` saves, `Esc` cancels) |
+| Marks over the image | `A`; frame `R`, ellipse `E`, line `L`, arrow `A`, pen `D`, pixelation `P`, text `T`, colour `1`–`6`, width `[` `]`, `Delete`, `Ctrl+Z`, `Enter` saves, `Esc` cancels |
 | Save the rotated, flipped or cropped image | `Ctrl+S` |
 | Save as another file or format | `Ctrl+Shift+S` |
 | Open in the editor chosen last | `Ctrl+E` |

@@ -60,7 +60,7 @@ fn as_is(job: &edit::Job) -> bool {
 /// `as_is` without reading the file: when it is false, `prepare` renders.
 pub fn plain(job: &edit::Job) -> bool {
     let native = job.src.extension().and_then(|e| e.to_str()).is_some_and(|e| NATIVE.contains(&e.to_ascii_lowercase().as_str()));
-    native && job.turns.is_multiple_of(4) && !job.flip && job.crop.is_none() && !crate::archive::inside(&job.src)
+    native && job.turns.is_multiple_of(4) && !job.flip && job.crop.is_none() && job.marks.is_empty() && !crate::archive::inside(&job.src)
 }
 
 /// The files to print for `jobs`: theirs when they are printed as they are
@@ -139,7 +139,7 @@ mod tests {
     use super::*;
 
     fn job(src: &str, turns: u8) -> edit::Job {
-        edit::Job { src: src.into(), dst: PathBuf::new(), size: [0, 0], turns, flip: false, crop: None }
+        edit::Job { src: src.into(), dst: PathBuf::new(), size: [0, 0], turns, flip: false, crop: None, marks: Vec::new() }
     }
 
     #[test]
