@@ -67,6 +67,8 @@ pub fn ink_on(bg: Color32) -> Color32 {
 
 /// How long a notice stays in the status bar.
 const NOTICE_TIME: Duration = Duration::from_secs(4);
+/// Esc or a close repeated within this gives up the marks.
+const DISCARD_TIME: Duration = Duration::from_secs(4);
 /// A window cloaked at start-up is shown after this at the latest.
 const UNCLOAK_TIMEOUT: Duration = Duration::from_secs(1);
 /// Frames the window paints, cloaked, before it is shown at start-up.
@@ -2323,8 +2325,14 @@ impl App {
     /// skipped); after the last one, start over or stop.
     fn slideshow_tick(&mut self, ctx: &egui::Context) {
         let (on_screen, gallery_open, current) = (self.current_on_screen(), self.gallery_open, self.current.clone());
+        let editing = self.editing_image();
         let Some(show) = &mut self.slideshow else { return };
-        if show.paused || gallery_open || !on_screen {
+        // A crop or marks would be lost with the image: the time starts
+        // over when they end.
+        if editing {
+            show.armed_for = None;
+        }
+        if show.paused || gallery_open || !on_screen || editing {
             return;
         }
         let interval = Duration::from_secs(self.slideshow_seconds as u64);
@@ -3896,6 +3904,11 @@ impl App {
             self.notice(tr!("Animated images cannot be edited".into(), "Анимированные изображения не редактируются".into()));
             return;
         }
+        // Until the image saved is on screen again the view is turned as
+        // before it was saved.
+        if self.still_saving() {
+            return;
+        }
         let Some((path, picture)) = self.editable() else { return };
         let size = self.view.rotated(picture.size());
         self.crop = Some(Crop::new(path, size, self.view.zoom, self.view.offset));
@@ -3933,6 +3946,11 @@ impl App {
     fn start_annotate(&mut self, ctx: &egui::Context) {
         if self.shown.as_ref().is_some_and(|(p, pic)| self.current.as_ref() == Some(p) && pic.meta.animated) {
             self.notice(tr!("Animated images cannot be edited".into(), "Анимированные изображения не редактируются".into()));
+            return;
+        }
+        // Until the image saved is on screen again the view is turned as
+        // before it was saved.
+        if self.still_saving() {
             return;
         }
         let Some((path, picture)) = self.editable() else { return };
@@ -3984,13 +4002,36 @@ impl App {
         self.crop.is_some() || self.annotating.is_some()
     }
 
+    /// Closing the window (Ctrl+W, its button) with marks asks first, as
+    /// Esc does: a second close within `DISCARD_TIME` discards them.
+    fn hold_close(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        let Some(a) = &mut self.annotating else { return };
+        let n = a.marks.len();
+        if n == 0 || a.discard_asked.is_some_and(|t| t.elapsed() < DISCARD_TIME) {
+            return;
+        }
+        a.discard_asked = Some(Instant::now());
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        self.notice(tr!(
+            format!("Marks: {n}. Close again to discard them"),
+            format!("Пометок: {n}. Закройте ещё раз, чтобы удалить их")
+        ));
+    }
+
     /// Carry out `cmd` while marking: the tools, colours and sizes, Ctrl+Z
     /// and Delete of marks, Save; Esc (or Cancel) twice gives up the marks.
     /// Browsing, turning and the file commands wait. False for the
     /// commands that work as in the viewer.
     fn run_in_annotate(&mut self, ctx: &egui::Context, frame: &eframe::Frame, cmd: Cmd) -> bool {
-        const DISCARD_TIME: Duration = Duration::from_secs(4);
+        let saving = self.saving.is_some();
         let Some(a) = &mut self.annotating else { return false };
+        // The marks wait while they are saved.
+        if saving && matches!(cmd, Cmd::Undo | Cmd::Delete | Cmd::MarkColour(_) | Cmd::MarkSizeStep(_)) {
+            return true;
+        }
         match cmd {
             Cmd::Escape | Cmd::Annotate => {
                 a.typing = None;
@@ -4020,6 +4061,7 @@ impl App {
             }
             Cmd::MarkColour(i) => {
                 if let Some(&colour) = crate::annotate::COLOURS.get(usize::from(i)) {
+                    a.end_run();
                     a.set_colour(colour);
                 }
             }
@@ -4040,14 +4082,20 @@ impl App {
             | Cmd::FullScreen
             | Cmd::WindowFullScreen
             | Cmd::ToggleMenuBar
+            | Cmd::EscCloses
+            | Cmd::ConfirmDelete
             | Cmd::ToggleToolbar
             | Cmd::ToggleStatusBar
+            | Cmd::Navigator
+            | Cmd::NavigatorHides
+            | Cmd::NavigatorCorner(_)
             | Cmd::Info
             | Cmd::Shortcuts
             | Cmd::About
             | Cmd::CopyImage
             | Cmd::Wallpaper
             | Cmd::Print
+            | Cmd::StopPdf
             | Cmd::Close => return false,
             _ => {}
         }
@@ -4060,6 +4108,8 @@ impl App {
     fn run_in_crop(&mut self, ctx: &egui::Context, frame: &eframe::Frame, cmd: Cmd) -> bool {
         match cmd {
             Cmd::Escape | Cmd::Crop => self.end_crop(),
+            // Marking takes the place of the crop.
+            Cmd::Annotate => return false,
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::SaveWithOptions => self.ask_save_options(),
@@ -4107,6 +4157,7 @@ impl App {
             | Cmd::CopyImage
             | Cmd::Wallpaper
             | Cmd::Print
+            | Cmd::StopPdf
             | Cmd::Close => return false,
             _ => {}
         }
@@ -4216,7 +4267,7 @@ impl App {
     /// The current image, or those chosen in the gallery, can be converted
     /// (File → Convert To), decoded or not.
     pub fn can_convert(&self) -> bool {
-        self.current.is_some() && self.crop.is_none() && self.saving.is_none() && !self.archive
+        self.current.is_some() && !self.editing_image() && self.saving.is_none() && !self.archive
     }
 
     /// Save the current image in `format` beside its file, under its name
@@ -4749,7 +4800,7 @@ impl App {
             if let Some(crop) = &mut self.crop {
                 crate::ui::crop::frame(crop, &response, &painter, place, self.view.rotated(size));
             } else if let Some(a) = &mut self.annotating {
-                crate::ui::annotate::overlay(a, &response, &painter, place, self.view.rotated(size));
+                crate::ui::annotate::overlay(a, &response, &painter, place, self.view.rotated(size), self.saving.is_some());
             } else if self.view.pannable(size, rect, ppp).contains(&true) && response.hovered() {
                 ctx.set_cursor_icon(if response.dragged() {
                     egui::CursorIcon::Grabbing
@@ -5033,6 +5084,7 @@ impl eframe::App for App {
             log::debug!("frame {frame_nr} at {:.0} ms", crate::since_start_ms());
         }
         self.uncloak(&ctx);
+        self.hold_close(&ctx);
         // The previous frame, which may have drawn them, is painted.
         crate::texture::delete_dropped();
 

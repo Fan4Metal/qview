@@ -53,6 +53,11 @@ impl App {
                     }
                     }
                     Part::Left => {
+                        // The marks wait while they are saved: those drawn
+                        // meanwhile would be lost when it ends.
+                        if saving {
+                            ui.disable();
+                        }
                         for t in Tool::ALL {
                             if ui.selectable_label(a.tool == t, t.label()).on_hover_text(t.key()).clicked() {
                                 clicked = Some(Cmd::MarkTool(t));
@@ -80,6 +85,9 @@ impl App {
                     // The style: the colours, the size of what is drawn (or
                     // chosen), text's look or the arrow's head, the presets.
                     Part::Below => {
+                    if saving {
+                        ui.disable();
+                    }
                     colours(ui, a, &mut clicked);
                     ui.add_space(16.0);
                     let measure = a.measure();
@@ -90,8 +98,12 @@ impl App {
                     };
                     ui.label(measure.label()).on_hover_text(tip);
                     let mut size = a.size();
-                    if size_slider(ui, &mut size, measure.range()).on_hover_text(tip).changed() {
+                    let slider = size_slider(ui, &mut size, measure.range()).on_hover_text(tip);
+                    if slider.changed() {
                         a.set_size(size);
+                    }
+                    if slider.drag_stopped() || slider.clicked() {
+                        a.end_run();
                     }
                     let px = measure.pixels(a.unit, a.size()).round();
                     ui.add_sized(vec2(48.0, 18.0), egui::Label::new(format!("{px} px")));
@@ -141,6 +153,7 @@ impl App {
     /// or down the order and delete it; the mark under the pointer is
     /// outlined on the image.
     pub(crate) fn marks_panel(&mut self, root_ui: &mut Ui) {
+        let saving = self.saving();
         let Some(a) = &mut self.annotating else { return };
         a.hovered = None;
         egui::Panel::right("annotate_marks")
@@ -148,7 +161,12 @@ impl App {
             .exact_size(LIST_WIDTH)
             .frame(panel_frame(TOOLBAR_BG, egui::Margin::symmetric(6, 8)))
             .show_separator_line(false)
-            .show(root_ui, |ui| marks_list(ui, a));
+            .show(root_ui, |ui| {
+                if saving {
+                    ui.disable();
+                }
+                marks_list(ui, a)
+            });
     }
 }
 
@@ -191,18 +209,16 @@ fn marks_list(ui: &mut Ui, a: &mut Annotating) {
             }
         }
     });
+    // Text emptied in its field goes when the field loses the focus,
+    // before the rows' indices are taken.
+    let Some(action) = action else { return };
+    let removed = a.finish_typing();
+    let at = |i| annotate::after_removal(removed, i);
     match action {
-        Some(RowAction::Choose(i)) => {
-            a.finish_typing();
-            a.select(i);
-        }
-        Some(RowAction::EditText(i)) => {
-            a.finish_typing();
-            a.edit_text(i);
-        }
-        Some(RowAction::Reorder(i, later)) => a.reorder(i, later),
-        Some(RowAction::Delete(i)) => a.delete(i),
-        None => {}
+        RowAction::Choose(i) => at(i).into_iter().for_each(|i| a.select(i)),
+        RowAction::EditText(i) => at(i).into_iter().for_each(|i| a.edit_text(i)),
+        RowAction::Reorder(i, later) => at(i).into_iter().for_each(|i| a.reorder(i, later)),
+        RowAction::Delete(i) => at(i).into_iter().for_each(|i| a.delete(i)),
     }
 }
 
@@ -802,11 +818,16 @@ fn text_texture(
 ) -> Option<(egui::TextureId, Rect)> {
     let key = (text.to_string(), px.to_bits(), colour, style, contrast, font.clone());
     if !a.texts.contains_key(&key) {
-        let (pixmap, offset) = annotate::render_text(text, px, colour, style, contrast, font)?;
+        // Larger text is drawn smaller and shown enlarged, in its own box.
+        let limit = ctx.input(|i| i.max_texture_side).min(annotate::TEXT_LIMIT as usize) as f32;
+        let scale = annotate::text_scale(text, px, font, limit);
+        let (pixmap, [dx, dy]) = annotate::render_text(text, px * scale, colour, style, contrast, font)?;
         let size = [pixmap.width(), pixmap.height()];
         let image = ColorImage::from_rgba_premultiplied([size[0] as usize, size[1] as usize], pixmap.data());
         let options = TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..TextureOptions::LINEAR };
         let texture = ctx.load_texture("annotate_text", image, options);
+        let offset = [dx, dy].map(|d| (d as f32 / scale).round() as i32);
+        let size = size.map(|s| (s as f32 / scale).round() as u32);
         a.texts.insert(key.clone(), (texture, offset, size));
     }
     let (texture, [dx, dy], [w, h]) = a.texts.get(&key)?;
@@ -828,7 +849,10 @@ fn hit(a: &Annotating, p: Pos2, reach: f32, boxes: &[Option<Rect>]) -> Option<us
             Shape::Ellipse(r) => annotate::near_ellipse(*r, p, reach + width),
             Shape::Line(s, e) | Shape::Arrow(s, e) => annotate::segment_distance(p, *s, *e) <= reach + width,
             Shape::Pen(points) => points.windows(2).any(|w| annotate::segment_distance(p, w[0], w[1]) <= reach + width),
-            Shape::Pixelate(r) => r.contains(p),
+            // Inside only when chosen or pixelating: over the rest of it
+            // other marks are drawn, text clicked in (it was always hit).
+            Shape::Pixelate(r) if a.selected == Some(i) || a.tool == Tool::Pixelate => r.contains(p),
+            Shape::Pixelate(r) => annotate::near_frame(*r, p, reach),
             Shape::Text(..) => boxes.get(i).copied().flatten().is_some_and(|b| b.expand(reach / 2.0).contains(p)),
         }
     })
@@ -855,7 +879,7 @@ fn start(a: &mut Annotating, p: Pos2, reach: f32, boxes: &[Option<Rect>], size: 
     if let Some(i) = hit(a, p, reach, boxes) {
         a.select(i);
         a.remember();
-        return Some(Drag::Move { index: i, start: a.marks[i].clone(), from: p });
+        return Some(Drag::Move { index: i, start: a.marks[i].clone(), from: p, text_box: boxes.get(i).copied().flatten() });
     }
     a.selected = None;
     let p = Rect::from_min_size(Pos2::ZERO, size).clamp(p);
@@ -905,9 +929,9 @@ fn update(a: &mut Annotating, drag: &Drag, to: Pos2, size: Vec2, shift: bool, st
                 mark.set_frame(frame);
             }
         }
-        Drag::Move { index, start, from } => {
+        Drag::Move { index, start, from, text_box } => {
             if let Some(mark) = a.marks.get_mut(*index) {
-                *mark = start.moved(to - *from, size);
+                *mark = start.moved(to - *from, size, *text_box);
             }
         }
         Drag::Edges { index, grip, start, from } => {
@@ -978,7 +1002,8 @@ fn text_boxes(
 
 /// The marks of `a` over the image shown in `place` (points), `size` its
 /// pixels as shown: drawn with the mouse on `response`, and painted.
-pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place: Rect, size: Vec2) {
+/// `still`: the marks are being saved, and wait.
+pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place: Rect, size: Vec2, still: bool) {
     let ctx = response.ctx.clone();
     // Points per image pixel.
     let k = place.width() / size.x;
@@ -1015,7 +1040,8 @@ pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place
 
     // The mouse.
     let shift = ctx.input(|i| i.modifiers.shift);
-    if response.drag_started_by(PointerButton::Primary)
+    if !still
+        && response.drag_started_by(PointerButton::Primary)
         && let Some(origin) = ctx.input(|i| i.pointer.press_origin())
     {
         a.finish_typing();
@@ -1033,7 +1059,8 @@ pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place
             a.drag = None;
         }
     }
-    if response.clicked()
+    if !still
+        && response.clicked()
         && let Some(p) = response.interact_pointer_pos().map(to_image)
     {
         let was_typing = a.typing.is_some();
@@ -1055,7 +1082,8 @@ pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place
             None => a.selected = None,
         }
     }
-    if response.double_clicked()
+    if !still
+        && response.double_clicked()
         && let Some(p) = response.interact_pointer_pos().map(to_image)
         && let Some(i) = hit(a, p, reach, &boxes)
     {
@@ -1272,7 +1300,7 @@ mod tests {
         let mut out = (0.0, Vec::new(), Vec::new(), Vec::new());
         for _ in 0..3 {
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 800.0))), ..Default::default() };
-            let _ = ctx.run_ui(input, |root| {
+            let mut output = ctx.run_ui(input, |root| {
                 let (mut right, mut left, mut below) = (Vec::new(), Vec::new(), Vec::new());
                 let panel = egui::Panel::top("bar").show(root, |ui| {
                     rows(ui, |ui, part| match part {
@@ -1283,6 +1311,8 @@ mod tests {
                 });
                 out = (panel.response.rect.height(), right, left, below);
             });
+            // No painter takes the font atlas here; dropped unhandled, it fails a debug assertion.
+            output.textures_delta.clear();
         }
         out
     }
@@ -1309,6 +1339,25 @@ mod tests {
         assert_eq!(typed_colour("+12345"), None);
         assert_eq!(typed_colour("#12345"), None);
         assert_eq!(hex(Color32::from_rgb(0xe5, 0x2b, 0x2b)), "#e52b2b");
+    }
+
+    /// A row's action after the text being edited was emptied, which takes
+    /// that mark out first: it acts on the mark of the row, not the next.
+    #[test]
+    fn rows_act_on_their_marks_after_text_goes() {
+        let size = vec2(400.0, 300.0);
+        let mut a = Annotating::new(Default::default(), size, crate::view::Zoom::Fit, Vec2::ZERO);
+        let frame = |x: f32| Mark { shape: Shape::Rect(Rect::from_min_size(pos2(x, 10.0), vec2(20.0, 20.0))), colour: COLOURS[0], size: 2.0, text: TextStyle::Plain, font: TextFont::default(), head: ArrowHead::Normal, contrast: None };
+        a.marks = vec![frame(0.0), frame(100.0), frame(200.0)];
+        a.marks.insert(0, Mark { shape: Shape::Text(pos2(5.0, 5.0), "abc".into()), ..frame(0.0) });
+        a.edit_text(0);
+        a.typing.as_mut().unwrap().text.clear();
+        a.delete(2);
+        let left: Vec<f32> = a.marks.iter().filter_map(|m| m.frame()).map(|r| r.min.x).collect();
+        assert_eq!(left, [0.0, 200.0]);
+        assert_eq!(annotate::after_removal(Some(1), 1), None);
+        assert_eq!(annotate::after_removal(Some(1), 3), Some(2));
+        assert_eq!(annotate::after_removal(None, 3), Some(3));
     }
 
     /// Text finished by a click is a new mark that the boxes measured

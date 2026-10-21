@@ -79,27 +79,29 @@ impl App {
         self.item(ui, tr!("Save With Options…", "Сохранить с параметрами…").into(), "Ctrl+Alt+S", Cmd::SaveWithOptions, e.edit);
         self.convert_menu(ui);
         self.pdf_item(ui, false);
-        self.editor_items(ui, e.file && !self.editing_image());
-        self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
+        // The file waits while its image is cropped or marked.
+        let file = e.file && !self.editing_image();
+        self.editor_items(ui, file);
+        self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, file);
         ui.separator();
         self.print_item(ui, e.file);
         self.wallpaper_item(ui, e.file);
         ui.separator();
-        self.copy_item(ui, e.file);
+        self.copy_item(ui, file);
         self.copy_image_item(ui, e.file);
         let paste = crate::clipboard::can_paste() && !self.editing_image();
         self.item(ui, tr!("Paste", "Вставить").into(), "Ctrl+V", Cmd::Paste, paste);
-        self.rename_item(ui, e.file);
+        self.rename_item(ui, file);
         let (label, undo) = match &self.annotating {
             Some(a) => (tr!("Undo Mark", "Отменить пометку"), !a.undo.is_empty()),
             None => (self.undo_label(), !self.undo.is_empty() && self.crop.is_none()),
         };
         self.item(ui, label.into(), "Ctrl+Z", Cmd::Undo, undo);
-        self.delete_item(ui, e.file);
+        self.delete_item(ui, file);
         self.check_item(ui, tr!("Confirm Deletion", "Подтверждать удаление").into(), "", Cmd::ConfirmDelete, self.confirm_deletion);
         ui.separator();
-        self.transfer_menu(ui, false, e.file && !self.editing_image());
-        self.transfer_menu(ui, true, e.file && !self.editing_image());
+        self.transfer_menu(ui, false, file);
+        self.transfer_menu(ui, true, file);
         ui.separator();
         self.item(ui, tr!("Exit", "Выход").into(), "Ctrl+W", Cmd::Close, true);
     }
@@ -685,13 +687,15 @@ impl App {
             }
         }
         ui.separator();
-        self.favorite_item(ui, e.file);
+        // The file waits while its image is cropped.
+        let file = e.file && !self.editing_image();
+        self.favorite_item(ui, file);
         if self.can_go_to_folder() {
             self.go_to_folder_item(ui);
         }
         self.file_items(ui, e.file);
         ui.separator();
-        self.delete_item(ui, e.file);
+        self.delete_item(ui, file);
     }
 
     /// Esc in the viewer closes the program instead of opening the gallery
@@ -720,15 +724,18 @@ impl App {
     /// What the context menus of the image and of a thumbnail do with the
     /// file, the rarer commands under More (the File menu has them all).
     pub(super) fn file_items(&mut self, ui: &mut Ui, enabled: bool) {
-        self.copy_item(ui, enabled);
-        self.rename_item(ui, enabled);
-        self.transfer_menu(ui, false, enabled && !self.editing_image());
-        self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, enabled);
+        // The file waits while its image is cropped or marked; its image
+        // as shown does not.
+        let file = enabled && !self.editing_image();
+        self.copy_item(ui, file);
+        self.rename_item(ui, file);
+        self.transfer_menu(ui, false, file);
+        self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, file);
         ui.menu_button(tr!("More", "Ещё"), |ui| {
             self.copy_image_item(ui, enabled);
-            self.open_in_editor_item(ui, enabled);
+            self.open_in_editor_item(ui, file);
             ui.separator();
-            self.transfer_menu(ui, true, enabled && !self.editing_image());
+            self.transfer_menu(ui, true, file);
             self.convert_menu(ui);
             self.pdf_item(ui, true);
             self.print_item(ui, enabled);

@@ -203,6 +203,11 @@ impl Default for TextFont {
 /// The family text falls back to.
 const FALLBACK_FAMILY: &str = "Segoe UI";
 
+/// The side text is drawn at most at, in pixels: for the screen (within
+/// the GPU's largest texture), and for a file whose sides are smaller than
+/// half of it (text larger is mostly off the image).
+pub const TEXT_LIMIT: u32 = 8192;
+
 /// The families of the fonts installed, sorted, for the bar's list
 /// (loaded with the fonts, ~20 ms, on the thread that reads the mosaics).
 pub fn families() -> &'static [String] {
@@ -280,7 +285,19 @@ impl Preset {
             }
             _ => TextFont::default(),
         };
-        Some(Preset { tool, colour, size, text, font, head, contrast })
+        Some(Preset { tool, colour, size, text, font, head, contrast }.normalized())
+    }
+
+    /// Without what its tool does not use (a frame's text style, a text's
+    /// head), so that presets of the same style are equal.
+    fn normalized(mut self) -> Preset {
+        if self.tool != Tool::Text {
+            (self.text, self.font, self.contrast) = (TextStyle::Plain, TextFont::default(), None);
+        }
+        if self.tool != Tool::Arrow {
+            self.head = ArrowHead::Normal;
+        }
+        self
     }
 
     /// What it is, for the menu: the tool, the text style or the head, the
@@ -429,9 +446,10 @@ impl Mark {
         }
     }
 
-    /// Moved by `d`, kept on an image of `size` as far as it fits.
-    pub fn moved(&self, d: Vec2, size: Vec2) -> Mark {
-        let bounds = self.bounds(None);
+    /// Moved by `d`, kept on an image of `size` as far as it fits (text
+    /// by `text_box`, its box: by its point it went off the image whole).
+    pub fn moved(&self, d: Vec2, size: Vec2, text_box: Option<Rect>) -> Mark {
+        let bounds = self.bounds(text_box);
         let d = vec2(clamp(d.x, -bounds.min.x, size.x - bounds.max.x), clamp(d.y, -bounds.min.y, size.y - bounds.max.y));
         let shape = match &self.shape {
             Shape::Rect(r) => Shape::Rect(r.translate(d)),
@@ -617,9 +635,24 @@ fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+/// `text` without what XML refuses (an SVG with it is not read at all): a
+/// vertical tab or a form feed, Word's line break in text pasted from it,
+/// becomes a new line, other control characters are dropped.
+fn xml_text(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| match c {
+            '\u{b}' | '\u{c}' => Some('\n'),
+            '\t' | '\n' | '\r' => Some(c),
+            c if c < ' ' || c == '\u{fffe}' || c == '\u{ffff}' => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
 /// The SVG of `text` in `font` with its point at the origin: each line a
 /// `tspan`, the first line's top at 0; outlined in `stroke`, if any.
 fn text_svg(text: &str, px: f32, colour: Color32, font: &TextFont, stroke: Option<Color32>) -> String {
+    let text = &xml_text(text);
     let line = px * 1.25;
     let mut spans = String::new();
     let mut dy = 0.0;
@@ -638,10 +671,12 @@ fn text_svg(text: &str, px: f32, colour: Color32, font: &TextFont, stroke: Optio
         Some(s) => format!(" stroke=\"{}\" stroke-width=\"{}\" stroke-linejoin=\"round\" paint-order=\"stroke\"", hex(s), px * 0.14),
     };
     // The family quoted as a CSS string (names may have commas), Segoe UI
-    // after it for one not installed: usvg's own fallback is a serif.
-    let family = font.family.replace('\\', "").replace('\'', "\\'");
+    // after it for one not installed: usvg's own fallback is a serif. In
+    // the quote it has none of (svgtypes keeps a backslash escape as is).
+    let family = font.family.replace('\\', "");
+    let family = if family.contains('\'') { format!("\"{}\"", family.replace('"', "")) } else { format!("'{family}'") };
     format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><text font-family=\"'{}', '{FALLBACK_FAMILY}'\" font-weight=\"{}\" font-style=\"{}\" font-size=\"{px}\" fill=\"{}\"{stroke} xml:space=\"preserve\">{spans}</text></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><text font-family=\"{}, '{FALLBACK_FAMILY}'\" font-weight=\"{}\" font-style=\"{}\" font-size=\"{px}\" fill=\"{}\"{stroke} xml:space=\"preserve\">{spans}</text></svg>",
         escape(&family),
         if font.bold { "bold" } else { "normal" },
         if font.italic { "italic" } else { "normal" },
@@ -669,11 +704,24 @@ pub fn render_text(
     }
 }
 
+/// The factor `text` of size `px` in `font` is drawn at so that its pixels,
+/// with an outline or a plate, are at most `limit` on a side: 1, or less
+/// for text larger than that, drawn enlarged then (a texture larger than
+/// the GPU takes closed the program, and the pixels cost memory).
+pub fn text_scale(text: &str, px: f32, font: &TextFont, limit: f32) -> f32 {
+    let options = usvg::Options { fontdb: crate::svg::system_fonts(), ..Default::default() };
+    let Ok(tree) = usvg::Tree::from_str(&text_svg(text, px, Color32::BLACK, font, Some(Color32::WHITE)), &options) else { return 1.0 };
+    let b = tree.root().abs_stroke_bounding_box();
+    // A plate reaches up to the first line's top and around the glyphs.
+    let side = b.width().max(b.bottom() - b.top().min(0.0)) + px;
+    if side > limit && side.is_finite() { (limit * 0.95 / side).max(1e-3) } else { 1.0 }
+}
+
 /// The text in `letters` on a rounded plate of `colour`, as tall as its
 /// lines.
 fn plate(text: &str, px: f32, colour: Color32, letters: Color32, font: &TextFont) -> Option<(tiny_skia::Pixmap, [i32; 2])> {
     let (glyphs, [gx, gy]) = glyphs(text, px, letters, font, None)?;
-    let lines = text.trim_end().split('\n').count().max(1) as f32;
+    let lines = xml_text(text).trim_end().split('\n').count().max(1) as f32;
     let (pad_x, pad_y) = (px * 0.35, px * 0.2);
     // From the capitals' top of the first line to the descenders of the
     // last (the baseline is at 0.8 of the size, see `text_svg`), or the
@@ -828,10 +876,19 @@ pub fn draw(img: DynamicImage, marks: &[Mark]) -> Result<DynamicImage, String> {
                 }
             }
             Shape::Text(p, text) => {
-                if let Some((image, [dx, dy])) = render_text(text, font_size(unit, mark.size), mark.colour, mark.text, mark.contrast, &mark.font) {
+                let px = font_size(unit, mark.size);
+                let scale = text_scale(text, px, &mark.font, (2 * w.max(h)).max(TEXT_LIMIT) as f32);
+                if let Some((image, [dx, dy])) = render_text(text, px * scale, mark.colour, mark.text, mark.contrast, &mark.font) {
                     let at = p.round();
-                    let pixmap_paint = tiny_skia::PixmapPaint::default();
-                    pixmap.draw_pixmap(at.x as i32 + dx, at.y as i32 + dy, image.as_ref(), &pixmap_paint, identity, None);
+                    if scale == 1.0 {
+                        let pixmap_paint = tiny_skia::PixmapPaint::default();
+                        pixmap.draw_pixmap(at.x as i32 + dx, at.y as i32 + dy, image.as_ref(), &pixmap_paint, identity, None);
+                    } else {
+                        let pixmap_paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+                        let (x, y) = (at.x + dx as f32 / scale, at.y + dy as f32 / scale);
+                        let enlarged = tiny_skia::Transform::from_scale(1.0 / scale, 1.0 / scale).post_translate(x, y);
+                        pixmap.draw_pixmap(0, 0, image.as_ref(), &pixmap_paint, enlarged, None);
+                    }
                 }
             }
         }
@@ -880,8 +937,9 @@ pub type DrawnText = (TextureHandle, [i32; 2], [u32; 2]);
 pub enum Drag {
     /// Drawing the mark `index` from the point where the drag started.
     New { index: usize, from: Pos2 },
-    /// Moving the mark `index`, as it was, from that point.
-    Move { index: usize, start: Mark, from: Pos2 },
+    /// Moving the mark `index`, as it was, from that point; text with its
+    /// box then.
+    Move { index: usize, start: Mark, from: Pos2, text_box: Option<Rect> },
     /// An edge or corner of the frame of `index`.
     Edges { index: usize, grip: crate::crop::Grip, start: Rect, from: Pos2 },
     /// An end of the line or arrow `index`: the second (the head) if `head`.
@@ -1070,6 +1128,7 @@ impl Annotating {
 
     /// One step of [ or ].
     pub fn step_size(&mut self, up: bool) {
+        self.end_run();
         let size = self.measure().stepped(self.size(), up);
         self.set_size(size);
     }
@@ -1126,6 +1185,7 @@ impl Annotating {
     pub fn select(&mut self, i: usize) {
         let Some(m) = self.marks.get(i) else { return };
         self.selected = Some(i);
+        self.restyling = None;
         self.colours[slot(m.shape.tool())] = m.colour;
         self.sizes[Measure::of(&m.shape).index()] = m.size;
         match m.shape {
@@ -1149,12 +1209,10 @@ impl Annotating {
 
     /// Take out the mark `i`.
     pub fn delete(&mut self, i: usize) {
-        self.finish_typing();
-        if i >= self.marks.len() {
-            return;
-        }
+        let Some(i) = after_removal(self.finish_typing(), i).filter(|&i| i < self.marks.len()) else { return };
         self.remember();
         self.marks.remove(i);
+        self.drag = None;
         self.selected = match self.selected {
             Some(s) if s == i => None,
             Some(s) if s > i => Some(s - 1),
@@ -1165,7 +1223,7 @@ impl Annotating {
     /// Mark `i` one place later in the order (drawn over the next one), or
     /// earlier; the choice stays on the same marks.
     pub fn reorder(&mut self, i: usize, later: bool) {
-        self.finish_typing();
+        let Some(i) = after_removal(self.finish_typing(), i) else { return };
         let Some(j) = (if later { i.checked_add(1) } else { i.checked_sub(1) }).filter(|&j| j < self.marks.len()) else { return };
         if i >= self.marks.len() {
             return;
@@ -1179,10 +1237,12 @@ impl Annotating {
         };
     }
 
-    /// The tool and its style, as a preset.
+    /// The style shown in the bar as a preset: the chosen mark's, else the
+    /// tool's.
     pub fn preset(&self) -> Preset {
-        let size = self.sizes[Measure::of_tool(self.tool).index()];
-        Preset { tool: self.tool, colour: self.colour_of(self.tool), size, text: self.text_style, font: self.font.clone(), head: self.head, contrast: self.contrast }
+        let tool = self.kind();
+        let size = self.sizes[Measure::of_tool(tool).index()];
+        Preset { tool, colour: self.colour_of(tool), size, text: self.text_style, font: self.font.clone(), head: self.head, contrast: self.contrast }.normalized()
     }
 
     /// Take the tool and the style of `preset`.
@@ -1232,7 +1292,15 @@ impl Annotating {
         let Some(i) = self.selected.take().filter(|&i| i < self.marks.len()) else { return false };
         self.remember();
         self.marks.remove(i);
+        // A drag holds an index: it would write the mark over the next one.
+        self.drag = None;
         true
+    }
+
+    /// The next change of the chosen mark's style is a step of its own for
+    /// Ctrl+Z (a key pressed, a slider let go).
+    pub fn end_run(&mut self) {
+        self.restyling = None;
     }
 
     /// Take out every mark, in one step for Ctrl+Z.
@@ -1249,24 +1317,25 @@ impl Annotating {
     }
 
     /// The text typed made a mark (or changed one, or took an emptied one
-    /// out).
-    pub fn finish_typing(&mut self) {
-        let Some(typing) = self.typing.take() else { return };
+    /// out: its index, which the marks after it no longer have).
+    pub fn finish_typing(&mut self) -> Option<usize> {
+        let typing = self.typing.take()?;
         let text = typing.text.trim_end().to_string();
         match typing.index.filter(|&i| i < self.marks.len()) {
             Some(i) => {
-                let Shape::Text(at, old) = &self.marks[i].shape else { return };
+                let Shape::Text(at, old) = &self.marks[i].shape else { return None };
                 if *old == text {
-                    return;
+                    return None;
                 }
                 let at = *at;
                 self.remember();
                 if text.trim().is_empty() {
                     self.marks.remove(i);
                     self.selected = None;
-                } else {
-                    self.marks[i].shape = Shape::Text(at, text);
+                    self.drag = None;
+                    return Some(i);
                 }
+                self.marks[i].shape = Shape::Text(at, text);
             }
             None if !text.trim().is_empty() => {
                 self.remember();
@@ -1275,6 +1344,16 @@ impl Annotating {
             }
             None => {}
         }
+        None
+    }
+}
+
+/// Mark `i`'s index after mark `removed` was taken out: None for that one.
+pub fn after_removal(removed: Option<usize>, i: usize) -> Option<usize> {
+    match removed {
+        Some(r) if r == i => None,
+        Some(r) if r < i => Some(i - 1),
+        _ => Some(i),
     }
 }
 
@@ -1383,10 +1462,16 @@ mod tests {
     #[test]
     fn marks_move_within_the_image() {
         let m = Mark { shape: Shape::Rect(Rect::from_min_max(pos2(10.0, 10.0), pos2(20.0, 20.0))), colour: COLOURS[0], size: 2.0, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal, contrast: None };
-        let moved = m.moved(vec2(-50.0, 5.0), vec2(100.0, 100.0));
+        let moved = m.moved(vec2(-50.0, 5.0), vec2(100.0, 100.0), None);
         assert_eq!(moved.frame(), Some(Rect::from_min_max(pos2(0.0, 15.0), pos2(10.0, 25.0))));
         let arrow = Mark { shape: Shape::Arrow(pos2(90.0, 50.0), pos2(95.0, 60.0)), ..m.clone() };
-        assert_eq!(arrow.moved(vec2(20.0, 0.0), vec2(100.0, 100.0)).shape, Shape::Arrow(pos2(95.0, 50.0), pos2(100.0, 60.0)));
+        assert_eq!(arrow.moved(vec2(20.0, 0.0), vec2(100.0, 100.0), None).shape, Shape::Arrow(pos2(95.0, 50.0), pos2(100.0, 60.0)));
+        // Text by its box, its left and top kept on the image when larger.
+        let text = Mark { shape: Shape::Text(pos2(10.0, 10.0), "a".into()), ..arrow.clone() };
+        let wide = Rect::from_min_max(pos2(8.0, 2.0), pos2(40.0, 20.0));
+        assert_eq!(text.moved(vec2(100.0, 100.0), vec2(100.0, 100.0), Some(wide)).shape, Shape::Text(pos2(70.0, 90.0), "a".into()));
+        let huge = Rect::from_min_max(pos2(8.0, 2.0), pos2(400.0, 20.0));
+        assert_eq!(text.moved(vec2(100.0, -50.0), vec2(100.0, 100.0), Some(huge)).shape, Shape::Text(pos2(2.0, 8.0), "a".into()));
         assert!(Mark { shape: Shape::Text(Pos2::ZERO, " \n".into()), ..m }.is_tiny(1.0));
     }
 
@@ -1513,13 +1598,36 @@ mod tests {
         assert!(!text_svg("a", 10.0, COLOURS[0], &TextFont::default(), None).contains("stroke="));
         let odd = TextFont { family: "A's \"B\", C".into(), bold: false, italic: true };
         let svg = text_svg("a", 10.0, COLOURS[0], &odd, None);
-        assert!(svg.contains("font-family=\"'A\\'s &quot;B&quot;, C', 'Segoe UI'\" font-weight=\"normal\" font-style=\"italic\""), "{svg}");
+        assert!(svg.contains("font-family=\"&quot;A's B, C&quot;, 'Segoe UI'\" font-weight=\"normal\" font-style=\"italic\""), "{svg}");
+        let plain = text_svg("a", 10.0, COLOURS[0], &TextFont { family: "B, C".into(), bold: false, italic: false }, None);
+        assert!(plain.contains("font-family=\"'B, C', 'Segoe UI'\""), "{plain}");
+        // Characters XML refuses: Word's line break is one, the others go.
+        let svg = text_svg("a\u{b}b\u{1}c\u{ffff}", 10.0, COLOURS[0], &TextFont::default(), None);
+        assert!(svg.contains(">a</tspan><tspan x=\"0\" y=\"20.5\">bc</tspan>"), "{svg}");
+        assert!(render_text("a\u{c}b\u{7}", 40.0, COLOURS[1], TextStyle::Plate, None, &TextFont::default()).is_some());
         // A plate is larger than its glyphs and covers its corners' middle.
         let (plain, _) = render_text("Ab", 40.0, COLOURS[0], TextStyle::Plain, None, &TextFont::default()).unwrap();
         let (plate, [px, py]) = render_text("Ab", 40.0, COLOURS[0], TextStyle::Plate, None, &TextFont::default()).unwrap();
         assert!(plate.width() > plain.width() && plate.height() >= plain.height());
         assert!(px < 0 && py < 4);
         assert_eq!(plate.pixel(plate.width() / 2, 2).map(|c| c.alpha()), Some(255));
+    }
+
+    /// Text larger than the limit is drawn smaller, on screen and in the
+    /// file, never as a texture or pixmap too large.
+    #[test]
+    fn large_text_is_drawn_smaller() {
+        let font = TextFont::default();
+        assert_eq!(text_scale("Ab", 40.0, &font, 8192.0), 1.0);
+        let long = "W".repeat(300);
+        let s = text_scale(&long, 400.0, &font, 8192.0);
+        assert!(s > 0.0 && s < 0.1, "{s}");
+        let (pixmap, _) = render_text(&long, 400.0 * s, COLOURS[0], TextStyle::Plate, None, &font).unwrap();
+        assert!(pixmap.width() <= 8192 && pixmap.height() <= 8192, "{}x{}", pixmap.width(), pixmap.height());
+        let img = DynamicImage::ImageRgb8(image::RgbImage::new(200, 100));
+        let mark = Mark { shape: Shape::Text(pos2(10.0, 10.0), long), colour: COLOURS[0], size: 150.0, text: TextStyle::Plain, font, head: ArrowHead::Normal, contrast: None };
+        let marked = draw(img, &[mark]).unwrap().to_rgb8();
+        assert!(marked.pixels().any(|p| p.0 != [0, 0, 0]));
     }
 
     /// Other families draw other glyphs; one not installed draws Segoe UI.
@@ -1539,7 +1647,7 @@ mod tests {
     #[test]
     fn presets_are_kept_as_lines() {
         let font = TextFont::default();
-        let p = |tool, colour, size, text| Preset { tool, colour, size, text, font: font.clone(), head: ArrowHead::Normal, contrast: None };
+        let p = |tool, colour, size, text| Preset { tool, colour, size, text, font: font.clone(), head: ArrowHead::Normal, contrast: None }.normalized();
         let presets = [
             p(Tool::Arrow, COLOURS[0], 3.0, TextStyle::Outline),
             p(Tool::Pen, COLOURS[1], 1.5, TextStyle::Outline),
@@ -1551,7 +1659,10 @@ mod tests {
         }
         let p = Preset::parse("text #102030 999 plate").unwrap();
         assert_eq!((p.tool, p.colour, p.size, p.text), (Tool::Text, Color32::from_rgb(0x10, 0x20, 0x30), 150.0, TextStyle::Plate));
-        assert_eq!(Preset::parse("arrow #ff0000 3").map(|p| p.text), Some(TextStyle::Outline));
+        // What the tool does not use is not kept apart.
+        assert_eq!(Preset::parse("arrow #ff0000 3").map(|p| p.text), Some(TextStyle::Plain));
+        assert_eq!(Preset::parse("rect #ff0000 3 outline b- Arial"), Preset::parse("rect #ff0000 3"));
+        assert_eq!(Preset::parse("text #ff0000 3 outline sharp b- Arial").map(|p| p.head), Some(ArrowHead::Normal));
         // A font of several words, and a preset of before fonts.
         let p = Preset { font: TextFont { family: "Times New Roman".into(), bold: false, italic: true }, ..presets[2].clone() };
         assert_eq!(p.to_line(), "text #e52b2b 9.6 plate -i Times New Roman");
@@ -1559,9 +1670,9 @@ mod tests {
         assert_eq!(Preset::parse("text #e52b2b 9.6 plate").map(|p| p.font), Some(TextFont::default()));
         // An arrow's head, and an arrow of before heads.
         let p = Preset { head: ArrowHead::Sharp, ..presets[0].clone() };
-        assert_eq!(p.to_line(), "arrow #e52b2b 3 outline sharp -- Segoe UI");
+        assert_eq!(p.to_line(), "arrow #e52b2b 3 plain sharp -- Segoe UI");
         assert_eq!(Preset::parse(&p.to_line()), Some(p));
-        assert_eq!(Preset::parse("arrow #e52b2b 3 outline b- Segoe UI").map(|p| p.head), Some(ArrowHead::Normal));
+        assert_eq!(Preset::parse("arrow #e52b2b 3 plain b- Segoe UI").map(|p| p.head), Some(ArrowHead::Normal));
         assert!(!presets[2].to_line().contains("normal"));
         // Text's second colour, kept only when chosen.
         let p = Preset { contrast: Some(COLOURS[3]), ..presets[2].clone() };
