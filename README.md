@@ -163,7 +163,9 @@ Rotation (`[`, `]`, the toolbar, View and the context menu) and flipping (`H` ho
 
 The format of a file saved with Save As follows its extension: JPEG, PNG, WebP (lossless), TIFF or BMP. The name suggested there is that of the original with `_crop` for a cropped image or `_rotate` for a rotated one, `_flip` for one only flipped (`photo_crop.jpg`), numbered if such a file already exists (`photo_crop_2.jpg`), so that no file is replaced by accident. Formats that qview cannot write, such as HEIC, AVIF, RAW and GIF, as well as lossy WebP, are saved through Save As, JPEG being offered by default (PNG for SVG). Animated images are not edited.
 
-A JPEG that is only rotated or flipped is not re-encoded: its EXIF orientation (and the XMP one, if present) is changed instead, so the image loses no quality and its metadata stays as it was. In all other cases the image is decoded, flipped, rotated, cropped and encoded anew, JPEG with quality 92 (transparent areas laid on white, since JPEG has no transparency); the ICC profile and the EXIF data of the original are carried over, with the orientation reset, the dimensions updated and the embedded thumbnail removed.
+Save With Options… (`Ctrl+Alt+S`, File menu) first asks for the size, the format and, for JPEG, the quality, then for the name in the Save As dialog. The size is set as a width and a height in pixels, which keep the image's proportions unless that is unchecked, or as a scale in percent, with 25, 50, 75 and 100 % at hand; the image is only made smaller, never larger (Lanczos filter, transparency kept). The JPEG quality (1–100, 92 by default) is remembered for the next time; a JPEG saved with it is always encoded anew, even when only rotated. A shrunk image that is neither cropped nor marked gets `_resized` in the suggested name.
+
+A JPEG that is only rotated or flipped is not re-encoded: its EXIF orientation (and the XMP one, if present) is changed instead, so the image loses no quality and its metadata stays as it was. In all other cases the image is decoded, flipped, rotated, cropped and encoded anew, JPEG with quality 92 or the one chosen in Save With Options (transparent areas laid on white, since JPEG has no transparency); the ICC profile and the EXIF data of the original are carried over, with the orientation reset, the dimensions updated and the embedded thumbnail removed.
 
 A file is never overwritten in place: the new image is written to a temporary file next to it, which then replaces the original, keeping its creation date and permissions. The previous contents are kept in memory until the program is closed, so `Ctrl+Z` (File → Undo Save) restores them, together with the modification date; a file created by Save As is deleted by it.
 
@@ -429,6 +431,7 @@ The arrow keys scroll an image that is larger than the window in that direction;
 | Marks over the image | `A`; frame `R`, ellipse `E`, line `L`, arrow `A`, pen `D`, pixelation `P`, text `T`, colour `1`–`6`, width `[` `]`, list `O`, `Delete`, `Ctrl+Z`, `Enter` saves, `Esc` cancels |
 | Save the rotated, flipped or cropped image | `Ctrl+S` |
 | Save as another file or format | `Ctrl+Shift+S` |
+| Save smaller or at another JPEG quality | `Ctrl+Alt+S` |
 | Open in the editor chosen last | `Ctrl+E` |
 | Move to the Recycle Bin | `Delete` (`Enter` confirms, `Esc` cancels; "Don't ask again" in the dialog, or File → Confirm Deletion unticked, deletes files at once, with a note in the status bar; folders are always asked about) |
 | Rename the file | `F2` (`Enter` renames, `Esc` cancels) |

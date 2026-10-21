@@ -9,6 +9,7 @@ pub mod gallery;
 mod info;
 pub mod licenses;
 mod menu;
+pub mod save_options;
 mod status;
 mod toolbar;
 

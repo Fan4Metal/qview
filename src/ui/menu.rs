@@ -76,6 +76,7 @@ impl App {
         self.item(ui, tr!("Open…", "Открыть…").into(), "Ctrl+O", Cmd::Open, true);
         self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, e.edited);
         self.item(ui, tr!("Save As…", "Сохранить как…").into(), "Ctrl+Shift+S", Cmd::SaveAs, e.edit);
+        self.item(ui, tr!("Save With Options…", "Сохранить с параметрами…").into(), "Ctrl+Alt+S", Cmd::SaveWithOptions, e.edit);
         self.convert_menu(ui);
         self.pdf_item(ui);
         self.editor_items(ui, e.file && !self.editing_image());

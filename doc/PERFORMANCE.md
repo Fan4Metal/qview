@@ -297,6 +297,20 @@ Marking (A, `src/annotate.rs`) costs nothing until it is started: no font is loa
 
 - The exe grew by ~95 KB (15 418 368 to 15 515 136 bytes): resvg, usvg, tiny-skia and the encoders were already in it for SVG and saving.
 
+## Saving smaller
+
+Save With Options shrinks the image on the saving thread after it is turned, cropped and marked (`edit::resized`, the `image` crate's Lanczos 3; an image with alpha premultiplied first, so that transparent pixels' colours do not bleed). Measured with `resize_timings` on a 6000x4000 RGB image:
+
+| To | Time |
+|---|---|
+| 75% (4500x3000) | 505 ms |
+| 50% (3000x2000) | 381 ms |
+| 1920x1280 | 285 ms |
+| 10% (600x400) | 194 ms |
+
+- Fast enough for one image saved on a thread: no box pre-shrinking or another crate.
+- The exe grew by ~66 KB (15 643 648 to 15 711 232 bytes), mostly the `image` crate's resampling.
+
 ## Measuring
 
 | What | How |
@@ -321,6 +335,7 @@ Marking (A, `src/annotate.rs`) costs nothing until it is started: no font is loa
 | The installed WIC decoders | `cargo test codec_list -- --ignored --nocapture` |
 | A folder saved as one PDF: time per page, size against the files (`QVIEW_PDF_OUT` keeps it) | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release pdf_timings -- --ignored --nocapture` |
 | Marks of every kind drawn on a file, timed (with the mosaics and the text), into a PNG | `$env:QVIEW_BENCH_FILE="<file>"; $env:QVIEW_MARKS_OUT="<png>"; cargo test --release marks_sheet -- --ignored --nocapture` |
+| Shrinking a 24 MP image to some sizes | `cargo test --release resize_timings -- --ignored --nocapture` |
 | Windows' Print Pictures dialog opened for a file, and its `Drop` timed | `$env:QVIEW_PRINT_FILE="<file>"; cargo test print_dialog -- --ignored --nocapture` |
 
 A GUI program started from PowerShell gets no console; with `Start-Process -RedirectStandardError <log>` the trace goes to a file.

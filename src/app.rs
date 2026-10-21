@@ -102,6 +102,7 @@ const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
 const MARK_PRESETS_KEY: &str = "mark_presets";
 const MARK_LIST_KEY: &str = "mark_list";
+const SAVE_QUALITY_KEY: &str = "save_quality";
 const THUMB_COLUMNS_KEY: &str = "thumb_columns";
 const TREE_WIDTH_KEY: &str = "tree_width";
 const INFO_KEY: &str = "info_panel";
@@ -389,6 +390,11 @@ pub struct App {
     /// The list of the marks beside the image while marking (O), kept as
     /// `mark_list`.
     pub mark_list: bool,
+    /// Save With Options' dialog, while it is open.
+    pub save_options: Option<crate::ui::save_options::SaveOptions>,
+    /// The JPEG quality Save With Options chose last, kept as
+    /// `save_quality`.
+    pub save_quality: u8,
     saving: Option<Saving>,
     /// Save as PDF under way.
     pdf: Option<Pdfing>,
@@ -932,6 +938,13 @@ impl App {
                 .map(|text| text.lines().filter_map(crate::annotate::Preset::parse).collect())
                 .unwrap_or_default(),
             mark_list: cc.storage.and_then(|s| s.get_string(MARK_LIST_KEY)).as_deref() != Some("false"),
+            save_options: None,
+            save_quality: cc
+                .storage
+                .and_then(|s| s.get_string(SAVE_QUALITY_KEY))
+                .and_then(|q| q.parse::<u8>().ok())
+                .filter(|q| (1..=100).contains(q))
+                .unwrap_or(edit::JPEG_QUALITY),
             saving: None,
             reloading: None,
             pdf: None,
@@ -1455,6 +1468,7 @@ impl App {
             || self.new_folder.is_some()
             || self.batch_rename.is_some()
             || self.confirm_edit.is_some()
+            || self.save_options.is_some()
             || self.dialog.is_some()
             || self.confirm_clear_favorites
             || self.confirm_unpin_all
@@ -2829,6 +2843,7 @@ impl App {
             Cmd::MarkTool(_) | Cmd::MarkColour(_) | Cmd::MarkSizeStep(_) | Cmd::MarkList => {}
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
+            Cmd::SaveWithOptions => self.ask_save_options(),
             Cmd::ConvertTo(format) => self.convert(ctx, format),
             Cmd::SavePdf => self.save_pdf(ctx, frame),
             Cmd::StopPdf => self.stop_pdf(),
@@ -3114,7 +3129,8 @@ impl App {
             | Cmd::FlipVertical
             | Cmd::Crop
             | Cmd::Save
-            | Cmd::SaveAs => {}
+            | Cmd::SaveAs
+            | Cmd::SaveWithOptions => {}
             Cmd::Gallery => self.leave_gallery(),
             // F shows the image in full screen; Ctrl+Shift+F
             // (`WindowFullScreen`) turns the gallery's window, as in the viewer.
@@ -3576,7 +3592,7 @@ impl App {
             (Some(_), Some(a)) => a.marks.clone(),
             _ => Vec::new(),
         };
-        edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop, marks }
+        edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop, marks, resize: None, quality: None }
     }
 
     /// Put the images of an archive to copy (`targets`) on the clipboard as
@@ -3990,6 +4006,7 @@ impl App {
             }
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
+            Cmd::SaveWithOptions => self.ask_save_options(),
             Cmd::Undo => {
                 a.undo();
             }
@@ -4044,6 +4061,7 @@ impl App {
             Cmd::Escape | Cmd::Crop => self.end_crop(),
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
+            Cmd::SaveWithOptions => self.ask_save_options(),
             Cmd::RotateLeft | Cmd::RotateRight => {
                 // The frame turns with the image; the view turns it.
                 if let (Some(crop), Some((_, picture))) = (&mut self.crop, &self.shown) {
@@ -4099,26 +4117,58 @@ impl App {
     /// over) into a file the user picks. On a thread; `poll_save` takes the
     /// outcome.
     fn save(&mut self, ctx: &egui::Context, frame: &eframe::Frame, as_new: bool) {
+        self.save_with(ctx, frame, as_new, None);
+    }
+
+    /// The image on screen can be saved: nothing being saved, not an
+    /// animation (said in a notice); it and its picture.
+    fn saveable(&mut self) -> Option<(PathBuf, Picture)> {
         if self.still_saving() {
-            return;
+            return None;
         }
         if self.shown.as_ref().is_some_and(|(_, p)| p.meta.animated) {
             self.notice(tr!("Animated images cannot be edited".into(), "Анимированные изображения не редактируются".into()));
+            return None;
+        }
+        self.editable()
+    }
+
+    /// The crop saving takes, in pixels of the image turned to `turned`:
+    /// none for the whole image.
+    fn save_crop(&self, turned: Vec2) -> Option<[u32; 4]> {
+        self.crop.as_ref().filter(|c| !crate::crop::is_whole(c.rect, turned)).map(|c| crate::crop::pixels(c.rect, turned))
+    }
+
+    /// Open Save With Options' dialog for the image on screen as it would
+    /// be saved.
+    fn ask_save_options(&mut self) {
+        let Some((path, picture)) = self.saveable() else { return };
+        let turned = self.view.rotated(picture.size());
+        let full = self.save_crop(turned).map_or([turned.x as u32, turned.y as u32], |[_, _, w, h]| [w, h]);
+        let format = Self::save_format(&path);
+        self.save_options = Some(crate::ui::save_options::SaveOptions::new(path, full, format, self.save_quality));
+    }
+
+    /// Save as `save` does; with `options` (Save With Options) into a new
+    /// file, shrunk, in their format first in Save As's list, a JPEG at
+    /// their quality.
+    pub(crate) fn save_with(&mut self, ctx: &egui::Context, frame: &eframe::Frame, as_new: bool, options: Option<crate::ui::save_options::SaveOptions>) {
+        let Some((path, picture)) = self.saveable() else { return };
+        let turned = self.view.rotated(picture.size());
+        let crop = self.save_crop(turned);
+        let full = crop.map_or([turned.x as u32, turned.y as u32], |[_, _, w, h]| [w, h]);
+        // Options asked for another image, or for it otherwise turned or cropped.
+        if options.as_ref().is_some_and(|o| o.path != path || o.full != full.map(|v| v.max(1))) {
+            self.notice(tr!("The image has changed; choose the options again".into(), "Изображение изменилось; задайте параметры заново".into()));
             return;
         }
-        let Some((path, picture)) = self.editable() else { return };
-        let turned = self.view.rotated(picture.size());
-        let crop = self
-            .crop
-            .as_ref()
-            .filter(|c| !crate::crop::is_whole(c.rect, turned))
-            .map(|c| crate::crop::pixels(c.rect, turned));
+        let resize = options.as_ref().and_then(|o| o.resize()).filter(|s| s[0] <= full[0] && s[1] <= full[1]);
         // Text being typed is a mark.
         if let Some(a) = &mut self.annotating {
             a.finish_typing();
         }
         let marks = self.annotating.as_ref().filter(|a| a.path == path).map(|a| a.marks.clone()).unwrap_or_default();
-        let dst = if !as_new && edit::can_overwrite(&path) {
+        let dst = if !as_new && options.is_none() && edit::can_overwrite(&path) {
             if !self.view.changed() && crop.is_none() && marks.is_empty() {
                 self.notice(tr!(
                     "Nothing to save: the image is neither turned, mirrored nor cropped".into(),
@@ -4132,6 +4182,8 @@ impl App {
                 "_marked"
             } else if crop.is_some() {
                 "_crop"
+            } else if resize.is_some() {
+                "_resized"
             } else if self.view.turns != 0 {
                 "_rotate"
             } else if self.view.flip {
@@ -4139,11 +4191,13 @@ impl App {
             } else {
                 ""
             };
-            let Some(dst) = Self::pick_save_path(frame, &path, suffix) else { return };
+            let Some(dst) = Self::pick_save_path(frame, &path, suffix, options.as_ref().map(|o| o.format)) else { return };
             dst
         };
+        // As the file chosen ends: another format may have been picked there.
+        let quality = options.filter(|_| edit::Format::of(&dst) == Some(edit::Format::Jpeg)).map(|o| o.quality);
         let size = [picture.meta.width, picture.meta.height];
-        let job = edit::Job { src: path, dst, size, turns: self.view.turns, flip: self.view.flip, crop, marks };
+        let job = edit::Job { src: path, dst, size, turns: self.view.turns, flip: self.view.flip, crop, marks, resize, quality };
         self.start_save(ctx, vec![job], false);
     }
 
@@ -4186,7 +4240,7 @@ impl App {
         let (turns, flip) = if self.editable().is_some() { (self.view.turns, self.view.flip) } else { (0, false) };
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let name = edit::suggested_name(&path, format.extensions()[0], "", |n| dir.join(n).exists());
-        let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, flip, crop: None, marks: Vec::new() };
+        let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, flip, crop: None, marks: Vec::new(), resize: None, quality: None };
         self.start_save(ctx, vec![job], true);
     }
 
@@ -4205,7 +4259,7 @@ impl App {
                 });
                 let dst = dir.join(name);
                 planned.insert(dst.to_string_lossy().to_lowercase());
-                edit::Job { src, dst, size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new() }
+                edit::Job { src, dst, size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None }
             })
             .collect();
         let n = jobs.len();
@@ -4234,19 +4288,27 @@ impl App {
         self.saving = Some(Saving { jobs, convert, done, results: Vec::new() });
     }
 
-    /// The file to save `path` as, from the Save As dialog: its own format
-    /// first if it can be saved in it, otherwise JPEG; the name suggested
-    /// has `suffix` and is not taken (see `edit::suggested_name`).
-    fn pick_save_path(frame: &eframe::Frame, path: &Path, suffix: &str) -> Option<PathBuf> {
-        // An image in an archive keeps its format, which is only not saved
-        // over.
-        let own = edit::Format::of(path).filter(|_| edit::can_overwrite(path) || crate::archive::inside(path));
-        // A drawing is mostly transparent around its shapes: PNG keeps that.
-        let other = if crate::svg::takes(path) { edit::Format::Png } else { edit::Format::Jpeg };
-        let first = own.unwrap_or(other);
-        let ext = match own {
-            Some(_) => path.extension().unwrap_or_default().to_string_lossy().into_owned(),
-            None => other.extensions()[0].to_string(),
+    /// The format `path` is saved in by default: its own if it can be saved
+    /// in it, otherwise JPEG, PNG for a drawing.
+    fn save_format(path: &Path) -> edit::Format {
+        Self::own_format(path).unwrap_or(if crate::svg::takes(path) { edit::Format::Png } else { edit::Format::Jpeg })
+    }
+
+    /// `path`'s own format, if it can be saved in it: an image in an archive
+    /// keeps its format, which is only not saved over.
+    fn own_format(path: &Path) -> Option<edit::Format> {
+        edit::Format::of(path).filter(|_| edit::can_overwrite(path) || crate::archive::inside(path))
+    }
+
+    /// The file to save `path` as, from the Save As dialog: `format` first,
+    /// or by default `save_format`; the name suggested has `suffix` and is
+    /// not taken (see `edit::suggested_name`).
+    fn pick_save_path(frame: &eframe::Frame, path: &Path, suffix: &str, format: Option<edit::Format>) -> Option<PathBuf> {
+        let first = format.unwrap_or_else(|| Self::save_format(path));
+        // Its own extension as it is spelt ("jpeg"), in its own format.
+        let ext = match Self::own_format(path) {
+            Some(own) if own == first => path.extension().unwrap_or_default().to_string_lossy().into_owned(),
+            _ => first.extensions()[0].to_string(),
         };
         // Of an image in an archive, beside the archive.
         let dir = crate::archive::folder_of(path).unwrap_or_default();
@@ -5066,7 +5128,7 @@ impl eframe::App for App {
         } else {
             egui::CentralPanel::no_frame().show(root_ui, |ui| self.image_area(ui));
         }
-        self.dialogs(&ctx);
+        self.dialogs(&ctx, frame);
 
         let clicked = std::mem::take(&mut self.clicked);
         if !clicked.is_empty() {
@@ -5118,6 +5180,7 @@ impl eframe::App for App {
         let presets: Vec<String> = self.mark_presets.iter().map(crate::annotate::Preset::to_line).collect();
         storage.set_string(MARK_PRESETS_KEY, presets.join("\n"));
         storage.set_string(MARK_LIST_KEY, self.mark_list.to_string());
+        storage.set_string(SAVE_QUALITY_KEY, self.save_quality.to_string());
         storage.set_string(THUMB_COLUMNS_KEY, self.thumb_columns.unwrap_or(0).to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
         storage.set_string(INFO_KEY, self.show_info.to_string());

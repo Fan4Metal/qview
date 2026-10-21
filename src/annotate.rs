@@ -735,7 +735,7 @@ fn skia_rect(r: Rect) -> Option<tiny_skia::Rect> {
     tiny_skia::Rect::from_ltrb(r.min.x, r.min.y, r.max.x, r.max.y)
 }
 
-fn premultiply(rgba: &mut [u8]) {
+pub(crate) fn premultiply(rgba: &mut [u8]) {
     for p in rgba.as_chunks_mut::<4>().0 {
         let a = u32::from(p[3]);
         if a != 255 {
@@ -1443,6 +1443,8 @@ mod tests {
             flip: false,
             crop: None,
             marks: Vec::new(),
+            resize: None,
+            quality: None,
         };
         let t = std::time::Instant::now();
         let img = crate::edit::render(&job).unwrap();

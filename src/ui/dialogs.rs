@@ -57,6 +57,7 @@ fn shortcuts(esc_closes: bool) -> Vec<(&'static str, Vec<(&'static str, &'static
                 ("Enter  Esc", tr!("While cropping: save / cancel", "При обрезке: сохранить / отменить")),
                 ("Ctrl+S", tr!("Save the turned, flipped or cropped image", "Сохранить повёрнутое, отражённое или обрезанное")),
                 ("Ctrl+Shift+S", tr!("Save as another file or format", "Сохранить в другой файл или формат")),
+                ("Ctrl+Alt+S", tr!("Save as another file, smaller or at another JPEG quality", "Сохранить в другой файл, уменьшив или с другим качеством JPEG")),
                 ("Ctrl+E", tr!("Open in the editor chosen last", "Открыть в последнем выбранном редакторе")),
             ],
         ),
@@ -184,7 +185,8 @@ fn shortcuts(esc_closes: bool) -> Vec<(&'static str, Vec<(&'static str, &'static
 }
 
 impl App {
-    pub(crate) fn dialogs(&mut self, ctx: &egui::Context) {
+    pub(crate) fn dialogs(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        self.save_options_dialog(ctx, frame);
         self.confirm_delete_dialog(ctx);
         self.confirm_clear_favorites_dialog(ctx);
         self.confirm_unpin_all_dialog(ctx);

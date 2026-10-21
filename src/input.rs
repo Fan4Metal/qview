@@ -109,6 +109,8 @@ pub enum Cmd {
     Save,
     /// Save it into a file the user picks (Ctrl+Shift+S).
     SaveAs,
+    /// Save As shrunk, in a format, a JPEG at a quality (Ctrl+Alt+S).
+    SaveWithOptions,
     /// Save the images listed, or those chosen in the gallery, as one PDF
     /// (Ctrl+Shift+P).
     SavePdf,
@@ -282,6 +284,7 @@ pub fn command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         Key::I if letter => Info,
         Key::L if letter => KeepZoom,
         Key::N if letter => Navigator,
+        Key::S if m.ctrl && m.alt && !m.shift => SaveWithOptions,
         Key::S if m.ctrl && m.shift && !m.alt => SaveAs,
         Key::S if m.ctrl && !m.alt => Save,
         Key::S if letter => Favorite,
@@ -689,6 +692,7 @@ mod tests {
         assert_eq!(command(Key::S, NONE, true), None);
         assert_eq!(command(Key::S, CTRL, false), Some(Cmd::Save));
         assert_eq!(command(Key::S, CTRL | SHIFT, false), Some(Cmd::SaveAs));
+        assert_eq!(command(Key::S, CTRL | ALT, false), Some(Cmd::SaveWithOptions));
         assert_eq!(command(Key::S, CTRL, true), None);
         assert_eq!(command(Key::C, NONE, false), Some(Cmd::Crop));
         assert_eq!(command(Key::A, NONE, false), Some(Cmd::Annotate));

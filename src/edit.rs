@@ -19,7 +19,7 @@ use image::{DynamicImage, ImageEncoder, ImageFormat, ImageReader, metadata::Orie
 
 /// Quality of JPEGs encoded anew: little visible loss, files about the size
 /// of a camera's.
-const JPEG_QUALITY: u8 = 92;
+pub const JPEG_QUALITY: u8 = 92;
 
 /// The formats an image can be saved in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +137,11 @@ pub struct Job {
     pub crop: Option<[u32; 4]>,
     /// Drawn over it last (see `annotate`), in pixels of the image turned.
     pub marks: Vec<crate::annotate::Mark>,
+    /// The size it is shrunk to after all that (Save With Options).
+    pub resize: Option<[u32; 2]>,
+    /// The quality of a JPEG, `JPEG_QUALITY` when None; a JPEG given one
+    /// is encoded anew even when only turned.
+    pub quality: Option<u8>,
 }
 
 /// The contents of a file before it was saved over, for Ctrl+Z.
@@ -161,7 +166,8 @@ pub fn save(job: &Job) -> Result<Saved, String> {
             .to_string()
     })?;
     let bytes = crate::archive::read(&job.src).map_err(|e| e.to_string())?;
-    let lossless = (job.crop.is_none() && job.marks.is_empty() && format == Format::Jpeg && bytes.starts_with(&[0xff, 0xd8]))
+    let kept = job.crop.is_none() && job.marks.is_empty() && job.resize.is_none() && job.quality.is_none();
+    let lossless = (kept && format == Format::Jpeg && bytes.starts_with(&[0xff, 0xd8]))
         .then(|| turn_jpeg(&bytes, job.turns, job.flip))
         .flatten();
     let (out, lossless) = match lossless {
@@ -354,7 +360,7 @@ fn encode_anew(job: &Job, bytes: &[u8], format: Format) -> Result<Vec<u8>, Strin
     let Decoded { img, icc, exif } = decode(&job.src, bytes)?;
     let img = transform(job, img)?;
     let exif = exif.and_then(|e| crate::exif::for_new_pixels(&e, img.width(), img.height()));
-    encode(&img, format, icc, exif).map_err(|e| e.to_string())
+    encode(&img, format, icc, exif, job.quality.unwrap_or(JPEG_QUALITY)).map_err(|e| e.to_string())
 }
 
 /// `job.src` decoded, mirrored, turned and cropped: what would be saved,
@@ -380,10 +386,10 @@ pub fn render_png(job: &Job) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// `img`, decoded upright from `job.src`, mirrored, turned, cropped and
-/// marked.
+/// `img`, decoded upright from `job.src`, mirrored, turned, cropped,
+/// marked and shrunk.
 fn transform(job: &Job, img: DynamicImage) -> Result<DynamicImage, String> {
-    if (job.crop.is_some() || !job.marks.is_empty()) && [img.width(), img.height()] != job.size {
+    if (job.crop.is_some() || !job.marks.is_empty() || job.resize.is_some()) && [img.width(), img.height()] != job.size {
         return Err(tr!("The file has changed on disk; open it again", "Файл изменился на диске; откройте его заново").into());
     }
     let img = if job.flip { img.fliph() } else { img };
@@ -398,7 +404,58 @@ fn transform(job: &Job, img: DynamicImage) -> Result<DynamicImage, String> {
         Some(_) => return Err(tr!("the crop is outside the image", "рамка выходит за изображение").into()),
         None => img,
     };
-    crate::annotate::draw(img, &job.marks)
+    let img = crate::annotate::draw(img, &job.marks)?;
+    Ok(match job.resize {
+        Some(size) => resized(img, size),
+        None => img,
+    })
+}
+
+/// `img` shrunk to `size` (Lanczos 3, in its own colour space); with alpha,
+/// premultiplied for it, so that the colour of transparent pixels does not
+/// bleed into their neighbours, and kept in its own type. Never enlarged.
+fn resized(img: DynamicImage, [w, h]: [u32; 2]) -> DynamicImage {
+    use image::imageops::FilterType;
+    if w == 0 || h == 0 || w > img.width() || h > img.height() || [w, h] == [img.width(), img.height()] {
+        return img;
+    }
+    if !img.color().has_alpha() {
+        return img.resize_exact(w, h, FilterType::Lanczos3);
+    }
+    let colour = img.color();
+    if colour.bytes_per_pixel() / colour.channel_count() > 1 {
+        // Deeper than 8 bits: in floats, back to its own type.
+        let mut rgba = img.into_rgba32f();
+        for p in rgba.pixels_mut() {
+            let a = p[3];
+            p[0] *= a;
+            p[1] *= a;
+            p[2] *= a;
+        }
+        let mut out = image::imageops::resize(&rgba, w, h, FilterType::Lanczos3);
+        for p in out.pixels_mut() {
+            let a = p[3].clamp(0.0, 1.0);
+            p[3] = a;
+            for c in &mut p.0[..3] {
+                *c = if a > 0.0 { (*c / a).clamp(0.0, 1.0) } else { 0.0 };
+            }
+        }
+        let out = DynamicImage::ImageRgba32F(out);
+        return match colour {
+            image::ColorType::La16 => DynamicImage::ImageLumaA16(out.to_luma_alpha16()),
+            image::ColorType::Rgba16 => DynamicImage::ImageRgba16(out.to_rgba16()),
+            _ => out,
+        };
+    }
+    let (sw, sh) = (img.width(), img.height());
+    let mut data = img.into_rgba8().into_raw();
+    crate::annotate::premultiply(&mut data);
+    let rgba = image::RgbaImage::from_raw(sw, sh, data).expect("its own size");
+    let mut data = image::imageops::resize(&rgba, w, h, FilterType::Lanczos3).into_raw();
+    crate::svg::unpremultiply(&mut data);
+    let out = DynamicImage::ImageRgba8(image::RgbaImage::from_raw(w, h, data).expect("the size asked for"));
+    // Grey stays grey.
+    if colour == image::ColorType::La8 { DynamicImage::ImageLumaA8(out.to_luma_alpha8()) } else { out }
 }
 
 /// An image decoded upright, with the metadata carried into the new file.
@@ -451,7 +508,7 @@ fn decode_image(src: &Path, bytes: &[u8]) -> Result<Decoded, String> {
 }
 
 /// `img` in `format`, with `icc` and `exif` where the format holds them.
-fn encode(img: &DynamicImage, format: Format, icc: Option<Vec<u8>>, exif: Option<Vec<u8>>) -> image::ImageResult<Vec<u8>> {
+fn encode(img: &DynamicImage, format: Format, icc: Option<Vec<u8>>, exif: Option<Vec<u8>>, quality: u8) -> image::ImageResult<Vec<u8>> {
     use image::codecs::{bmp::BmpEncoder, jpeg::JpegEncoder, png::PngEncoder, tiff::TiffEncoder, webp::WebPEncoder};
     fn metadata(encoder: &mut impl ImageEncoder, icc: Option<Vec<u8>>, exif: Option<Vec<u8>>) {
         // Formats without a place for them refuse; the pixels still count.
@@ -465,7 +522,7 @@ fn encode(img: &DynamicImage, format: Format, icc: Option<Vec<u8>>, exif: Option
     let mut out = Cursor::new(Vec::new());
     match format {
         Format::Jpeg => {
-            let mut encoder = JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY);
+            let mut encoder = JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
             metadata(&mut encoder, icc, exif);
             on_white(img).write_with_encoder(encoder)?;
         }
@@ -571,7 +628,7 @@ mod tests {
             0 => image::Rgba([0, 0, 0, 0]),
             _ => image::Rgba([0, 0, 0, 128]),
         }));
-        let bytes = encode(&img, Format::Jpeg, None, None).unwrap();
+        let bytes = encode(&img, Format::Jpeg, None, None, JPEG_QUALITY).unwrap();
         let back = image::load_from_memory(&bytes).unwrap().to_rgb8();
         let grey = |x: u32| back.get_pixel(x, 8).0;
         assert!(grey(3).iter().all(|&c| c >= 250), "{:?}", grey(3));
@@ -680,7 +737,7 @@ mod tests {
         asymmetric().save(&src).unwrap();
         let original = std::fs::read(&src).unwrap();
         // Turned right the image is 2x3; its middle row.
-        let job = Job { src: src.clone(), dst: src.clone(), size: [3, 2], turns: 1, flip: false, crop: Some([0, 1, 2, 1]), marks: Vec::new() };
+        let job = Job { src: src.clone(), dst: src.clone(), size: [3, 2], turns: 1, flip: false, crop: Some([0, 1, 2, 1]), marks: Vec::new(), resize: None, quality: None };
         let saved = save(&job).unwrap();
         assert!(!saved.lossless);
         let expected = asymmetric().rotate90().crop_imm(0, 1, 2, 1);
@@ -694,13 +751,13 @@ mod tests {
 
         // Into a new file, as JPEG: the turn is in the pixels.
         let dst = dir.join("b.jpg");
-        let job = Job { src: src.clone(), dst: dst.clone(), size: [3, 2], turns: 2, flip: false, crop: None, marks: Vec::new() };
+        let job = Job { src: src.clone(), dst: dst.clone(), size: [3, 2], turns: 2, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None };
         let saved = save(&job).unwrap();
         assert!(saved.before.is_none());
         assert_eq!((image::open(&dst).unwrap().width(), image::open(&dst).unwrap().height()), (3, 2));
 
         // A JPEG only turned stays as it was but for its orientation.
-        let job = Job { src: dst.clone(), dst: dst.clone(), size: [3, 2], turns: 1, flip: false, crop: None, marks: Vec::new() };
+        let job = Job { src: dst.clone(), dst: dst.clone(), size: [3, 2], turns: 1, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None };
         assert!(save(&job).unwrap().lossless);
         assert_eq!(decoded(&std::fs::read(&dst).unwrap()).width(), 2);
         // Mirrored too.
@@ -710,18 +767,18 @@ mod tests {
         assert_eq!(decoded(&std::fs::read(&dst).unwrap()), before.fliph());
 
         // Mirrored and turned anew: as the view shows it.
-        let job = Job { src: src.clone(), dst: dir.join("m.png"), size: [3, 2], turns: 1, flip: true, crop: None, marks: Vec::new() };
+        let job = Job { src: src.clone(), dst: dir.join("m.png"), size: [3, 2], turns: 1, flip: true, crop: None, marks: Vec::new(), resize: None, quality: None };
         save(&job).unwrap();
         let expected = asymmetric().fliph().rotate90();
         assert_eq!(image::open(dir.join("m.png")).unwrap().to_rgb8(), expected.to_rgb8());
         std::fs::remove_file(dir.join("m.png")).unwrap();
 
         // A file changed since the crop was chosen is not cropped.
-        let job = Job { src: src.clone(), dst: src.clone(), size: [30, 20], turns: 0, flip: false, crop: Some([0, 0, 1, 1]), marks: Vec::new() };
+        let job = Job { src: src.clone(), dst: src.clone(), size: [30, 20], turns: 0, flip: false, crop: Some([0, 0, 1, 1]), marks: Vec::new(), resize: None, quality: None };
         assert!(save(&job).is_err());
         assert!(save(&Job { dst: dir.join("c.gif"), ..job }).is_err());
         // Without a crop the size is not needed (the gallery has none).
-        let job = Job { src: src.clone(), dst: dir.join("d.bmp"), size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new() };
+        let job = Job { src: src.clone(), dst: dir.join("d.bmp"), size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None };
         assert!(save(&job).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -732,7 +789,7 @@ mod tests {
         let src = dir.join("a.jpg");
         std::fs::write(&src, turn_jpeg(&jpeg(40, 10), 1, false).unwrap()).unwrap();
         // Upright it is 10x40; its top half.
-        let job = Job { src: src.clone(), dst: src.clone(), size: [10, 40], turns: 0, flip: false, crop: Some([0, 0, 10, 20]), marks: Vec::new() };
+        let job = Job { src: src.clone(), dst: src.clone(), size: [10, 40], turns: 0, flip: false, crop: Some([0, 0, 10, 20]), marks: Vec::new(), resize: None, quality: None };
         save(&job).unwrap();
         let bytes = std::fs::read(&src).unwrap();
         let img = decoded(&bytes);
@@ -740,5 +797,65 @@ mod tests {
         let (_, _, p, e) = jpeg_segments(&bytes).unwrap().into_iter().find(|s| s.0 == 0xe1).expect("EXIF kept");
         assert_eq!(crate::exif::orientation(&bytes[p + EXIF_HEADER.len()..e]), Some(1));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Shrinking keeps the kind of image and the colour of what is opaque
+    /// beside what is transparent; it never enlarges. A JPEG given a
+    /// quality is encoded anew, smaller at a lower one.
+    #[test]
+    fn saving_shrinks_and_takes_a_quality() {
+        let mut rgba = image::RgbaImage::from_pixel(40, 20, image::Rgba([0, 0, 0, 0]));
+        for y in 0..20 {
+            for x in 0..20 {
+                rgba.put_pixel(x, y, image::Rgba([200, 30, 30, 255]));
+            }
+        }
+        let small = resized(DynamicImage::ImageRgba8(rgba.clone()), [20, 10]);
+        assert_eq!((small.width(), small.height()), (20, 10));
+        // The edge between red and transparent stays red, not darkened.
+        let edge = small.to_rgba8().get_pixel(10, 5).0;
+        assert!(edge[3] > 0 && edge[3] < 255 && edge[0] > 190, "{edge:?}");
+        assert_eq!(resized(DynamicImage::ImageRgba8(rgba.clone()), [80, 40]).width(), 40);
+        let rgb = resized(DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(rgba.clone()).to_rgb8()), [10, 5]);
+        assert_eq!((rgb.width(), rgb.height(), rgb.color().has_alpha()), (10, 5, false));
+        // Deeper or grey with alpha: kept so.
+        let deep = DynamicImage::ImageRgba8(rgba.clone());
+        let deep = resized(DynamicImage::ImageRgba16(deep.to_rgba16()), [20, 10]);
+        assert_eq!(deep.color(), image::ColorType::Rgba16);
+        assert!(deep.to_rgba8().get_pixel(10, 5).0[0] > 190);
+        let grey = resized(DynamicImage::ImageLumaA8(DynamicImage::ImageRgba8(rgba.clone()).to_luma_alpha8()), [20, 10]);
+        assert_eq!(grey.color(), image::ColorType::La8);
+
+        let dir = temp_dir("resize");
+        let src = dir.join("a.jpg");
+        std::fs::write(&src, jpeg(64, 48)).unwrap();
+        let job = Job { src: src.clone(), dst: dir.join("b.jpg"), size: [64, 48], turns: 0, flip: false, crop: None, marks: Vec::new(), resize: Some([32, 24]), quality: None };
+        let saved = save(&job).unwrap();
+        assert!(!saved.lossless);
+        let img = decoded(&std::fs::read(dir.join("b.jpg")).unwrap());
+        assert_eq!((img.width(), img.height()), (32, 24));
+        // Only turned, but with a quality: encoded anew.
+        let low = Job { dst: dir.join("c.jpg"), resize: None, quality: Some(20), turns: 1, ..job.clone() };
+        assert!(!save(&low).unwrap().lossless);
+        let high = Job { dst: dir.join("d.jpg"), quality: Some(98), ..low.clone() };
+        save(&high).unwrap();
+        let size = |n: &str| std::fs::metadata(dir.join(n)).unwrap().len();
+        assert!(size("c.jpg") < size("d.jpg"), "{} {}", size("c.jpg"), size("d.jpg"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Shrinking a 24 MP photo-sized image to some sizes, timed.
+    #[test]
+    #[ignore]
+    fn resize_timings() {
+        let (w, h) = (6000u32, 4000u32);
+        let img = DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, ((x ^ y) & 0xff) as u8])
+        }));
+        for (name, size) in [("75%", [4500, 3000]), ("50%", [3000, 2000]), ("1920", [1920, 1280]), ("10%", [600, 400])] {
+            let t = std::time::Instant::now();
+            let out = resized(img.clone(), size);
+            println!("{w}x{h} to {name} ({}x{}): {:.0} ms", out.width(), out.height(), t.elapsed().as_secs_f64() * 1e3);
+        }
     }
 }
