@@ -428,7 +428,7 @@ The arrow keys scroll an image that is larger than the window in that direction;
 | Rotate left / right | `[` / `]`, `Ctrl+Alt+←` / `Ctrl+Alt+→` |
 | Flip horizontally / vertically | `H` / `V` |
 | Crop | `C` (`Enter` saves, `Esc` cancels) |
-| Marks over the image | `A`; frame `R`, ellipse `E`, line `L`, arrow `A`, pen `D`, pixelation `P`, text `T`, colour `1`–`6`, width `[` `]`, list `O`, `Delete`, `Ctrl+Z`, `Enter` saves, `Esc` cancels |
+| Marks over the image | `A`; pen `D`, line `L`, arrow `A`, frame `R`, ellipse `E`, pixelation `P`, text `T`, colour `1`–`6`, width `[` `]`, list `O`, `Delete`, `Ctrl+Z`, `Enter` saves, `Esc` cancels |
 | Save the rotated, flipped or cropped image | `Ctrl+S` |
 | Save as another file or format | `Ctrl+Shift+S` |
 | Save smaller or at another JPEG quality | `Ctrl+Alt+S` |

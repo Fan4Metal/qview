@@ -66,8 +66,8 @@ fn shortcuts(esc_closes: bool) -> Vec<(&'static str, Vec<(&'static str, &'static
             vec![
                 ("A", tr!("Mark up the image: frames, lines, arrows, drawing, pixelation, text", "Пометки на изображении: рамки, линии, стрелки, рисование, пикселизация, текст")),
                 (
-                    "R  E  L  A  D  P  T",
-                    tr!("Frame / ellipse / line / arrow / pen / pixelate / text", "Рамка / овал / линия / стрелка / карандаш / пикселизация / текст"),
+                    "D  L  A  R  E  P  T",
+                    tr!("Pen / line / arrow / frame / ellipse / pixelate / text", "Карандаш / линия / стрелка / рамка / овал / пикселизация / текст"),
                 ),
                 ("1 – 6", tr!("Colour (any one from the picker in the bar)", "Цвет (любой — пикером на панели)")),
                 ("[  ]", tr!("Smaller / larger: line, text or blocks (or the slider in the bar)", "Меньше / больше: линия, текст или блоки (или ползунок на панели)")),

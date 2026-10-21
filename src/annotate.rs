@@ -326,7 +326,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 7] = [Tool::Rect, Tool::Ellipse, Tool::Line, Tool::Arrow, Tool::Pen, Tool::Pixelate, Tool::Text];
+    pub const ALL: [Tool; 7] = [Tool::Pen, Tool::Line, Tool::Arrow, Tool::Rect, Tool::Ellipse, Tool::Pixelate, Tool::Text];
 
     pub fn label(self) -> &'static str {
         match self {
