@@ -738,14 +738,20 @@ fn text_field(a: &mut Annotating, ctx: &egui::Context, at: Pos2) {
     let (mut commit, mut cancel) = (false, false);
     egui::Area::new(Id::new("annotate_text_area")).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
-            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+            // Enter alone: `consume_key` takes Shift+Enter for Enter too.
+            if ui.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::NONE, Key::Enter)) {
                 commit = true;
             }
             if ui.input(|i| i.key_pressed(Key::Escape)) {
                 cancel = true;
             }
             let hint = tr!("Text; Shift+Enter for a new line", "Текст; Shift+Enter — новая строка");
-            let edit = egui::TextEdit::multiline(&mut typing.text).id(Id::new(TEXT_ID)).desired_rows(1).desired_width(260.0).hint_text(hint);
+            let edit = egui::TextEdit::multiline(&mut typing.text)
+                .id(Id::new(TEXT_ID))
+                .return_key(egui::KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter))
+                .desired_rows(1)
+                .desired_width(260.0)
+                .hint_text(hint);
             let response = ui.add(edit);
             if std::mem::take(&mut typing.focus) {
                 response.request_focus();
