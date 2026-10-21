@@ -213,11 +213,18 @@ pub fn write_file(path: &Path, data: &[u8], create: bool) -> Result<(), String> 
         f.write_all(data)?;
         f.sync_all()
     });
-    let result = match written {
-        Err(e) => Err(e),
-        Ok(()) if path.exists() || !create => crate::win::replace_file(path, &tmp),
-        Ok(()) => std::fs::rename(&tmp, path),
-    };
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
+    put_in_place(path, &tmp, path.exists() || !create)
+}
+
+/// Put the file `tmp`, written beside `path`, in its place: over it when
+/// `replace`, else renamed there. A failure leaves the old file whole and
+/// `tmp` deleted.
+pub fn put_in_place(path: &Path, tmp: &Path, replace: bool) -> Result<(), String> {
+    let result = if replace { crate::win::replace_file(path, tmp) } else { std::fs::rename(tmp, path) };
     let Err(e) = result else { return Ok(()) };
     // ReplaceFileW can fail after taking the old file away
     // (ERROR_UNABLE_TO_MOVE_REPLACEMENT, an antivirus holding the new
@@ -225,10 +232,10 @@ pub fn write_file(path: &Path, data: &[u8], create: bool) -> Result<(), String> 
     // its place, or stay where they are. Otherwise the old file is whole.
     const ERROR_UNABLE_TO_MOVE_REPLACEMENT: i32 = 1176;
     if e.raw_os_error() != Some(ERROR_UNABLE_TO_MOVE_REPLACEMENT) || path.exists() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
         return Err(e.to_string());
     }
-    std::fs::rename(&tmp, path).map_err(|_| {
+    std::fs::rename(tmp, path).map_err(|_| {
         tr!(
             format!("{e}; the new contents are in {}", tmp.display()),
             format!("{e}; новое содержимое сохранено в {}", tmp.display())

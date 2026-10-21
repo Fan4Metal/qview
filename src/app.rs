@@ -4629,7 +4629,10 @@ impl App {
         self.notice(match result {
             Ok(size) => {
                 let size = crate::format::file_size(size);
-                tr!(format!("Saved as PDF: {name}, {total} pages, {size}"), format!("Сохранено в PDF: {name}, страниц: {total}, {size}"))
+                match total {
+                    1 => tr!(format!("Saved as PDF: {name}, 1 page, {size}"), format!("Сохранено в PDF: {name}, 1 страница, {size}")),
+                    _ => tr!(format!("Saved as PDF: {name}, {total} pages, {size}"), format!("Сохранено в PDF: {name}, страниц: {total}, {size}")),
+                }
             }
             Err(e) if e.is_empty() => tr!("Making the PDF stopped".into(), "Создание PDF остановлено".into()),
             Err(e) => tr!(format!("Cannot save the PDF: {e}"), format!("Не удалось сохранить PDF: {e}")),
@@ -4637,7 +4640,9 @@ impl App {
     }
 
     /// The PDF being made given up at exit, its temporary file deleted by
-    /// its thread (it stops between pages; at most a few seconds).
+    /// its thread (it stops between pages; at most a few seconds), or here
+    /// when it is still in a page (deleted once the process ends, which
+    /// closes the file).
     fn end_pdf(&mut self) {
         let Some(p) = self.pdf.take() else { return };
         p.stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -4645,8 +4650,12 @@ impl App {
         while let Some(left) = until.checked_duration_since(Instant::now()) {
             match p.rx.recv_timeout(left) {
                 Ok(crate::pdf::Progress::Pages(_)) => {}
-                _ => break,
+                Ok(crate::pdf::Progress::Done(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
             }
+        }
+        if let Some(tmp) = crate::pdf::temp_path(&p.dst) {
+            let _ = std::fs::remove_file(tmp);
         }
     }
 

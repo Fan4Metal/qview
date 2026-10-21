@@ -28,6 +28,8 @@ const DPI: f64 = 96.0;
 const MAX_SIDE: f64 = 14400.0;
 /// Of the images encoded anew, as `edit` saves them.
 const JPEG_QUALITY: u8 = 92;
+/// The cross-reference table's offsets have ten digits.
+const MAX_OFFSET: u64 = 9_999_999_999;
 
 /// What to make: `pages` in this order, into `dst`, titled `title`.
 pub struct Job {
@@ -49,16 +51,20 @@ pub enum Progress {
 /// each; `stop` set gives up (an empty error). Windows' codecs may decode
 /// the images, so the calling thread has COM initialised.
 pub fn make(job: &Job, stop: &AtomicBool, progress: impl Fn(usize)) -> Result<u64, String> {
-    let name = job.dst.file_name().ok_or_else(|| tr!("no file name", "нет имени файла").to_string())?.to_string_lossy();
-    let tmp = job.dst.with_file_name(format!("{name}.{}.qview-tmp", std::process::id()));
-    let result = write_into(&tmp, job, stop, &progress).and_then(|size| {
-        let placed = if job.dst.exists() { crate::win::replace_file(&job.dst, &tmp) } else { std::fs::rename(&tmp, &job.dst) };
-        placed.map(|()| size).map_err(|e| e.to_string())
-    });
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    let tmp = temp_path(&job.dst).ok_or_else(|| tr!("no file name", "нет имени файла").to_string())?;
+    match write_into(&tmp, job, stop, &progress) {
+        Ok(size) => crate::edit::put_in_place(&job.dst, &tmp, job.dst.exists()).map(|()| size),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
     }
-    result
+}
+
+/// The file the PDF to be `dst` is written into first, beside it.
+pub fn temp_path(dst: &Path) -> Option<PathBuf> {
+    let name = dst.file_name()?.to_string_lossy();
+    Some(dst.with_file_name(format!("{name}.{}.qview-tmp", std::process::id())))
 }
 
 fn write_into(tmp: &Path, job: &Job, stop: &AtomicBool, progress: &dyn Fn(usize)) -> Result<u64, String> {
@@ -167,7 +173,7 @@ fn jpeg(bytes: &[u8]) -> Option<Image> {
     if !bytes.starts_with(&[0xff, 0xd8]) {
         return None;
     }
-    let (mut rotate, mut exif, mut sof) = (0, false, None);
+    let (mut rotate, mut exif, mut sof, mut adobe) = (0, false, None, false);
     for (code, _, p, e) in crate::edit::jpeg_segments(bytes)? {
         let data = &bytes[p..e];
         match code {
@@ -181,6 +187,7 @@ fn jpeg(bytes: &[u8]) -> Option<Image> {
                     _ => return None,
                 };
             }
+            0xee if data.starts_with(b"Adobe") => adobe = true,
             // SOFn, but DHT, JPG and DAC, which share the range.
             0xc0..=0xcf if !matches!(code, 0xc4 | 0xc8 | 0xcc) && sof.is_none() => sof = Some((code, data)),
             _ => {}
@@ -194,6 +201,9 @@ fn jpeg(bytes: &[u8]) -> Option<Image> {
     let width = u32::from(u16::from_be_bytes([s[3], s[4]]));
     let colour = match s[5] {
         1 => Colour::Gray,
+        // Components named R, G, B are not YCbCr, which a PDF reader takes
+        // three to be without Adobe's marker saying otherwise: decoded.
+        3 if !adobe && s.len() >= 15 && [s[6], s[9], s[12]] == *b"RGB" => return None,
         3 => Colour::Rgb,
         // CMYK, whose inversion readers disagree on: decoded.
         _ => return None,
@@ -211,7 +221,7 @@ fn png(bytes: &[u8]) -> Option<Image> {
     if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return None;
     }
-    let (mut header, mut palette, mut data) = (None, None, Vec::new());
+    let (mut header, mut palette, mut data, mut rotate) = (None, None, Vec::new(), 0);
     let mut at = 8usize;
     loop {
         let len = u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?) as usize;
@@ -222,6 +232,16 @@ fn png(bytes: &[u8]) -> Option<Image> {
             b"PLTE" => palette = Some(body),
             b"tRNS" => return None,
             b"IDAT" => data.extend_from_slice(body),
+            // Turned as the viewer shows it; a mirrored one is decoded.
+            b"eXIf" => {
+                rotate = match crate::exif::orientation(body).unwrap_or(1) {
+                    1 => 0,
+                    3 => 180,
+                    6 => 90,
+                    8 => 270,
+                    _ => return None,
+                }
+            }
             b"IEND" => break,
             _ => {}
         }
@@ -242,7 +262,7 @@ fn png(bytes: &[u8]) -> Option<Image> {
         // With an alpha channel: decoded and laid on white.
         _ => return None,
     };
-    Some(Image { width, height, colour, bits, filter: Filter::Flate, data, icc: None, rotate: 0, dpi: (DPI, DPI) })
+    Some(Image { width, height, colour, bits, filter: Filter::Flate, data, icc: None, rotate, dpi: (DPI, DPI) })
 }
 
 /// `bytes` from `path` decoded upright, laid on white, and encoded as a
@@ -369,6 +389,10 @@ impl<W: Write> Pdf<W> {
 
     /// A page of `image`, bookmarked as `title`.
     fn page(&mut self, image: &Image, title: &str) -> io::Result<()> {
+        // The objects after it, small, must still be found by the table.
+        if self.at > MAX_OFFSET - (1 << 30) {
+            return Err(io::Error::other(tr!("a PDF larger than 10 GB", "PDF больше 10 ГБ")));
+        }
         let channels = image.colour.channels();
         let profile = image.icc.as_deref().filter(|icc| icc_channels(icc) == Some(channels));
         let colour = match (&image.colour, profile) {
@@ -513,6 +537,36 @@ mod tests {
         let grey = encoded(DynamicImage::ImageLuma8(rgb(8, 8).to_luma8()), ImageFormat::Jpeg);
         assert_eq!(jpeg(&grey).unwrap().colour, Colour::Gray);
         assert!(jpeg(b"\xff\xd8\xff").is_none());
+        // Components named R, G, B: RGB, not YCbCr, so decoded.
+        let mut named = file.clone();
+        let (_, _, p, _) = crate::edit::jpeg_segments(&file).unwrap().into_iter().find(|s| s.0 == 0xc0).unwrap();
+        for (k, id) in b"RGB".iter().enumerate() {
+            named[p + 6 + 3 * k] = *id;
+        }
+        assert!(jpeg(&named).is_none());
+    }
+
+    /// A PNG turned by its EXIF (`eXIf`) as the viewer shows it.
+    #[test]
+    fn a_png_is_turned_by_its_exif() {
+        let file = encoded(rgb(10, 4), ImageFormat::Png);
+        let with = |orientation: u8| {
+            // Little-endian TIFF: one entry, Orientation, a SHORT.
+            let mut tiff = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+            tiff.extend_from_slice(&[orientation, 0, 0, 0, 0, 0, 0, 0]);
+            let mut chunk = (tiff.len() as u32).to_be_bytes().to_vec();
+            chunk.extend_from_slice(b"eXIf");
+            chunk.extend_from_slice(&tiff);
+            chunk.extend_from_slice(&[0; 4]);
+            // After IHDR: 8 bytes of signature, 25 of the chunk.
+            let mut out = file[..33].to_vec();
+            out.extend_from_slice(&chunk);
+            out.extend_from_slice(&file[33..]);
+            out
+        };
+        assert_eq!(png(&with(6)).map(|i| i.rotate), Some(90));
+        assert_eq!(png(&with(1)).map(|i| i.rotate), Some(0));
+        assert!(png(&with(2)).is_none());
     }
 
     #[test]
