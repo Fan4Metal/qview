@@ -103,6 +103,10 @@ impl App {
                                     a.set_text_style(style);
                                 }
                             }
+                            if a.text_style != TextStyle::Plain {
+                                ui.add_space(4.0);
+                                contrast_choice(ui, a);
+                            }
                             ui.add_space(8.0);
                             font_choice(ui, a);
                         }
@@ -415,13 +419,13 @@ fn colours(ui: &mut Ui, a: &mut Annotating, clicked: &mut Option<Cmd>) {
     let spacing = ui.spacing().item_spacing.x;
     ui.spacing_mut().item_spacing.x = 4.0;
     for (i, &c) in COLOURS.iter().enumerate() {
-        let response = swatch(ui, a.colour == c, |p, centre, r| disc(p, centre, r, c));
+        let response = swatch(ui, a.colour() == c, |p, centre, r| disc(p, centre, r, c));
         if response.on_hover_text(format!("{}", i + 1)).clicked() {
             *clicked = Some(Cmd::MarkColour(i as u8));
         }
     }
-    let custom = !COLOURS.contains(&a.colour);
-    if let Some(colour) = own_colour(ui, a.colour, custom) {
+    let custom = !COLOURS.contains(&a.colour());
+    if let Some(colour) = own_colour(ui, a.colour(), custom) {
         a.set_colour(colour);
     }
     ui.spacing_mut().item_spacing.x = spacing;
@@ -458,44 +462,100 @@ fn own_colour(ui: &mut Ui, colour: Color32, custom: bool) -> Option<Color32> {
     let response = swatch(ui, custom, |p, centre, r| if custom { disc(p, centre, r, colour) } else { colour_wheel(p, centre, r) });
     let response = response.on_hover_text(tr!("Any colour…", "Любой цвет…"));
     let mut picked = None;
-    egui::Popup::menu(&response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        let mut c = colour;
-        if colour_picker(ui, &mut c) {
-            picked = Some(c);
+    egui::Popup::menu(&response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| picked = picker_fields(ui, colour));
+    picked
+}
+
+/// Text's second colour, while it is outlined or on a plate: of the
+/// outline, or of the letters; automatic (black or white, whichever stands
+/// out, a disc half of each) unless chosen in a popup like `own_colour`'s.
+fn contrast_choice(ui: &mut Ui, a: &mut Annotating) {
+    let (label, tip) = match a.text_style {
+        TextStyle::Plate => (tr!("Letters", "Буквы"), tr!("Colour of the letters on the plate", "Цвет букв на плашке")),
+        _ => (tr!("Outline", "Обводка"), tr!("Colour of the outline", "Цвет обводки")),
+    };
+    ui.label(RichText::new(label).color(TEXT_WEAK)).on_hover_text(tip);
+    let shown = a.contrast.unwrap_or_else(|| annotate::outline(a.colour()));
+    let auto = a.contrast.is_none();
+    let response = swatch(ui, false, |p, centre, r| {
+        if auto {
+            p.circle_filled(centre, r, Color32::WHITE);
+            let half: Vec<Pos2> = (0..=16).map(|k| centre + Vec2::angled(std::f32::consts::FRAC_PI_4 + k as f32 / 16.0 * std::f32::consts::PI) * r).collect();
+            p.add(egui::Shape::convex_polygon(half, Color32::BLACK, Stroke::NONE));
+            p.circle_stroke(centre, r - 0.5, Stroke::new(1.0, Color32::from_gray(120)));
+        } else {
+            disc(p, centre, r, shown);
         }
+    });
+    let tip = if auto {
+        tr!(format!("{tip}: automatic, black or white"), format!("{tip}: авто, чёрный или белый"))
+    } else {
+        tip.to_string()
+    };
+    let response = response.on_hover_text(tip);
+    let mut chosen = None;
+    egui::Popup::menu(&response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.horizontal(|ui| {
+            let tip = tr!("Black or white, whichever stands out", "Чёрный или белый — смотря что контрастнее");
+            if ui.selectable_label(auto, tr!("Automatic", "Авто")).on_hover_text(tip).clicked() {
+                chosen = Some(None);
+            }
+            for c in [Color32::BLACK, Color32::WHITE] {
+                if swatch(ui, a.contrast == Some(c), |p, centre, r| disc(p, centre, r, c)).clicked() {
+                    chosen = Some(Some(c));
+                }
+            }
+        });
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let label = ui.label("HEX");
-            // Kept as typed while the field has the focus.
-            let id = ui.id().with("mark_hex");
-            let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| hex(colour));
-            let width = PICKER - label.rect.width() - ui.spacing().item_spacing.x;
-            let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(width));
-            if field.changed()
-                && let Some(typed) = typed_colour(&text)
-            {
-                picked = Some(typed);
-            }
-            if field.has_focus() {
-                ui.data_mut(|d| d.insert_temp(id, text));
-            } else {
-                ui.data_mut(|d| d.remove::<String>(id));
-            }
-        });
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let spacing = ui.spacing().item_spacing.x;
-            let size = vec2((PICKER - 2.0 * spacing) / 3.0, ui.spacing().interact_size.y);
-            let [r, g, b, _] = colour.to_array();
-            let mut rgb = [r, g, b];
-            let mut edited = false;
-            for (value, name) in rgb.iter_mut().zip(["R ", "G ", "B "]) {
-                edited |= ui.add_sized(size, egui::DragValue::new(value).speed(0.5).range(0..=255).prefix(name)).changed();
-            }
-            if edited {
-                picked = Some(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-            }
-        });
+        if let Some(c) = picker_fields(ui, shown) {
+            chosen = Some(Some(c));
+        }
+    });
+    if let Some(contrast) = chosen {
+        a.set_contrast(contrast);
+    }
+}
+
+/// The picker's square and hue bar, the code as `#rrggbb` and red, green and
+/// blue, starting at `colour`. The colour picked.
+fn picker_fields(ui: &mut Ui, colour: Color32) -> Option<Color32> {
+    let mut picked = None;
+    let mut c = colour;
+    if colour_picker(ui, &mut c) {
+        picked = Some(c);
+    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let label = ui.label("HEX");
+        // Kept as typed while the field has the focus.
+        let id = ui.id().with("mark_hex");
+        let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| hex(colour));
+        let width = PICKER - label.rect.width() - ui.spacing().item_spacing.x;
+        let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(width));
+        if field.changed()
+            && let Some(typed) = typed_colour(&text)
+        {
+            picked = Some(typed);
+        }
+        if field.has_focus() {
+            ui.data_mut(|d| d.insert_temp(id, text));
+        } else {
+            ui.data_mut(|d| d.remove::<String>(id));
+        }
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let spacing = ui.spacing().item_spacing.x;
+        let size = vec2((PICKER - 2.0 * spacing) / 3.0, ui.spacing().interact_size.y);
+        let [r, g, b, _] = colour.to_array();
+        let mut rgb = [r, g, b];
+        let mut edited = false;
+        for (value, name) in rgb.iter_mut().zip(["R ", "G ", "B "]) {
+            edited |= ui.add_sized(size, egui::DragValue::new(value).speed(0.5).range(0..=255).prefix(name)).changed();
+        }
+        if edited {
+            picked = Some(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+        }
     });
     picked
 }
@@ -737,12 +797,12 @@ fn text_texture(
     ctx: &egui::Context,
     text: &str,
     at: Pos2,
-    (px, colour, style, font): (f32, Color32, TextStyle, &TextFont),
+    (px, colour, style, contrast, font): (f32, Color32, TextStyle, Option<Color32>, &TextFont),
     used: &mut Vec<annotate::TextKey>,
 ) -> Option<(egui::TextureId, Rect)> {
-    let key = (text.to_string(), px.to_bits(), colour, style, font.clone());
+    let key = (text.to_string(), px.to_bits(), colour, style, contrast, font.clone());
     if !a.texts.contains_key(&key) {
-        let (pixmap, offset) = annotate::render_text(text, px, colour, style, font)?;
+        let (pixmap, offset) = annotate::render_text(text, px, colour, style, contrast, font)?;
         let size = [pixmap.width(), pixmap.height()];
         let image = ColorImage::from_rgba_premultiplied([size[0] as usize, size[1] as usize], pixmap.data());
         let options = TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..TextureOptions::LINEAR };
@@ -908,7 +968,7 @@ fn text_boxes(
             let Shape::Text(at, _) = a.marks[i].shape else { return None };
             let m = &a.marks[i];
             let font = m.font.clone();
-            let look = (annotate::font_size(unit, m.size), m.colour, m.text, &font);
+            let look = (annotate::font_size(unit, m.size), m.colour, m.text, m.contrast, &font);
             text_texture(a, ctx, &text, at, look, used)
         })
         .collect();
@@ -1092,14 +1152,14 @@ pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place
         let (at, text) = (*at, text.clone());
         let px = annotate::font_size(unit, a.size_of(Measure::Text));
         let font = a.font.clone();
-        let look = (px, a.colour, a.text_style, &font);
+        let look = (px, a.colour_of(Tool::Text), a.text_style, a.contrast, &font);
         let shown = text_texture(a, &ctx, &text, at, look, &mut used);
         if let Some((texture, b)) = shown {
             painter.image(texture, on_screen(b), Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
         }
         // The point, so that it shows where the text goes.
         let p = to_screen(at);
-        painter.line_segment([p, p + vec2(0.0, px * k)], Stroke::new(1.5, a.colour));
+        painter.line_segment([p, p + vec2(0.0, px * k)], Stroke::new(1.5, a.colour_of(Tool::Text)));
         field_at = Some(to_screen(pos2(at.x, shown.map_or(at.y + px * 1.25, |(_, b)| b.max.y))));
     }
     if let Some(Typing { index: Some(i), at, .. }) = &a.typing {
@@ -1262,7 +1322,7 @@ mod tests {
         assert_eq!(a.marks.len(), 1);
         assert_eq!(hit(&a, pos2(12.0, 12.0), 4.0, &[]), None);
         let frame = Rect::from_min_max(pos2(100.0, 100.0), pos2(200.0, 200.0));
-        a.marks.push(Mark { shape: Shape::Rect(frame), colour: COLOURS[0], size: 2.0, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal });
+        a.marks.push(Mark { shape: Shape::Rect(frame), colour: COLOURS[0], size: 2.0, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal, contrast: None });
         assert_eq!(hit(&a, pos2(100.0, 150.0), 4.0, &[None]), Some(1));
         assert_eq!(hit(&a, pos2(12.0, 12.0), 4.0, &[Some(Rect::from_min_max(pos2(10.0, 10.0), pos2(40.0, 30.0)))]), Some(0));
     }
