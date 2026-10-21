@@ -30,9 +30,9 @@ enum Icon {
     RotateLeft,
     RotateRight,
     Crop,
-    /// Marks over the image (a frame and an arrow into it).
+    /// Marks over the image (a pencil and the line it drew).
     Annotate,
-    /// Open in the editor (a pencil).
+    /// Open in the editor (a window and an arrow leaving it).
     Edit,
     ZoomIn,
     ZoomOut,
@@ -258,22 +258,24 @@ fn paint_icon(painter: &Painter, icon: Icon, c: Pos2, color: Color32) {
             painter.add(Shape::line(vec![p(-8.0, -4.5), p(4.5, -4.5), p(4.5, 8.0)], stroke));
         }
         Icon::Annotate => {
-            // A frame, and an arrow from the bottom left pointing into it.
-            let p = |x: f32, y: f32| c + vec2(x, y);
-            painter.add(Shape::closed_line(vec![p(-2.0, -8.0), p(8.0, -8.0), p(8.0, 2.0), p(-2.0, 2.0)], stroke));
-            painter.line_segment([p(-8.0, 8.0), p(-0.5, 0.5)], stroke);
-            painter.add(Shape::convex_polygon(vec![p(1.0, -1.0), p(-5.0, 0.0), p(0.0, 5.0)], color, Stroke::NONE));
+            // A pencil from the bottom left, its point down (along `d`, as
+            // wide as `n` across), and the wavy line it has drawn.
+            let (d, n) = (vec2(1.0, -1.0).normalized(), vec2(1.0, 1.0).normalized());
+            let tip = c + vec2(-5.5, 3.5);
+            let side = |along: f32, across: f32| tip + d * along + n * across;
+            painter.add(Shape::closed_line(vec![tip, side(4.5, 2.6), side(15.5, 2.6), side(15.5, -2.6), side(4.5, -2.6)], stroke));
+            // Where the point is sharpened.
+            painter.line_segment([side(4.5, 2.6), side(4.5, -2.6)], Stroke::new(1.2, color));
+            let wave = (0..=16).map(|k| k as f32 / 16.0).map(|t| c + vec2(-8.0 + 16.0 * t, 7.5 - 1.6 * (t * std::f32::consts::TAU * 1.5).sin())).collect();
+            painter.add(Shape::line(wave, Stroke::new(1.4, color)));
         }
         Icon::Edit => {
-            // A pencil from the bottom left, its point down: along `d`, as
-            // wide as `n` across.
-            let (d, n) = (vec2(1.0, -1.0).normalized(), vec2(1.0, 1.0).normalized());
-            let tip = c + vec2(-7.0, 7.0);
-            let side = |along: f32, across: f32| tip + d * along + n * across;
-            painter.add(Shape::closed_line(vec![tip, side(5.0, 2.8), side(17.5, 2.8), side(17.5, -2.8), side(5.0, -2.8)], stroke));
-            // Where the point is sharpened, and the band by the end.
-            painter.line_segment([side(5.0, 2.8), side(5.0, -2.8)], Stroke::new(1.2, color));
-            painter.line_segment([side(14.5, 2.8), side(14.5, -2.8)], Stroke::new(1.2, color));
+            // Opened in another program: a window open at its top right
+            // corner, an arrow leaving it there.
+            let p = |x: f32, y: f32| c + vec2(x, y);
+            painter.add(Shape::line(vec![p(-1.0, -7.0), p(-7.0, -7.0), p(-7.0, 7.0), p(7.0, 7.0), p(7.0, 1.0)], stroke));
+            painter.line_segment([p(-1.5, 1.5), p(7.5, -7.5)], stroke);
+            painter.add(Shape::line(vec![p(1.5, -7.5), p(7.5, -7.5), p(7.5, -1.5)], stroke));
         }
         Icon::ZoomIn | Icon::ZoomOut => {
             let lens = c + vec2(-1.5, -1.5);
