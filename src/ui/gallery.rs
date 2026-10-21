@@ -974,7 +974,7 @@ impl App {
             }
             self.new_folder_item(ui);
             if !self.files.is_empty() {
-                self.pdf_item(ui);
+                self.pdf_item(ui, false);
             }
             if let Some(dir) = self.pinnable_dir() {
                 ui.separator();

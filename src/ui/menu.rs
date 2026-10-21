@@ -78,7 +78,7 @@ impl App {
         self.item(ui, tr!("Save As…", "Сохранить как…").into(), "Ctrl+Shift+S", Cmd::SaveAs, e.edit);
         self.item(ui, tr!("Save With Options…", "Сохранить с параметрами…").into(), "Ctrl+Alt+S", Cmd::SaveWithOptions, e.edit);
         self.convert_menu(ui);
-        self.pdf_item(ui);
+        self.pdf_item(ui, false);
         self.editor_items(ui, e.file && !self.editing_image());
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, e.file);
         ui.separator();
@@ -553,23 +553,33 @@ impl App {
         self.item_explained(ui, tr!("Copy Image", "Копировать картинку").into(), "Ctrl+Shift+C", Cmd::CopyImage, enabled, tip);
     }
 
-    /// Save as PDF: the images chosen, or all those listed; Stop Making PDF
-    /// while one is made.
-    pub(super) fn pdf_item(&mut self, ui: &mut Ui) {
+    /// Save as PDF: the images chosen, or all those listed; in a context
+    /// menu (`of_targets`) the images chosen, or the one clicked. Stop
+    /// Making PDF while one is made.
+    pub(super) fn pdf_item(&mut self, ui: &mut Ui, of_targets: bool) {
         if self.making_pdf() {
             self.item(ui, tr!("Stop Making PDF", "Остановить создание PDF").into(), "", Cmd::StopPdf, true);
             return;
         }
-        let n = self.pdf_count();
+        let n = self.pdf_count(of_targets);
         let text = match n {
             0 | 1 => tr!("Save as PDF…", "Сохранить в PDF…").into(),
             n => tr!(format!("Save {n} Images as PDF…"), format!("Сохранить изображения ({n}) в PDF…")),
         };
-        let tip = tr!(
-            "One PDF, a page each: the images chosen in the gallery, else all those listed. JPEG and PNG go in without recompression",
-            "Один PDF, по странице на изображение: выбранные в галерее, иначе все показанные. JPEG и PNG вкладываются без пересжатия"
-        );
-        self.item_explained(ui, text, "Ctrl+Shift+P", Cmd::SavePdf, n > 0 && !self.editing_image(), tip);
+        let enabled = n > 0 && !self.editing_image();
+        if of_targets {
+            let tip = tr!(
+                "One PDF, a page each: this image, or those chosen in the gallery. JPEG and PNG go in without recompression",
+                "Один PDF, по странице на изображение: это изображение или выбранные в галерее. JPEG и PNG вкладываются без пересжатия"
+            );
+            self.item_explained(ui, text, "", Cmd::SavePdfOfTargets, enabled, tip);
+        } else {
+            let tip = tr!(
+                "One PDF, a page each: the images chosen in the gallery, else all those listed. JPEG and PNG go in without recompression",
+                "Один PDF, по странице на изображение: выбранные в галерее, иначе все показанные. JPEG и PNG вкладываются без пересжатия"
+            );
+            self.item_explained(ui, text, "Ctrl+Shift+P", Cmd::SavePdf, enabled, tip);
+        }
     }
 
     pub(super) fn print_item(&mut self, ui: &mut Ui, enabled: bool) {
@@ -720,7 +730,7 @@ impl App {
             ui.separator();
             self.transfer_menu(ui, true, enabled && !self.editing_image());
             self.convert_menu(ui);
-            self.pdf_item(ui);
+            self.pdf_item(ui, true);
             self.print_item(ui, enabled);
             self.wallpaper_item(ui, enabled);
         });

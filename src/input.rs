@@ -114,6 +114,9 @@ pub enum Cmd {
     /// Save the images listed, or those chosen in the gallery, as one PDF
     /// (Ctrl+Shift+P).
     SavePdf,
+    /// Save as PDF from a context menu: the image clicked, or those
+    /// chosen.
+    SavePdfOfTargets,
     /// Give up the PDF being made.
     StopPdf,
     /// Open the current image, or those chosen, in the editor chosen last

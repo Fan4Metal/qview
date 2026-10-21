@@ -2845,7 +2845,8 @@ impl App {
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::SaveWithOptions => self.ask_save_options(),
             Cmd::ConvertTo(format) => self.convert(ctx, format),
-            Cmd::SavePdf => self.save_pdf(ctx, frame),
+            Cmd::SavePdf => self.save_pdf(ctx, frame, false),
+            Cmd::SavePdfOfTargets => self.save_pdf(ctx, frame, true),
             Cmd::StopPdf => self.stop_pdf(),
             Cmd::Edit => self.open_in_editor(ctx, None),
             Cmd::EditWith(k) => {
@@ -4465,19 +4466,20 @@ impl App {
         }
     }
 
-    /// How many images File → Save as PDF would put in (`pdf_pages`).
-    pub fn pdf_count(&self) -> usize {
+    /// How many images Save as PDF would put in (`pdf_pages`).
+    pub fn pdf_count(&self, of_targets: bool) -> usize {
         match self.targets().len() {
-            n if n > 1 => n,
+            n if n > 1 || of_targets => n,
             _ => self.files.len(),
         }
     }
 
     /// The images of Save as PDF: those chosen in the gallery when more
-    /// than one is, else every image listed, in the order shown.
-    fn pdf_pages(&self) -> Vec<PathBuf> {
+    /// than one is, else every image listed, in the order shown; with
+    /// `of_targets` (a context menu's) those chosen or the image itself.
+    fn pdf_pages(&self, of_targets: bool) -> Vec<PathBuf> {
         let chosen = self.targets();
-        if chosen.len() > 1 { chosen } else { self.files.clone() }
+        if chosen.len() > 1 || of_targets { chosen } else { self.files.clone() }
     }
 
     /// A PDF is being made.
@@ -4486,15 +4488,16 @@ impl App {
     }
 
     /// Save `pdf_pages` as one PDF, a page each, into a file the user
-    /// picks (named after the folder, the archive or the favourites); on a
-    /// thread, `poll_pdf` counting the pages in a notice.
-    fn save_pdf(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+    /// picks (named after the folder, the archive or the favourites, one
+    /// image after itself); on a thread, `poll_pdf` counting the pages in a
+    /// notice.
+    fn save_pdf(&mut self, ctx: &egui::Context, frame: &eframe::Frame, of_targets: bool) {
         if let Some(p) = &self.pdf {
             let (done, total) = (p.done, p.total);
             self.notice(tr!(format!("Making the PDF: {done} of {total} pages…"), format!("Создание PDF: {done} из {total} страниц…")));
             return;
         }
-        let pages = self.pdf_pages();
+        let pages = self.pdf_pages(of_targets);
         let Some(first) = pages.first() else { return };
         // Where the images are: an archive's folder, a favourite's folder.
         let (dir, title) = match self.dir.as_deref() {
@@ -4502,6 +4505,7 @@ impl App {
             Some(d) if !favorites::is_virtual(d) => (Some(d.to_path_buf()), d.file_name()),
             _ => (crate::archive::folder_of(first), None),
         };
+        let title = if pages.len() == 1 { first.file_stem() } else { title };
         let dir = dir.unwrap_or_default();
         // English whatever the language, as file names go; a drive's root
         // has no name.
