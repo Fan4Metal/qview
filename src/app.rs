@@ -101,6 +101,7 @@ const LINEAR_MIPS_KEY: &str = "linear_mips";
 const ZOOM_KEY: &str = "zoom";
 const THUMB_SIZE_KEY: &str = "thumb_size";
 const MARK_PRESETS_KEY: &str = "mark_presets";
+const MARK_LIST_KEY: &str = "mark_list";
 const THUMB_COLUMNS_KEY: &str = "thumb_columns";
 const TREE_WIDTH_KEY: &str = "tree_width";
 const INFO_KEY: &str = "info_panel";
@@ -385,6 +386,9 @@ pub struct App {
     /// The user's presets of marks (the marking bar's Presets), kept as
     /// `mark_presets`.
     pub mark_presets: Vec<crate::annotate::Preset>,
+    /// The list of the marks beside the image while marking (O), kept as
+    /// `mark_list`.
+    pub mark_list: bool,
     saving: Option<Saving>,
     /// Save as PDF under way.
     pdf: Option<Pdfing>,
@@ -927,6 +931,7 @@ impl App {
                 .and_then(|s| s.get_string(MARK_PRESETS_KEY))
                 .map(|text| text.lines().filter_map(crate::annotate::Preset::parse).collect())
                 .unwrap_or_default(),
+            mark_list: cc.storage.and_then(|s| s.get_string(MARK_LIST_KEY)).as_deref() != Some("false"),
             saving: None,
             reloading: None,
             pdf: None,
@@ -2821,7 +2826,7 @@ impl App {
             Cmd::Crop => self.start_crop(),
             Cmd::Annotate => self.start_annotate(ctx),
             // Only while marking (`run_in_annotate`).
-            Cmd::MarkTool(_) | Cmd::MarkColour(_) | Cmd::MarkSizeStep(_) => {}
+            Cmd::MarkTool(_) | Cmd::MarkColour(_) | Cmd::MarkSizeStep(_) | Cmd::MarkList => {}
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::ConvertTo(format) => self.convert(ctx, format),
@@ -4001,6 +4006,7 @@ impl App {
                 }
             }
             Cmd::MarkSizeStep(up) => a.step_size(up),
+            Cmd::MarkList => self.mark_list = !self.mark_list,
             // Panning, never browsing.
             Cmd::Arrow(arrow) => {
                 let ppp = ctx.pixels_per_point();
@@ -5051,6 +5057,9 @@ impl eframe::App for App {
         }
         if self.annotating.is_some() {
             self.annotate_bar(root_ui);
+            if self.mark_list {
+                self.marks_panel(root_ui);
+            }
         }
         if self.gallery_open {
             self.gallery_ui(root_ui);
@@ -5108,6 +5117,7 @@ impl eframe::App for App {
         storage.set_string(THUMB_SIZE_KEY, self.thumb_size.round().to_string());
         let presets: Vec<String> = self.mark_presets.iter().map(crate::annotate::Preset::to_line).collect();
         storage.set_string(MARK_PRESETS_KEY, presets.join("\n"));
+        storage.set_string(MARK_LIST_KEY, self.mark_list.to_string());
         storage.set_string(THUMB_COLUMNS_KEY, self.thumb_columns.unwrap_or(0).to_string());
         storage.set_string(TREE_WIDTH_KEY, self.tree_width.round().to_string());
         storage.set_string(INFO_KEY, self.show_info.to_string());

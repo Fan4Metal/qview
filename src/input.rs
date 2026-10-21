@@ -102,6 +102,8 @@ pub enum Cmd {
     MarkColour(u8),
     /// While marking: a step of the size up (]) or down ([).
     MarkSizeStep(bool),
+    /// While marking: show or hide the list of the marks (O).
+    MarkList,
     /// Save the image turned and cropped over its file (Ctrl+S), and while
     /// cropping with Enter.
     Save,
@@ -394,6 +396,7 @@ pub fn annotate_command(key: Key, m: Modifiers, repeat: bool) -> Option<Cmd> {
         match key {
             Key::OpenBracket => return Some(Cmd::MarkSizeStep(false)),
             Key::CloseBracket => return Some(Cmd::MarkSizeStep(true)),
+            Key::O => return Some(Cmd::MarkList),
             Key::Enter => return Some(Cmd::Save),
             _ => {}
         }
@@ -699,6 +702,7 @@ mod tests {
         assert_eq!(annotate_command(Key::Num6, NONE, false), Some(Cmd::MarkColour(5)));
         assert_eq!(annotate_command(Key::Num7, NONE, false), command(Key::Num7, NONE, false));
         assert_eq!(annotate_command(Key::CloseBracket, NONE, false), Some(Cmd::MarkSizeStep(true)));
+        assert_eq!(annotate_command(Key::O, NONE, false), Some(Cmd::MarkList));
         assert_eq!(annotate_command(Key::Enter, NONE, false), Some(Cmd::Save));
         assert_eq!(annotate_command(Key::Z, CTRL, false), Some(Cmd::Undo));
         assert_eq!(annotate_command(Key::S, CTRL, false), Some(Cmd::Save));

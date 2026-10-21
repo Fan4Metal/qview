@@ -1,15 +1,16 @@
 //! Marking on screen (A): the bar above the image with the tools, the
-//! colours, the size, Undo, Save, Save As and Cancel, and the marks over
-//! the image, drawn, chosen, moved and resized with the mouse (see
-//! `annotate`). Text is typed into a field below its point.
+//! colours, the size, Undo, Save, Save As and Cancel, the list of the
+//! marks beside it, and the marks over the image, drawn, chosen, moved and
+//! resized with the mouse (see `annotate`). Text is typed into a field
+//! below its point.
 
 use egui::{
-    Color32, ColorImage, CursorIcon, Id, Key, Modifiers, Painter, PointerButton, Pos2, Rect, Response, Sense, Stroke, StrokeKind,
-    TextureOptions, Ui, Vec2, pos2, vec2,
+    Color32, ColorImage, CursorIcon, FontId, Id, Key, Modifiers, Painter, PointerButton, Pos2, Rect, Response, RichText, Sense, Stroke,
+    StrokeKind, TextureOptions, Ui, Vec2, pos2, vec2,
 };
 
-use super::{TOOLBAR_BG, panel_frame};
-use crate::annotate::{self, Annotating, COLOURS, Drag, Mark, Measure, Preset, Shape, TextFont, TextStyle, Tool, Typing};
+use super::{TEXT, TEXT_WEAK, TOOLBAR_BG, panel_frame};
+use crate::annotate::{self, Annotating, ArrowHead, COLOURS, Drag, Mark, Measure, Preset, Shape, TextFont, TextStyle, Tool, Typing};
 use crate::app::App;
 use crate::crop::{self, Grip};
 use crate::input::Cmd;
@@ -26,6 +27,7 @@ pub const TEXT_ID: &str = "annotate_text";
 impl App {
     pub(crate) fn annotate_bar(&mut self, root_ui: &mut Ui) {
         let saving = self.saving();
+        let list = self.mark_list;
         let presets = &mut self.mark_presets;
         let Some(a) = &mut self.annotating else { return };
         let mut clicked = None;
@@ -64,21 +66,21 @@ impl App {
                         if ui.add_enabled(a.selected.is_some(), delete).on_hover_text("Delete").clicked() {
                             clicked = Some(Cmd::Delete);
                         }
-                    }
-                    // The style: the colours, the size of what is drawn (or
-                    // chosen), text's look, the presets.
-                    Part::Below => {
-                    for (i, &c) in COLOURS.iter().enumerate() {
-                        if swatch(ui, c, c == a.colour).on_hover_text(format!("{}", i + 1)).clicked() {
-                            clicked = Some(Cmd::MarkColour(i as u8));
+                        let clear = egui::Button::new(tr!("Clear", "Очистить"));
+                        let tip = tr!("Delete every mark (Ctrl+Z brings them back)", "Удалить все пометки (Ctrl+Z возвращает их)");
+                        if ui.add_enabled(!a.marks.is_empty(), clear).on_hover_text(tip).clicked() {
+                            a.clear();
+                        }
+                        ui.add_space(12.0);
+                        let tip = tr!("The marks in a list beside the image (O)", "Пометки списком рядом с изображением (O)");
+                        if ui.selectable_label(list, tr!("List", "Список")).on_hover_text(tip).clicked() {
+                            clicked = Some(Cmd::MarkList);
                         }
                     }
-                    let custom = !COLOURS.contains(&a.colour);
-                    let (response, picked) = picker_button(ui, a.colour, custom);
-                    response.on_hover_text(tr!("Any colour", "Любой цвет"));
-                    if let Some(colour) = picked {
-                        a.set_colour(colour);
-                    }
+                    // The style: the colours, the size of what is drawn (or
+                    // chosen), text's look or the arrow's head, the presets.
+                    Part::Below => {
+                    colours(ui, a, &mut clicked);
                     ui.add_space(16.0);
                     let measure = a.measure();
                     let tip = match measure {
@@ -93,15 +95,26 @@ impl App {
                     }
                     let px = measure.pixels(a.unit, a.size()).round();
                     ui.add_sized(vec2(48.0, 18.0), egui::Label::new(format!("{px} px")));
-                    if measure == Measure::Text {
-                        ui.add_space(8.0);
-                        for style in TextStyle::ALL {
-                            if ui.selectable_label(a.text_style == style, style.label()).clicked() {
-                                a.set_text_style(style);
+                    match a.kind() {
+                        Tool::Text => {
+                            ui.add_space(8.0);
+                            for style in TextStyle::ALL {
+                                if ui.selectable_label(a.text_style == style, style.label()).clicked() {
+                                    a.set_text_style(style);
+                                }
+                            }
+                            ui.add_space(8.0);
+                            font_choice(ui, a);
+                        }
+                        Tool::Arrow => {
+                            ui.add_space(8.0);
+                            for head in ArrowHead::ALL {
+                                if head_button(ui, head, a.head == head).on_hover_text(head.label()).clicked() {
+                                    a.set_head(head);
+                                }
                             }
                         }
-                        ui.add_space(8.0);
-                        font_choice(ui, a);
+                        _ => {}
                     }
                     ui.add_space(16.0);
                     presets_menu(ui, a, presets);
@@ -109,6 +122,259 @@ impl App {
                 });
             });
         self.clicked.extend(clicked);
+    }
+}
+
+/// The width of the list of the marks.
+const LIST_WIDTH: f32 = 240.0;
+/// The height of a row in it.
+const ROW: f32 = 26.0;
+
+impl App {
+    /// The list of the marks beside the image (O, `App::mark_list`), the
+    /// topmost first: a click chooses one, a double click edits text, and
+    /// the row under the pointer or chosen has buttons that move the mark up
+    /// or down the order and delete it; the mark under the pointer is
+    /// outlined on the image.
+    pub(crate) fn marks_panel(&mut self, root_ui: &mut Ui) {
+        let Some(a) = &mut self.annotating else { return };
+        a.hovered = None;
+        egui::Panel::right("annotate_marks")
+            .resizable(false)
+            .exact_size(LIST_WIDTH)
+            .frame(panel_frame(TOOLBAR_BG, egui::Margin::symmetric(6, 8)))
+            .show_separator_line(false)
+            .show(root_ui, |ui| marks_list(ui, a));
+    }
+}
+
+/// What a row of the list asks for.
+enum RowAction {
+    Choose(usize),
+    EditText(usize),
+    /// Later in the order (`true`: over the next one) or earlier.
+    Reorder(usize, bool),
+    Delete(usize),
+}
+
+fn marks_list(ui: &mut Ui, a: &mut Annotating) {
+    let n = a.marks.len();
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr!("Marks", "Пометки")).strong().color(Color32::WHITE));
+        if n > 0 {
+            ui.label(RichText::new(n.to_string()).color(TEXT_WEAK));
+        }
+    });
+    ui.add_space(4.0);
+    if n == 0 {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(4.0);
+            ui.label(RichText::new(tr!("The marks drawn on the image are listed here", "Здесь появятся пометки, нарисованные на изображении")).color(TEXT_WEAK));
+        });
+        return;
+    }
+    // The chosen row is scrolled to when the choice changes on the image.
+    let follow_id = Id::new("annotate_list_chosen");
+    let follow = ui.data(|d| d.get_temp::<Option<usize>>(follow_id)) != Some(a.selected);
+    ui.data_mut(|d| d.insert_temp(follow_id, a.selected));
+    let mut action = None;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        for i in (0..n).rev() {
+            if let Some(asked) = mark_row(ui, a, i, follow) {
+                action = Some(asked);
+            }
+        }
+    });
+    match action {
+        Some(RowAction::Choose(i)) => {
+            a.finish_typing();
+            a.select(i);
+        }
+        Some(RowAction::EditText(i)) => {
+            a.finish_typing();
+            a.edit_text(i);
+        }
+        Some(RowAction::Reorder(i, later)) => a.reorder(i, later),
+        Some(RowAction::Delete(i)) => a.delete(i),
+        None => {}
+    }
+}
+
+/// The row of mark `i`: its kind, colour, what it is and its size, or the
+/// buttons while it is under the pointer or chosen.
+fn mark_row(ui: &mut Ui, a: &mut Annotating, i: usize, follow: bool) -> Option<RowAction> {
+    let chosen = a.selected == Some(i);
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+    if chosen && follow {
+        response.scroll_to_me(None);
+    }
+    let under = ui.rect_contains_pointer(rect);
+    if under {
+        a.hovered = Some(i);
+    }
+    let m = &a.marks[i];
+    let painter = ui.painter();
+    if chosen {
+        painter.rect_filled(rect, 4.0, ui.visuals().selection.bg_fill);
+    } else if under {
+        painter.rect_filled(rect, 4.0, Color32::from_white_alpha(14));
+    }
+    let ink = if chosen { Color32::WHITE } else { TEXT };
+    let weak = if chosen { Color32::from_white_alpha(170) } else { TEXT_WEAK };
+    let tool = m.shape.tool();
+    kind_icon(painter, Rect::from_min_size(pos2(rect.left() + 4.0, rect.center().y - 9.0), vec2(18.0, 18.0)), tool, m.head, ink);
+    let mut x = rect.left() + 28.0;
+    if tool != Tool::Pixelate {
+        disc(painter, pos2(x + 5.0, rect.center().y), 5.0, m.colour);
+        x += 16.0;
+    }
+
+    // The buttons, from the right; otherwise the size there.
+    let mut asked = None;
+    let mut right = rect.right() - 2.0;
+    if under || chosen {
+        let last = a.marks.len() - 1;
+        let buttons = [
+            (RowButton::Delete, true, tr!("Delete", "Удалить")),
+            (RowButton::Down, i > 0, tr!("Down: under the mark below", "Ниже: под пометку под ней")),
+            (RowButton::Up, i < last, tr!("Up: over the mark above", "Выше: поверх пометки над ней")),
+        ];
+        for (k, (button, enabled, tip)) in buttons.into_iter().enumerate() {
+            let r = Rect::from_center_size(pos2(right - 10.0, rect.center().y), vec2(20.0, 20.0));
+            right -= 22.0;
+            let sense = if enabled { Sense::click() } else { Sense::hover() };
+            let b = ui.interact(r, ui.id().with(("mark_row", i, k)), sense);
+            let hovered = enabled && b.hovered();
+            if hovered {
+                ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(28));
+            }
+            let colour = match (enabled, button) {
+                (false, _) => Color32::from_white_alpha(50),
+                (true, RowButton::Delete) if hovered => Color32::from_rgb(0xff, 0x80, 0x80),
+                _ => ink,
+            };
+            row_button(ui.painter(), r, button, colour);
+            if b.on_hover_text(tip).clicked() && enabled {
+                asked = Some(match button {
+                    RowButton::Delete => RowAction::Delete(i),
+                    RowButton::Down => RowAction::Reorder(i, false),
+                    RowButton::Up => RowAction::Reorder(i, true),
+                });
+            }
+        }
+    } else {
+        let px = Measure::of(&m.shape).pixels(a.unit, m.size).round();
+        let size = ui.painter().text(pos2(right - 4.0, rect.center().y), egui::Align2::RIGHT_CENTER, format!("{px} px"), FontId::proportional(12.0), weak);
+        right = size.left() - 4.0;
+    }
+
+    // What it is, cut to the room left.
+    let (name, detail) = describe(m);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&name, 0.0, egui::TextFormat::simple(FontId::proportional(13.5), ink));
+    if !detail.is_empty() {
+        job.append(&detail, 6.0, egui::TextFormat::simple(FontId::proportional(12.0), weak));
+    }
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x - 4.0).max(10.0));
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, ink);
+
+    let text = matches!(m.shape, Shape::Text(..));
+    let response = if text {
+        let full = match &m.shape {
+            Shape::Text(_, t) => t.clone(),
+            _ => String::new(),
+        };
+        response.on_hover_text(format!("{full}\n\n{}", tr!("A double click edits it", "Двойной щелчок — правка")))
+    } else {
+        response
+    };
+    if asked.is_none() {
+        if response.double_clicked() && text {
+            asked = Some(RowAction::EditText(i));
+        } else if response.clicked() {
+            asked = Some(RowAction::Choose(i));
+        }
+    }
+    asked
+}
+
+#[derive(Clone, Copy)]
+enum RowButton {
+    Up,
+    Down,
+    Delete,
+}
+
+/// A row button's sign: a chevron up or down, a cross.
+fn row_button(painter: &Painter, r: Rect, button: RowButton, colour: Color32) {
+    let c = r.center();
+    let stroke = Stroke::new(1.5, colour);
+    match button {
+        RowButton::Up => {
+            painter.line(vec![c + vec2(-4.5, 2.5), c + vec2(0.0, -2.5), c + vec2(4.5, 2.5)], stroke);
+        }
+        RowButton::Down => {
+            painter.line(vec![c + vec2(-4.5, -2.5), c + vec2(0.0, 2.5), c + vec2(4.5, -2.5)], stroke);
+        }
+        RowButton::Delete => {
+            painter.line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], stroke);
+            painter.line_segment([c + vec2(-4.0, 4.0), c + vec2(4.0, -4.0)], stroke);
+        }
+    }
+}
+
+/// What a mark is, for its row: its kind or text, and a detail (the size
+/// of a frame, the head of an arrow).
+fn describe(m: &Mark) -> (String, String) {
+    let tool = m.shape.tool();
+    match &m.shape {
+        Shape::Text(_, t) => {
+            let mut lines = t.lines().map(str::trim).filter(|l| !l.is_empty());
+            let first = lines.next().unwrap_or_default();
+            let more = if lines.next().is_some() { " …" } else { "" };
+            (tr!(format!("“{first}”{more}"), format!("«{first}»{more}")), String::new())
+        }
+        Shape::Rect(r) | Shape::Ellipse(r) | Shape::Pixelate(r) => (tool.label().into(), format!("{:.0} × {:.0}", r.width(), r.height())),
+        Shape::Arrow(..) => (tool.label().into(), m.head.label().to_lowercase()),
+        Shape::Line(a, b) => (tool.label().into(), format!("{:.0} px", a.distance(*b))),
+        Shape::Pen(_) => (tool.label().into(), String::new()),
+    }
+}
+
+/// A small picture of a mark's kind in `r`, in `colour`.
+fn kind_icon(painter: &Painter, r: Rect, tool: Tool, head: ArrowHead, colour: Color32) {
+    let stroke = Stroke::new(1.5, colour);
+    let r = r.shrink(2.0);
+    match tool {
+        Tool::Rect => {
+            painter.rect_stroke(r.shrink(1.0), 0.0, stroke, StrokeKind::Inside);
+        }
+        Tool::Ellipse => {
+            painter.add(egui::Shape::ellipse_stroke(r.center(), r.size() / 2.0 - vec2(1.0, 2.5), stroke));
+        }
+        Tool::Line => {
+            painter.line_segment([r.left_bottom() + vec2(1.0, -1.0), r.right_top() + vec2(-1.0, 1.0)], stroke);
+        }
+        Tool::Arrow => paint_arrow(painter, r.left_bottom() + vec2(1.0, -1.0), r.right_top() + vec2(-1.0, 1.0), 1.5, head, colour),
+        Tool::Pen => {
+            let points = (0..=12).map(|k| k as f32 / 12.0).map(|t| pos2(r.left() + t * r.width(), r.center().y - (t * 6.0).sin() * r.height() * 0.3)).collect();
+            painter.line(points, stroke);
+        }
+        Tool::Pixelate => {
+            let side = r.width() / 3.0;
+            for y in 0..3 {
+                for x in 0..3 {
+                    let cell = Rect::from_min_size(r.min + vec2(x as f32, y as f32) * side, vec2(side, side)).shrink(0.5);
+                    painter.rect_filled(cell, 0.0, if (x + y) % 2 == 0 { colour } else { colour.gamma_multiply(0.35) });
+                }
+            }
+        }
+        Tool::Text => {
+            painter.text(r.center(), egui::Align2::CENTER_CENTER, "T", FontId::proportional(15.0), colour);
+        }
     }
 }
 
@@ -138,52 +404,218 @@ fn rows(ui: &mut Ui, mut part: impl FnMut(&mut Ui, Part)) {
     ui.horizontal_wrapped(|ui| part(ui, Part::Below));
 }
 
-/// A colour to choose: a square, outlined when chosen.
-fn swatch(ui: &mut Ui, colour: Color32, on: bool) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+/// The side of a colour's swatch.
+const SWATCH: f32 = 22.0;
+/// The width of the picker's square and hue bar.
+const PICKER: f32 = 180.0;
+
+/// The six colours (1 to 6) and any other, as round swatches like
+/// MetalMPV's accent colours, the chosen one ringed.
+fn colours(ui: &mut Ui, a: &mut Annotating, clicked: &mut Option<Cmd>) {
+    let spacing = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 4.0;
+    for (i, &c) in COLOURS.iter().enumerate() {
+        let response = swatch(ui, a.colour == c, |p, centre, r| disc(p, centre, r, c));
+        if response.on_hover_text(format!("{}", i + 1)).clicked() {
+            *clicked = Some(Cmd::MarkColour(i as u8));
+        }
+    }
+    let custom = !COLOURS.contains(&a.colour);
+    if let Some(colour) = own_colour(ui, a.colour, custom) {
+        a.set_colour(colour);
+    }
+    ui.spacing_mut().item_spacing.x = spacing;
+}
+
+/// A round swatch, ringed when chosen, a little larger under the pointer;
+/// `fill` paints the inside at a centre and a radius.
+fn swatch(ui: &mut Ui, on: bool, fill: impl FnOnce(&Painter, Pos2, f32)) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(SWATCH, SWATCH), Sense::click());
     let painter = ui.painter();
-    painter.rect_filled(rect.shrink(2.0), 2.0, colour);
-    painter.rect_stroke(rect.shrink(1.0), 3.0, swatch_outline(on, response.hovered()), StrokeKind::Inside);
+    let (centre, radius) = (rect.center(), SWATCH / 2.0);
+    if on {
+        painter.circle_stroke(centre, radius - 1.0, Stroke::new(2.0, Color32::WHITE));
+        fill(painter, centre, radius - 4.5);
+    } else {
+        fill(painter, centre, radius - 3.0 + if response.hovered() { 1.0 } else { 0.0 });
+    }
     response
 }
 
-fn swatch_outline(on: bool, hovered: bool) -> Stroke {
-    if on {
-        Stroke::new(2.0, Color32::WHITE)
-    } else if hovered {
-        Stroke::new(1.0, Color32::from_gray(200))
-    } else {
-        Stroke::new(1.0, Color32::from_gray(90))
+/// A disc of `colour`, edged when it is too dark to see on the bar.
+fn disc(painter: &Painter, centre: Pos2, radius: f32, colour: Color32) {
+    painter.circle_filled(centre, radius, colour);
+    let [r, g, b, _] = colour.to_array();
+    if 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b) < 60.0 {
+        painter.circle_stroke(centre, radius - 0.5, Stroke::new(1.0, Color32::from_gray(120)));
     }
 }
 
-/// Any colour: a strip of hues with `colour` in its middle, outlined when
-/// `colour` is none of the six; a click opens egui's picker. The colour
-/// picked, while it is being picked.
-fn picker_button(ui: &mut Ui, colour: Color32, on: bool) -> (Response, Option<Color32>) {
-    let (rect, response) = ui.allocate_exact_size(vec2(34.0, 18.0), Sense::click());
-    let painter = ui.painter();
-    let strip = rect.shrink(2.0);
-    const HUES: usize = 12;
-    for k in 0..HUES {
-        let x0 = strip.left() + strip.width() * k as f32 / HUES as f32;
-        let x1 = strip.left() + strip.width() * (k + 1) as f32 / HUES as f32;
-        let hue: Color32 = egui::ecolor::Hsva::new(k as f32 / HUES as f32, 0.8, 0.95, 1.0).into();
-        painter.rect_filled(Rect::from_x_y_ranges(x0..=x1, strip.y_range()), 0.0, hue);
-    }
-    let middle = Rect::from_center_size(strip.center(), vec2(12.0, 10.0));
-    painter.rect(middle, 2.0, colour, Stroke::new(1.0, Color32::from_black_alpha(180)), StrokeKind::Outside);
-    painter.rect_stroke(rect.shrink(1.0), 3.0, swatch_outline(on, response.hovered()), StrokeKind::Inside);
+/// Any other colour: a colour wheel, or the colour when it is none of the
+/// six; a click opens a picker (MetalMPV's: a square, a hue bar, the code
+/// as `#rrggbb` and red, green and blue). The colour picked.
+fn own_colour(ui: &mut Ui, colour: Color32, custom: bool) -> Option<Color32> {
+    let response = swatch(ui, custom, |p, centre, r| if custom { disc(p, centre, r, colour) } else { colour_wheel(p, centre, r) });
+    let response = response.on_hover_text(tr!("Any colour…", "Любой цвет…"));
     let mut picked = None;
-    egui::Popup::from_toggle_button_response(&response)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            let mut c = colour;
-            if egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::Opaque) {
-                picked = Some(c);
+    egui::Popup::menu(&response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        let mut c = colour;
+        if colour_picker(ui, &mut c) {
+            picked = Some(c);
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let label = ui.label("HEX");
+            // Kept as typed while the field has the focus.
+            let id = ui.id().with("mark_hex");
+            let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| hex(colour));
+            let width = PICKER - label.rect.width() - ui.spacing().item_spacing.x;
+            let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(width));
+            if field.changed()
+                && let Some(typed) = typed_colour(&text)
+            {
+                picked = Some(typed);
+            }
+            if field.has_focus() {
+                ui.data_mut(|d| d.insert_temp(id, text));
+            } else {
+                ui.data_mut(|d| d.remove::<String>(id));
             }
         });
-    (response, picked)
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let spacing = ui.spacing().item_spacing.x;
+            let size = vec2((PICKER - 2.0 * spacing) / 3.0, ui.spacing().interact_size.y);
+            let [r, g, b, _] = colour.to_array();
+            let mut rgb = [r, g, b];
+            let mut edited = false;
+            for (value, name) in rgb.iter_mut().zip(["R ", "G ", "B "]) {
+                edited |= ui.add_sized(size, egui::DragValue::new(value).speed(0.5).range(0..=255).prefix(name)).changed();
+            }
+            if edited {
+                picked = Some(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+            }
+        });
+    });
+    picked
+}
+
+fn hex(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+/// A colour typed as `#rrggbb` or `rrggbb`.
+fn typed_colour(text: &str) -> Option<Color32> {
+    let digits = text.trim().trim_start_matches('#');
+    if digits.len() != 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let [_, r, g, b] = u32::from_str_radix(digits, 16).ok()?.to_be_bytes();
+    Some(Color32::from_rgb(r, g, b))
+}
+
+/// Saturation across and brightness up a square, the hue along a bar under
+/// it (egui's picker has a row of numbers over them, wider than they are and
+/// with tooltips in English only). True when `colour` was changed.
+fn colour_picker(ui: &mut Ui, colour: &mut Color32) -> bool {
+    use egui::ecolor::HsvaGamma;
+    // The hue kept while it gives the colour shown: a grey has none.
+    let id = ui.id().with("mark_hsv");
+    let mut hsv = ui
+        .data(|d| d.get_temp::<(Color32, HsvaGamma)>(id))
+        .filter(|(c, _)| c == colour)
+        .map_or_else(|| HsvaGamma::from(*colour), |(_, hsv)| hsv);
+    let before = hsv;
+    let marker = |p: &Painter, at: Pos2, r: f32| {
+        p.circle_stroke(at, r + 1.0, Stroke::new(1.0, Color32::BLACK));
+        p.circle_stroke(at, r, Stroke::new(1.5, Color32::WHITE));
+    };
+
+    let (square, response) = ui.allocate_exact_size(vec2(PICKER, PICKER), Sense::click_and_drag());
+    if let Some(at) = response.interact_pointer_pos() {
+        hsv.s = egui::remap_clamp(at.x, square.x_range(), 0.0..=1.0);
+        hsv.v = egui::remap_clamp(at.y, square.bottom()..=square.top(), 0.0..=1.0);
+    }
+    const STEPS: u32 = 24;
+    let mut mesh = egui::Mesh::default();
+    for row in 0..=STEPS {
+        for column in 0..=STEPS {
+            let (s, v) = (column as f32 / STEPS as f32, row as f32 / STEPS as f32);
+            mesh.colored_vertex(square.lerp_inside(vec2(s, 1.0 - v)), HsvaGamma { s, v, a: 1.0, ..hsv }.into());
+            if row < STEPS && column < STEPS {
+                let i = row * (STEPS + 1) + column;
+                mesh.add_triangle(i, i + 1, i + STEPS + 1);
+                mesh.add_triangle(i + 1, i + STEPS + 2, i + STEPS + 1);
+            }
+        }
+    }
+    let painter = ui.painter();
+    painter.add(mesh);
+    marker(painter, square.lerp_inside(vec2(hsv.s, 1.0 - hsv.v)), 5.0);
+
+    ui.add_space(6.0);
+    let (bar, response) = ui.allocate_exact_size(vec2(PICKER, 14.0), Sense::click_and_drag());
+    if let Some(at) = response.interact_pointer_pos() {
+        hsv.h = egui::remap_clamp(at.x, bar.x_range(), 0.0..=1.0);
+    }
+    const HUES: u32 = 36;
+    let mut mesh = egui::Mesh::default();
+    for i in 0..=HUES {
+        let h = i as f32 / HUES as f32;
+        let x = egui::lerp(bar.x_range(), h);
+        let hue: Color32 = HsvaGamma { h, s: 1.0, v: 1.0, a: 1.0 }.into();
+        mesh.colored_vertex(pos2(x, bar.top()), hue);
+        mesh.colored_vertex(pos2(x, bar.bottom()), hue);
+        if i < HUES {
+            let j = 2 * i;
+            mesh.add_triangle(j, j + 1, j + 2);
+            mesh.add_triangle(j + 1, j + 3, j + 2);
+        }
+    }
+    let painter = ui.painter();
+    painter.add(mesh);
+    marker(painter, pos2(egui::lerp(bar.x_range(), hsv.h), bar.center().y), 5.0);
+
+    let changed = hsv != before;
+    if changed {
+        *colour = hsv.into();
+    }
+    ui.data_mut(|d| d.insert_temp(id, (*colour, hsv)));
+    changed
+}
+
+/// A disc of all the hues round its centre.
+fn colour_wheel(painter: &Painter, centre: Pos2, radius: f32) {
+    const SLICES: usize = 36;
+    let point = |i: usize| {
+        let angle = i as f32 / SLICES as f32 * std::f32::consts::TAU;
+        centre + radius * vec2(angle.cos(), angle.sin())
+    };
+    for i in 0..SLICES {
+        let colour = Color32::from(egui::ecolor::Hsva::new((i as f32 + 0.5) / SLICES as f32, 0.75, 0.95, 1.0));
+        painter.add(egui::Shape::convex_polygon(vec![centre, point(i), point(i + 1)], colour, Stroke::new(0.6, colour)));
+    }
+}
+
+/// An arrow's head to choose: an arrow with that head, framed when chosen
+/// as a selectable label is.
+fn head_button(ui: &mut Ui, head: ArrowHead, on: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(34.0, 20.0), Sense::click());
+    let visuals = ui.style().interact_selectable(&response, on);
+    let painter = ui.painter();
+    if on || response.hovered() {
+        painter.rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, StrokeKind::Inside);
+    }
+    let y = rect.center().y;
+    paint_arrow(painter, pos2(rect.left() + 5.0, y), pos2(rect.right() - 5.0, y), 2.0, head, visuals.text_color());
+    response
+}
+
+/// An arrow from `a` to `b`, as the marks are drawn on screen.
+fn paint_arrow(painter: &Painter, a: Pos2, b: Pos2, width: f32, head: ArrowHead, colour: Color32) {
+    let (shaft, tip) = annotate::arrow(a, b, width, head);
+    painter.line_segment([a, shaft], Stroke::new(width, colour));
+    painter.add(egui::Shape::convex_polygon(tip.to_vec(), colour, Stroke::NONE));
 }
 
 /// The size: a slider along a logarithmic scale, its rail light enough to
@@ -554,11 +986,7 @@ pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place
         };
         match found {
             // A click on text with the text tool edits it.
-            Some(i) if a.tool == Tool::Text && text_at(i).is_some() => {
-                let (at, text) = text_at(i).expect("checked");
-                a.select(i);
-                a.typing = Some(Typing { index: Some(i), at, text, focus: true });
-            }
+            Some(i) if a.tool == Tool::Text && text_at(i).is_some() => a.edit_text(i),
             Some(i) => a.select(i),
             None if a.tool == Tool::Text && !was_typing && Rect::from_min_size(Pos2::ZERO, size).contains(p) => {
                 a.selected = None;
@@ -570,11 +998,8 @@ pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place
     if response.double_clicked()
         && let Some(p) = response.interact_pointer_pos().map(to_image)
         && let Some(i) = hit(a, p, reach, &boxes)
-        && let Shape::Text(at, text) = &a.marks[i].shape
     {
-        let (at, text) = (*at, text.clone());
-        a.select(i);
-        a.typing = Some(Typing { index: Some(i), at, text, focus: true });
+        a.edit_text(i);
     }
 
     // The marks as they are now, for the pointer and the painting.
@@ -650,7 +1075,7 @@ pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place
                 }
             }
             Shape::Arrow(s, e) => {
-                let (shaft, head) = annotate::arrow(*s, *e, annotate::line_width(unit, m.size));
+                let (shaft, head) = annotate::arrow(*s, *e, annotate::line_width(unit, m.size), m.head);
                 painter.line_segment([to_screen(*s), to_screen(shaft)], stroke);
                 painter.add(egui::Shape::convex_polygon(head.map(to_screen).to_vec(), m.colour, Stroke::NONE));
             }
@@ -681,6 +1106,13 @@ pub fn overlay(a: &mut Annotating, response: &Response, painter: &Painter, place
         let px = annotate::font_size(unit, a.marks.get(*i).map_or(a.size_of(Measure::Text), |m| m.size));
         let bottom = boxes.get(*i).copied().flatten().map_or(at.y + px * 1.25, |b| b.max.y);
         field_at = Some(to_screen(pos2(at.x, bottom)));
+    }
+
+    // The mark whose row in the list is under the pointer.
+    if let Some(i) = a.hovered.take().filter(|&i| i < a.marks.len() && a.selected != Some(i)) {
+        let r = on_screen(a.marks[i].bounds(boxes.get(i).copied().flatten())).expand(4.0);
+        painter.rect_stroke(r, 2.0, Stroke::new(4.0, Color32::from_black_alpha(110)), StrokeKind::Outside);
+        painter.rect_stroke(r, 2.0, Stroke::new(2.0, ctx.global_style().visuals.selection.bg_fill), StrokeKind::Outside);
     }
 
     // The mark chosen: its handles.
@@ -810,6 +1242,15 @@ mod tests {
         assert!(below.iter().all(|b| left.iter().chain(&right).all(|l| !b.intersects(*l))));
     }
 
+    #[test]
+    fn colours_are_typed_as_hex() {
+        assert_eq!(typed_colour(" #1e7CF0 "), Some(Color32::from_rgb(0x1e, 0x7c, 0xf0)));
+        assert_eq!(typed_colour("ffc400"), Some(Color32::from_rgb(0xff, 0xc4, 0x00)));
+        assert_eq!(typed_colour("+12345"), None);
+        assert_eq!(typed_colour("#12345"), None);
+        assert_eq!(hex(Color32::from_rgb(0xe5, 0x2b, 0x2b)), "#e52b2b");
+    }
+
     /// Text finished by a click is a new mark that the boxes measured
     /// before it do not have: no box, no hit, no panic.
     #[test]
@@ -821,7 +1262,7 @@ mod tests {
         assert_eq!(a.marks.len(), 1);
         assert_eq!(hit(&a, pos2(12.0, 12.0), 4.0, &[]), None);
         let frame = Rect::from_min_max(pos2(100.0, 100.0), pos2(200.0, 200.0));
-        a.marks.push(Mark { shape: Shape::Rect(frame), colour: COLOURS[0], size: 2.0, text: TextStyle::Outline, font: TextFont::default() });
+        a.marks.push(Mark { shape: Shape::Rect(frame), colour: COLOURS[0], size: 2.0, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal });
         assert_eq!(hit(&a, pos2(100.0, 150.0), 4.0, &[None]), Some(1));
         assert_eq!(hit(&a, pos2(12.0, 12.0), 4.0, &[Some(Rect::from_min_max(pos2(10.0, 10.0), pos2(40.0, 30.0)))]), Some(0));
     }

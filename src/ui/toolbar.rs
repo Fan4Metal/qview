@@ -55,6 +55,8 @@ impl App {
         // As the turns: while browsing fast the image on screen is often not
         // the current one yet, and the button would flicker.
         let crop = has_image;
+        // Marking takes neither turns nor a crop.
+        let turn = has_image && !marking;
         let edit_tip = match &self.editor {
             Some(e) => tr!(format!("Open in {} (Ctrl+E)", e.name), format!("Открыть в {} (Ctrl+E)", e.name)),
             None => tr!("Open in Editor (Ctrl+E)", "Открыть в редакторе (Ctrl+E)").into(),
@@ -93,9 +95,9 @@ impl App {
                                 (Icon::Next, Cmd::Next, tr!("Next (Page Down)", "Следующее (Page Down)").into(), next),
                             ],
                             vec![
-                                (Icon::RotateLeft, Cmd::RotateLeft, tr!("Rotate Left ([)", "Повернуть влево ([)").into(), has_image),
-                                (Icon::RotateRight, Cmd::RotateRight, tr!("Rotate Right (])", "Повернуть вправо (])").into(), has_image),
-                                (Icon::Crop, Cmd::Crop, tr!("Crop (C)", "Обрезать (C)").into(), crop),
+                                (Icon::RotateLeft, Cmd::RotateLeft, tr!("Rotate Left ([)", "Повернуть влево ([)").into(), turn),
+                                (Icon::RotateRight, Cmd::RotateRight, tr!("Rotate Right (])", "Повернуть вправо (])").into(), turn),
+                                (Icon::Crop, Cmd::Crop, tr!("Crop (C)", "Обрезать (C)").into(), turn),
                                 (Icon::Annotate, Cmd::Annotate, tr!("Mark Up (A)", "Пометки (A)").into(), crop),
                                 edit,
                             ],

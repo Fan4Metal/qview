@@ -143,6 +143,47 @@ impl TextStyle {
     }
 }
 
+/// How sharp an arrow's head is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArrowHead {
+    /// Short and wide.
+    Blunt,
+    Normal,
+    /// Long and narrow.
+    Sharp,
+}
+
+impl ArrowHead {
+    pub const ALL: [ArrowHead; 3] = [ArrowHead::Blunt, ArrowHead::Normal, ArrowHead::Sharp];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ArrowHead::Blunt => tr!("Blunt", "Тупая"),
+            ArrowHead::Normal => tr!("Normal", "Обычная"),
+            ArrowHead::Sharp => tr!("Sharp", "Острая"),
+        }
+    }
+
+    /// Its name in the settings (`Preset::to_line`).
+    fn id(self) -> &'static str {
+        match self {
+            ArrowHead::Blunt => "blunt",
+            ArrowHead::Normal => "normal",
+            ArrowHead::Sharp => "sharp",
+        }
+    }
+
+    /// The head's length in widths of the line, and its half width in
+    /// lengths: 74°, 53° and 30° at the tip.
+    fn proportions(self) -> (f32, f32) {
+        match self {
+            ArrowHead::Blunt => (3.5, 0.75),
+            ArrowHead::Normal => (4.5, 0.5),
+            ArrowHead::Sharp => (6.5, 0.27),
+        }
+    }
+}
+
 /// The font of text: a family of the fonts installed, bold, italic. A
 /// family that is not installed (a preset from another computer) falls
 /// back to Segoe UI.
@@ -181,8 +222,8 @@ pub fn families() -> &'static [String] {
     &FAMILIES
 }
 
-/// A tool with its colour, size, text style and font, chosen in one click
-/// (the bar's Presets), the user's own, kept between runs.
+/// A tool with its colour, size, text style, font and arrow head, chosen in
+/// one click (the bar's Presets), the user's own, kept between runs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Preset {
     pub tool: Tool,
@@ -191,17 +232,22 @@ pub struct Preset {
     pub size: f32,
     pub text: TextStyle,
     pub font: TextFont,
+    pub head: ArrowHead,
 }
 
 impl Preset {
     /// As kept in the settings: `text #e52b2b 9.6 plate b- Segoe UI`, the
-    /// font's bold and italic, then its family to the end of the line.
+    /// font's bold and italic, then its family to the end of the line; an
+    /// arrow's head after the text style (`arrow #e52b2b 2 outline sharp
+    /// b- Segoe UI`).
     pub fn to_line(&self) -> String {
         let flags = format!("{}{}", if self.font.bold { 'b' } else { '-' }, if self.font.italic { 'i' } else { '-' });
-        format!("{} {} {} {} {flags} {}", self.tool.id(), hex(self.colour), self.size, self.text.id(), self.font.family)
+        let head = if self.tool == Tool::Arrow { format!(" {}", self.head.id()) } else { String::new() };
+        format!("{} {} {} {}{head} {flags} {}", self.tool.id(), hex(self.colour), self.size, self.text.id(), self.font.family)
     }
 
-    /// A line of `to_line`; those of before fonts (without them) too.
+    /// A line of `to_line`; those of before fonts and heads (without them)
+    /// too.
     pub fn parse(line: &str) -> Option<Preset> {
         let mut parts = line.split_whitespace();
         let (tool, colour, size, text) = (parts.next()?, parts.next()?, parts.next()?, parts.next());
@@ -209,21 +255,30 @@ impl Preset {
         let colour = Color32::from_hex(colour).ok()?;
         let size = Measure::of_tool(tool).clamped(size.parse().ok()?);
         let text = TextStyle::ALL.into_iter().find(|t| Some(t.id()) == text).unwrap_or(TextStyle::Outline);
-        let font = match (parts.next(), parts.collect::<Vec<_>>().join(" ")) {
-            (Some(flags), family) if flags.len() == 2 && !family.is_empty() => {
-                TextFont { family, bold: flags.starts_with('b'), italic: flags.ends_with('i') }
+        let mut rest: Vec<&str> = parts.collect();
+        let head = match rest.first().and_then(|p| ArrowHead::ALL.into_iter().find(|h| h.id() == *p)) {
+            Some(head) => {
+                rest.remove(0);
+                head
+            }
+            None => ArrowHead::Normal,
+        };
+        let font = match rest.split_first() {
+            Some((flags, family)) if flags.len() == 2 && !family.is_empty() => {
+                TextFont { family: family.join(" "), bold: flags.starts_with('b'), italic: flags.ends_with('i') }
             }
             _ => TextFont::default(),
         };
-        Some(Preset { tool, colour, size, text, font })
+        Some(Preset { tool, colour, size, text, font, head })
     }
 
-    /// What it is, for the menu: the tool, the text style, the size in
-    /// pixels of an image of `unit`.
+    /// What it is, for the menu: the tool, the text style or the head, the
+    /// size in pixels of an image of `unit`.
     pub fn label(&self, unit: f32) -> String {
         let px = Measure::of_tool(self.tool).pixels(unit, self.size).round();
         match self.tool {
             Tool::Text => format!("{}, {}, {}, {px} px", self.tool.label(), self.text.label().to_lowercase(), self.font.family),
+            Tool::Arrow => format!("{}, {}, {px} px", self.tool.label(), self.head.label().to_lowercase()),
             _ => format!("{}, {px} px", self.tool.label()),
         }
     }
@@ -298,6 +353,21 @@ pub enum Shape {
     Text(Pos2, String),
 }
 
+impl Shape {
+    /// The tool that draws it.
+    pub fn tool(&self) -> Tool {
+        match self {
+            Shape::Rect(_) => Tool::Rect,
+            Shape::Ellipse(_) => Tool::Ellipse,
+            Shape::Line(..) => Tool::Line,
+            Shape::Arrow(..) => Tool::Arrow,
+            Shape::Pen(_) => Tool::Pen,
+            Shape::Pixelate(_) => Tool::Pixelate,
+            Shape::Text(..) => Tool::Text,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
     pub shape: Shape,
@@ -307,9 +377,22 @@ pub struct Mark {
     /// Of text.
     pub text: TextStyle,
     pub font: TextFont,
+    /// Of an arrow.
+    pub head: ArrowHead,
 }
 
 impl Mark {
+    /// Where it lies on the image, in its pixels (text's from `text_box`,
+    /// its box measured as drawn).
+    pub fn bounds(&self, text_box: Option<Rect>) -> Rect {
+        match &self.shape {
+            Shape::Rect(r) | Shape::Ellipse(r) | Shape::Pixelate(r) => *r,
+            Shape::Line(a, b) | Shape::Arrow(a, b) => Rect::from_two_pos(*a, *b),
+            Shape::Pen(points) => Rect::from_points(points),
+            Shape::Text(p, _) => text_box.unwrap_or(Rect::from_min_max(*p, *p)),
+        }
+    }
+
     /// The frame of a frame, an ellipse or a pixelated area.
     pub fn frame(&self) -> Option<Rect> {
         match self.shape {
@@ -334,12 +417,7 @@ impl Mark {
 
     /// Moved by `d`, kept on an image of `size` as far as it fits.
     pub fn moved(&self, d: Vec2, size: Vec2) -> Mark {
-        let bounds = match &self.shape {
-            Shape::Rect(r) | Shape::Ellipse(r) | Shape::Pixelate(r) => *r,
-            Shape::Line(a, b) | Shape::Arrow(a, b) => Rect::from_two_pos(*a, *b),
-            Shape::Pen(points) => Rect::from_points(points),
-            Shape::Text(p, _) => Rect::from_min_max(*p, *p),
-        };
+        let bounds = self.bounds(None);
         let d = vec2(clamp(d.x, -bounds.min.x, size.x - bounds.max.x), clamp(d.y, -bounds.min.y, size.y - bounds.max.y));
         let shape = match &self.shape {
             Shape::Rect(r) => Shape::Rect(r.translate(d)),
@@ -400,18 +478,19 @@ pub fn blocks(unit: f32) -> Vec<u32> {
 }
 
 /// The line of an arrow from `a` to `b` of width `width`, as far as it
-/// goes (into its head, so that no seam shows), and its head: the tip and
-/// the two corners.
-pub fn arrow(a: Pos2, b: Pos2, width: f32) -> (Pos2, [Pos2; 3]) {
+/// goes (into its head, so that no seam shows), and its head of `kind`:
+/// the tip and the two corners.
+pub fn arrow(a: Pos2, b: Pos2, width: f32, kind: ArrowHead) -> (Pos2, [Pos2; 3]) {
     let d = b - a;
     let len = d.length();
     if len < 1e-3 {
         return (b, [b; 3]);
     }
     let dir = d / len;
-    let head = (width * 4.5).min(len);
+    let (length, half) = kind.proportions();
+    let head = (width * length).min(len);
     let base = b - dir * head;
-    let across = dir.rot90() * head * 0.5;
+    let across = dir.rot90() * head * half;
     (base + dir * head * 0.3, [b, base + across, base - across])
 }
 
@@ -710,7 +789,7 @@ pub fn draw(img: DynamicImage, marks: &[Mark]) -> Result<DynamicImage, String> {
                 }
             }
             Shape::Arrow(a, b) => {
-                let (end, head) = arrow(*a, *b, stroke.width);
+                let (end, head) = arrow(*a, *b, stroke.width, mark.head);
                 let mut line = tiny_skia::PathBuilder::new();
                 line.move_to(a.x, a.y);
                 line.line_to(end.x, end.y);
@@ -805,10 +884,14 @@ pub struct Annotating {
     pub sizes: [f32; 3],
     pub text_style: TextStyle,
     pub font: TextFont,
+    pub head: ArrowHead,
     /// What the font list is narrowed to.
     pub font_filter: String,
     pub marks: Vec<Mark>,
     pub selected: Option<usize>,
+    /// The mark whose row in the list is under the pointer, outlined on
+    /// the image.
+    pub hovered: Option<usize>,
     /// The marks before each change, for Ctrl+Z.
     pub undo: Vec<Vec<Mark>>,
     pub drag: Option<Drag>,
@@ -834,13 +917,14 @@ pub struct Annotating {
     pub texts: std::collections::HashMap<TextKey, DrawnText>,
 }
 
-/// The tool, colour, sizes, text style and font marking starts with.
-pub type Style = (Tool, Color32, [f32; 3], TextStyle, TextFont);
+/// The tool, colour, sizes, text style, font and arrow head marking starts
+/// with.
+pub type Style = (Tool, Color32, [f32; 3], TextStyle, TextFont, ArrowHead);
 
 /// The style of the first marking.
 pub fn default_style() -> Style {
     let sizes = [Measure::Line, Measure::Text, Measure::Block].map(Measure::default_size);
-    (Tool::Rect, COLOURS[0], sizes, TextStyle::Outline, TextFont::default())
+    (Tool::Rect, COLOURS[0], sizes, TextStyle::Outline, TextFont::default(), ArrowHead::Normal)
 }
 
 /// Changes kept for Ctrl+Z.
@@ -856,9 +940,11 @@ impl Annotating {
             sizes: [Measure::Line, Measure::Text, Measure::Block].map(Measure::default_size),
             text_style: TextStyle::Outline,
             font: TextFont::default(),
+            head: ArrowHead::Normal,
             font_filter: String::new(),
             marks: Vec::new(),
             selected: None,
+            hovered: None,
             undo: Vec::new(),
             drag: None,
             typing: None,
@@ -900,12 +986,19 @@ impl Annotating {
         self.restyle(|m| m.colour = colour);
     }
 
+    /// The mark chosen.
+    pub fn chosen(&self) -> Option<&Mark> {
+        self.selected.and_then(|i| self.marks.get(i))
+    }
+
+    /// What the bar's style is of: the chosen mark's kind, else the tool.
+    pub fn kind(&self) -> Tool {
+        self.chosen().map_or(self.tool, |m| m.shape.tool())
+    }
+
     /// What the size shown measures: the chosen mark's, else the tool's.
     pub fn measure(&self) -> Measure {
-        match self.selected.and_then(|i| self.marks.get(i)) {
-            Some(m) => Measure::of(&m.shape),
-            None => Measure::of_tool(self.tool),
-        }
+        Measure::of_tool(self.kind())
     }
 
     /// The size new marks of `measure` take.
@@ -955,29 +1048,83 @@ impl Annotating {
         });
     }
 
+    /// Choose the arrow's head; the arrow chosen takes it.
+    pub fn set_head(&mut self, head: ArrowHead) {
+        self.head = head;
+        self.restyle(|m| {
+            if matches!(m.shape, Shape::Arrow(..)) {
+                m.head = head;
+            }
+        });
+    }
+
     /// A new mark of `shape` in the style chosen.
     pub fn new_mark(&self, shape: Shape) -> Mark {
         let size = self.sizes[Measure::of(&shape).index()];
-        Mark { shape, colour: self.colour, size, text: self.text_style, font: self.font.clone() }
+        Mark { shape, colour: self.colour, size, text: self.text_style, font: self.font.clone(), head: self.head }
     }
 
-    /// Choose the mark `i`: the bar shows its colour, size and text style,
-    /// which new marks then take.
+    /// Choose the mark `i`: the bar shows its colour, size, text style or
+    /// head, which new marks then take.
     pub fn select(&mut self, i: usize) {
         let Some(m) = self.marks.get(i) else { return };
         self.selected = Some(i);
         self.colour = m.colour;
         self.sizes[Measure::of(&m.shape).index()] = m.size;
-        if matches!(m.shape, Shape::Text(..)) {
-            self.text_style = m.text;
-            self.font = m.font.clone();
+        match m.shape {
+            Shape::Text(..) => {
+                self.text_style = m.text;
+                self.font = m.font.clone();
+            }
+            Shape::Arrow(..) => self.head = m.head,
+            _ => {}
         }
+    }
+
+    /// Edit the text of mark `i` in the field below it.
+    pub fn edit_text(&mut self, i: usize) {
+        let Some(Shape::Text(at, text)) = self.marks.get(i).map(|m| &m.shape) else { return };
+        let (at, text) = (*at, text.clone());
+        self.select(i);
+        self.typing = Some(Typing { index: Some(i), at, text, focus: true });
+    }
+
+    /// Take out the mark `i`.
+    pub fn delete(&mut self, i: usize) {
+        self.finish_typing();
+        if i >= self.marks.len() {
+            return;
+        }
+        self.remember();
+        self.marks.remove(i);
+        self.selected = match self.selected {
+            Some(s) if s == i => None,
+            Some(s) if s > i => Some(s - 1),
+            s => s,
+        };
+    }
+
+    /// Mark `i` one place later in the order (drawn over the next one), or
+    /// earlier; the choice stays on the same marks.
+    pub fn reorder(&mut self, i: usize, later: bool) {
+        self.finish_typing();
+        let Some(j) = (if later { i.checked_add(1) } else { i.checked_sub(1) }).filter(|&j| j < self.marks.len()) else { return };
+        if i >= self.marks.len() {
+            return;
+        }
+        self.remember();
+        self.marks.swap(i, j);
+        self.selected = match self.selected {
+            Some(s) if s == i => Some(j),
+            Some(s) if s == j => Some(i),
+            s => s,
+        };
     }
 
     /// The tool and its style, as a preset.
     pub fn preset(&self) -> Preset {
         let size = self.sizes[Measure::of_tool(self.tool).index()];
-        Preset { tool: self.tool, colour: self.colour, size, text: self.text_style, font: self.font.clone() }
+        Preset { tool: self.tool, colour: self.colour, size, text: self.text_style, font: self.font.clone(), head: self.head }
     }
 
     /// Take the tool and the style of `preset`.
@@ -987,19 +1134,23 @@ impl Annotating {
         self.tool = preset.tool;
         self.colour = preset.colour;
         self.sizes[Measure::of_tool(preset.tool).index()] = Measure::of_tool(preset.tool).clamped(preset.size);
-        if preset.tool == Tool::Text {
-            self.text_style = preset.text;
-            self.font = preset.font.clone();
+        match preset.tool {
+            Tool::Text => {
+                self.text_style = preset.text;
+                self.font = preset.font.clone();
+            }
+            Tool::Arrow => self.head = preset.head,
+            _ => {}
         }
     }
 
     /// The tool and the style kept for the next image.
     pub fn style(&self) -> Style {
-        (self.tool, self.colour, self.sizes, self.text_style, self.font.clone())
+        (self.tool, self.colour, self.sizes, self.text_style, self.font.clone(), self.head)
     }
 
-    pub fn set_style(&mut self, (tool, colour, sizes, text, font): Style) {
-        (self.tool, self.colour, self.sizes, self.text_style, self.font) = (tool, colour, sizes, text, font);
+    pub fn set_style(&mut self, (tool, colour, sizes, text, font, head): Style) {
+        (self.tool, self.colour, self.sizes, self.text_style, self.font, self.head) = (tool, colour, sizes, text, font, head);
     }
 
     /// The mark chosen changed by `change`: kept for Ctrl+Z once for a run
@@ -1022,6 +1173,19 @@ impl Annotating {
         let Some(i) = self.selected.take().filter(|&i| i < self.marks.len()) else { return false };
         self.remember();
         self.marks.remove(i);
+        true
+    }
+
+    /// Take out every mark, in one step for Ctrl+Z.
+    pub fn clear(&mut self) -> bool {
+        self.typing = None;
+        if self.marks.is_empty() {
+            return false;
+        }
+        self.remember();
+        self.marks.clear();
+        self.selected = None;
+        self.drag = None;
         true
     }
 
@@ -1079,16 +1243,55 @@ mod tests {
 
     #[test]
     fn arrows_have_their_head_at_the_end() {
-        let (end, head) = arrow(pos2(0.0, 0.0), pos2(100.0, 0.0), 4.0);
+        let (end, head) = arrow(pos2(0.0, 0.0), pos2(100.0, 0.0), 4.0, ArrowHead::Normal);
         assert_eq!(head[0], pos2(100.0, 0.0));
         let mut corners = [head[1], head[2]].map(|p| (p.x, p.y));
         corners.sort_by(|a, b| a.1.total_cmp(&b.1));
         assert_eq!(corners, [(82.0, -9.0), (82.0, 9.0)]);
         assert!(end.x > 82.0 && end.x < 100.0);
         // A short arrow is all head.
-        let (_, head) = arrow(pos2(0.0, 0.0), pos2(5.0, 0.0), 4.0);
+        let (_, head) = arrow(pos2(0.0, 0.0), pos2(5.0, 0.0), 4.0, ArrowHead::Normal);
         assert_eq!(head[1].x, 0.0);
-        assert_eq!(arrow(pos2(1.0, 1.0), pos2(1.0, 1.0), 4.0).1, [pos2(1.0, 1.0); 3]);
+        assert_eq!(arrow(pos2(1.0, 1.0), pos2(1.0, 1.0), 4.0, ArrowHead::Normal).1, [pos2(1.0, 1.0); 3]);
+        // Sharper heads are longer and narrower.
+        let shape = |kind| {
+            let (_, [_, c1, c2]) = arrow(pos2(0.0, 0.0), pos2(100.0, 0.0), 4.0, kind);
+            (100.0 - c1.x, c1.distance(c2))
+        };
+        let [blunt, normal, sharp] = ArrowHead::ALL.map(shape);
+        assert!(blunt.0 < normal.0 && normal.0 < sharp.0, "{blunt:?} {normal:?} {sharp:?}");
+        assert!(blunt.1 > normal.1 && normal.1 > sharp.1, "{blunt:?} {normal:?} {sharp:?}");
+    }
+
+    /// Moving a mark in the order and deleting one keep the choice on the
+    /// same mark.
+    #[test]
+    fn the_list_reorders_and_deletes() {
+        let mut a = Annotating::new(Default::default(), vec2(400.0, 300.0), Zoom::Fit, Vec2::ZERO);
+        for x in [10.0, 20.0, 30.0] {
+            a.marks.push(a.new_mark(Shape::Line(pos2(x, 0.0), pos2(x, 50.0))));
+        }
+        let at = |a: &Annotating, i: usize| a.marks[i].ends().unwrap().0.x;
+        a.select(0);
+        a.reorder(0, true);
+        assert_eq!((at(&a, 0), at(&a, 1), a.selected), (20.0, 10.0, Some(1)));
+        // The top cannot go higher, nor the bottom lower.
+        a.reorder(2, true);
+        a.reorder(0, false);
+        assert_eq!(a.undo.len(), 1);
+        a.delete(0);
+        assert_eq!((a.marks.len(), a.selected, at(&a, 0)), (2, Some(0), 10.0));
+        a.delete(0);
+        assert_eq!(a.selected, None);
+        assert!(a.undo());
+        assert_eq!(a.marks.len(), 2);
+        // Clearing is one step back.
+        a.select(1);
+        assert!(a.clear());
+        assert_eq!((a.marks.len(), a.selected), (0, None));
+        assert!(!a.clear());
+        assert!(a.undo());
+        assert_eq!(a.marks.len(), 2);
     }
 
     #[test]
@@ -1105,7 +1308,7 @@ mod tests {
 
     #[test]
     fn marks_move_within_the_image() {
-        let m = Mark { shape: Shape::Rect(Rect::from_min_max(pos2(10.0, 10.0), pos2(20.0, 20.0))), colour: COLOURS[0], size: 2.0, text: TextStyle::Outline, font: TextFont::default() };
+        let m = Mark { shape: Shape::Rect(Rect::from_min_max(pos2(10.0, 10.0), pos2(20.0, 20.0))), colour: COLOURS[0], size: 2.0, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal };
         let moved = m.moved(vec2(-50.0, 5.0), vec2(100.0, 100.0));
         assert_eq!(moved.frame(), Some(Rect::from_min_max(pos2(0.0, 15.0), pos2(10.0, 25.0))));
         let arrow = Mark { shape: Shape::Arrow(pos2(90.0, 50.0), pos2(95.0, 60.0)), ..m.clone() };
@@ -1136,9 +1339,9 @@ mod tests {
     fn drawing_keeps_the_image_and_its_kind() {
         let img = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(200, 100, image::Rgb([10, 20, 30])));
         let marks = [
-            Mark { shape: Shape::Rect(Rect::from_min_max(pos2(20.0, 20.0), pos2(60.0, 60.0))), colour: COLOURS[0], size: 2.0, text: TextStyle::Outline, font: TextFont::default() },
-            Mark { shape: Shape::Arrow(pos2(100.0, 80.0), pos2(180.0, 20.0)), colour: COLOURS[3], size: 3.5, text: TextStyle::Outline, font: TextFont::default() },
-            Mark { shape: Shape::Pixelate(Rect::from_min_max(pos2(0.0, 0.0), pos2(200.0, 100.0))), colour: COLOURS[0], size: 3.4, text: TextStyle::Outline, font: TextFont::default() },
+            Mark { shape: Shape::Rect(Rect::from_min_max(pos2(20.0, 20.0), pos2(60.0, 60.0))), colour: COLOURS[0], size: 2.0, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal },
+            Mark { shape: Shape::Arrow(pos2(100.0, 80.0), pos2(180.0, 20.0)), colour: COLOURS[3], size: 3.5, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal },
+            Mark { shape: Shape::Pixelate(Rect::from_min_max(pos2(0.0, 0.0), pos2(200.0, 100.0))), colour: COLOURS[0], size: 3.4, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal },
         ];
         let out = draw(img, &marks).unwrap();
         let rgb = out.as_rgb8().expect("still RGB");
@@ -1188,29 +1391,30 @@ mod tests {
         let at = |x: f32, y: f32| pos2(w * x, h * y);
         let frame = |x0, y0, x1, y1| Rect::from_min_max(at(x0, y0), at(x1, y1));
         let mut marks = vec![
-            Mark { shape: Shape::Pixelate(frame(0.05, 0.55, 0.45, 0.95)), colour: COLOURS[0], size: 3.4, text: TextStyle::Outline, font: TextFont::default() },
-            Mark { shape: Shape::Pixelate(frame(0.55, 0.55, 0.95, 0.95)), colour: COLOURS[0], size: 13.6, text: TextStyle::Outline, font: TextFont::default() },
-            Mark { shape: Shape::Rect(frame(0.05, 0.05, 0.3, 0.3)), colour: COLOURS[0], size: 3.4, text: TextStyle::Outline, font: TextFont::default() },
-            Mark { shape: Shape::Ellipse(frame(0.35, 0.05, 0.6, 0.3)), colour: COLOURS[1], size: 2.0, text: TextStyle::Outline, font: TextFont::default() },
-            Mark { shape: Shape::Arrow(at(0.9, 0.05), at(0.65, 0.3)), colour: COLOURS[3], size: 3.5, text: TextStyle::Outline, font: TextFont::default() },
-            Mark { shape: Shape::Line(at(0.6, 0.45), at(0.95, 0.5)), colour: COLOURS[2], size: 6.0, text: TextStyle::Outline, font: TextFont::default() },
+            Mark { shape: Shape::Pixelate(frame(0.05, 0.55, 0.45, 0.95)), colour: COLOURS[0], size: 3.4, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal },
+            Mark { shape: Shape::Pixelate(frame(0.55, 0.55, 0.95, 0.95)), colour: COLOURS[0], size: 13.6, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal },
+            Mark { shape: Shape::Rect(frame(0.05, 0.05, 0.3, 0.3)), colour: COLOURS[0], size: 3.4, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal },
+            Mark { shape: Shape::Ellipse(frame(0.35, 0.05, 0.6, 0.3)), colour: COLOURS[1], size: 2.0, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal },
+            Mark { shape: Shape::Arrow(at(0.9, 0.05), at(0.65, 0.3)), colour: COLOURS[3], size: 3.5, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal },
+            Mark { shape: Shape::Line(at(0.6, 0.45), at(0.95, 0.5)), colour: COLOURS[2], size: 6.0, text: TextStyle::Outline, font: TextFont::default(), head: ArrowHead::Normal },
             Mark {
                 shape: Shape::Pen((0..200).map(|i| i as f32 / 200.0).map(|t| at(0.5 + 0.4 * t, 0.2 + 0.05 * (t * 25.0).sin())).collect()),
                 colour: COLOURS[4],
                 size: 1.5,
                 text: TextStyle::Outline,
                 font: TextFont::default(),
+                head: ArrowHead::Normal,
             },
         ];
         for (i, &colour) in COLOURS.iter().enumerate() {
             let y = 0.35 + i as f32 * 0.03;
-            marks.push(Mark { shape: Shape::Text(at(0.05, y).round(), format!("Текст {} — Text", i + 1)), colour, size: [6.6, 9.6, 14.1][i % 3], text: TextStyle::ALL[i % 3], font: TextFont::default() });
+            marks.push(Mark { shape: Shape::Text(at(0.05, y).round(), format!("Текст {} — Text", i + 1)), colour, size: [6.6, 9.6, 14.1][i % 3], text: TextStyle::ALL[i % 3], font: TextFont::default(), head: ArrowHead::Normal });
         }
-        marks.push(Mark { shape: Shape::Text(at(0.55, 0.35).round(), "Две строки\nTwo lines".into()), colour: COLOURS[0], size: 14.1, text: TextStyle::Plate, font: TextFont::default() });
+        marks.push(Mark { shape: Shape::Text(at(0.55, 0.35).round(), "Две строки\nTwo lines".into()), colour: COLOURS[0], size: 14.1, text: TextStyle::Plate, font: TextFont::default(), head: ArrowHead::Normal });
         for (k, (family, bold, italic)) in [("Times New Roman", false, true), ("Courier New", true, false), ("Comic Sans MS", false, false)].into_iter().enumerate() {
             let font = TextFont { family: family.into(), bold, italic };
             let shape = Shape::Text(at(0.05, 0.55 + k as f32 * 0.06).round(), format!("{family} — Шрифт"));
-            marks.push(Mark { shape, colour: COLOURS[4], size: 9.6, text: TextStyle::ALL[k], font });
+            marks.push(Mark { shape, colour: COLOURS[4], size: 9.6, text: TextStyle::ALL[k], font, head: ArrowHead::Normal });
         }
         let t = std::time::Instant::now();
         let out = draw(img, &marks).unwrap();
@@ -1258,7 +1462,7 @@ mod tests {
     #[test]
     fn presets_are_kept_as_lines() {
         let font = TextFont::default();
-        let p = |tool, colour, size, text| Preset { tool, colour, size, text, font: font.clone() };
+        let p = |tool, colour, size, text| Preset { tool, colour, size, text, font: font.clone(), head: ArrowHead::Normal };
         let presets = [
             p(Tool::Arrow, COLOURS[0], 3.0, TextStyle::Outline),
             p(Tool::Pen, COLOURS[1], 1.5, TextStyle::Outline),
@@ -1276,6 +1480,12 @@ mod tests {
         assert_eq!(p.to_line(), "text #e52b2b 9.6 plate -i Times New Roman");
         assert_eq!(Preset::parse(&p.to_line()), Some(p));
         assert_eq!(Preset::parse("text #e52b2b 9.6 plate").map(|p| p.font), Some(TextFont::default()));
+        // An arrow's head, and an arrow of before heads.
+        let p = Preset { head: ArrowHead::Sharp, ..presets[0].clone() };
+        assert_eq!(p.to_line(), "arrow #e52b2b 3 outline sharp b- Segoe UI");
+        assert_eq!(Preset::parse(&p.to_line()), Some(p));
+        assert_eq!(Preset::parse("arrow #e52b2b 3 outline b- Segoe UI").map(|p| p.head), Some(ArrowHead::Normal));
+        assert!(!presets[2].to_line().contains("normal"));
         assert!(Preset::parse("brush #ff0000 3").is_none());
         assert!(Preset::parse("").is_none());
     }

@@ -14,6 +14,9 @@ use crate::input::Cmd;
 struct Enabled {
     file: bool,
     image: bool,
+    /// The image on screen can be turned and mirrored: not while it is
+    /// marked.
+    turn: bool,
     /// The image can be turned, cropped and saved (see `App::editable`).
     edit: bool,
     /// Turned or being cropped: Save has something to save.
@@ -29,6 +32,7 @@ impl App {
         Enabled {
             file: self.current.is_some(),
             image: self.shown.is_some(),
+            turn: self.shown.is_some() && self.annotating.is_none(),
             edit: self.editable().is_some() && !self.saving(),
             edited: self.editable().is_some()
                 && !self.saving()
@@ -254,13 +258,13 @@ impl App {
     }
 
     fn turn_items(&mut self, ui: &mut Ui, e: &Enabled) {
-        self.item(ui, tr!("Rotate Left", "Повернуть влево").into(), "[", Cmd::RotateLeft, e.image);
-        self.item(ui, tr!("Rotate Right", "Повернуть вправо").into(), "]", Cmd::RotateRight, e.image);
+        self.item(ui, tr!("Rotate Left", "Повернуть влево").into(), "[", Cmd::RotateLeft, e.turn);
+        self.item(ui, tr!("Rotate Right", "Повернуть вправо").into(), "]", Cmd::RotateRight, e.turn);
     }
 
     fn flip_items(&mut self, ui: &mut Ui, e: &Enabled) {
-        self.item(ui, tr!("Flip Horizontally", "Отразить по горизонтали").into(), "H", Cmd::FlipHorizontal, e.image);
-        self.item(ui, tr!("Flip Vertically", "Отразить по вертикали").into(), "V", Cmd::FlipVertical, e.image);
+        self.item(ui, tr!("Flip Horizontally", "Отразить по горизонтали").into(), "H", Cmd::FlipHorizontal, e.turn);
+        self.item(ui, tr!("Flip Vertically", "Отразить по вертикали").into(), "V", Cmd::FlipVertical, e.turn);
     }
 
     /// Marks over the image: frames, arrows, pixelated areas, text.
@@ -279,7 +283,9 @@ impl App {
 
     fn crop_item(&mut self, ui: &mut Ui, e: &Enabled) {
         let cropping = self.crop.is_some();
-        if ui.add_enabled(e.edit, Button::new(tr!("Crop", "Обрезать")).shortcut_text("C").selected(cropping)).clicked() {
+        // Not while marking, which waits for nothing but its own commands.
+        let enabled = e.edit && self.annotating.is_none();
+        if ui.add_enabled(enabled, Button::new(tr!("Crop", "Обрезать")).shortcut_text("C").selected(cropping)).clicked() {
             self.clicked.push(Cmd::Crop);
             ui.close();
         }

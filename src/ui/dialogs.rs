@@ -72,6 +72,7 @@ fn shortcuts(esc_closes: bool) -> Vec<(&'static str, Vec<(&'static str, &'static
                 ("[  ]", tr!("Smaller / larger: line, text or blocks (or the slider in the bar)", "Меньше / больше: линия, текст или блоки (или ползунок на панели)")),
                 ("Shift", tr!("While drawing: a square, a circle, a line at 45°", "При рисовании: квадрат, круг, линия под 45°")),
                 ("Delete  Ctrl+Z", tr!("Delete the chosen mark / undo the last change", "Удалить выбранную пометку / отменить последнее изменение")),
+                ("O", tr!("The list of the marks beside the image", "Список пометок рядом с изображением")),
                 ("Enter  Esc", tr!("Save / cancel (twice when there are marks)", "Сохранить / отменить (дважды, если есть пометки)")),
             ],
         ),
