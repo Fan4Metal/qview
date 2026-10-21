@@ -19,8 +19,6 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 
 ![qview showing a photo with its context menu open, under the menu bar and the toolbar, above the status bar](images/screenshot.png)
 
-*Screenshot of version 0.2.0.*
-
 ## Features
 
 - **Fast**: the first image appears about 0.2 s after start-up, and the neighbouring images are decoded in advance, so that browsing has no delays.
@@ -201,8 +199,6 @@ File → Edit With lists the programs Windows offers for the type of the file, a
 ### Gallery
 
 ![The gallery: the folder tree on the left, the thumbnails of the folder on the right](images/gallery.png)
-
-*Screenshot of version 0.2.0.*
 
 The gallery is opened with `G`, `Enter`, `Esc`, a double click on the image or the toolbar button, and shows the folder of the current image: the folder tree on the left and the images as a grid of thumbnails on the right, with the sub-folders and comic books as cells before them. The selected thumbnail is the current image: deletion, renaming, copying and Show in Explorer apply to it, also from the context menu of a thumbnail, which, like the one of the empty space of the grid, also offers the sort order. Its keys are listed under [Keyboard shortcuts](#keyboard-shortcuts).
 
