@@ -46,8 +46,8 @@ Which decoder a file goes to (`loader::decode`):
 | File | Decoder |
 |---|---|
 | JPEG on disk (told by its first bytes, whatever the extension) | Windows' (WIC), see [JPEG through Windows' decoder](#jpeg-through-windows-decoder); the `image` crate if that fails |
-| HEIC/HEIF | libheif with 8 threads, see [HEIC and HEIF](#heic-and-heif); WIC if that fails |
-| AVIF, camera RAW, JPEG XR, DDS and any other format Windows has a codec for | WIC |
+| HEIC/HEIF, AVIF | libheif with 8 threads (dav1d for AV1), see [HEIC and HEIF](#heic-and-heif) and [AVIF](#avif); WIC if that fails |
+| Camera RAW, JPEG XR, DDS and any other format Windows has a codec for | WIC |
 | Everything else (PNG, GIF, WebP, TIFF, BMP, …), and every image in an archive | the `image` crate, the format guessed from the content |
 
 `loader::read`, which the histogram's reading again, the colour under the pointer, saving and the thumbnails of formats Windows cannot make use, tries the `image` crate first for every file on disk, so their figures below are the `image` crate's.
@@ -107,6 +107,37 @@ DCT-scaled decoding was measured too (`wic_scaled`, second machine): Windows' JP
 
 - Releasing the last HEIF decoder of WIC shut its HEVC pipeline down (~260 ms), so each thread keeps one decoder of every container it has used.
 - libheif with 8 decoding threads is preferred for HEIC/HEIF; WIC remains the fallback.
+
+### AVIF
+
+AVIF went to WIC, which needs the AV1 Video Extension from the Microsoft Store; without it (as on the test machine) nothing was shown. dav1d 1.5.4 (VideoLAN's AV1 decoder, with its NASM assembly: AVX2 and AVX-512) is now linked into `heif.dll`, and `heif::takes` sends AVIF to libheif when the DLL reports an AV1 decoder (`heif_have_decoder_for_format`). dav1d picks its thread count itself (all logical processors).
+
+| File | libheif with dav1d | WIC without the AV1 extension |
+|---|---|---|
+| libheif's `example.avif`, 800x533 | ~1 ms header, ~8.5 ms decode | error (0xc00d5212) |
+| 12 MP (4032x3024, 8 bits, Pillow quality 75, 4.8 MB) | ~0.2 ms header, ~90-95 ms decode | error |
+
+The 12 MP AVIF decodes about as fast as a 12 MP iPhone HEIC (~95 ms).
+
+Gallery thumbnails: Windows has none for AVIF and HEIC without the Store extensions (`GetImage` fails in ~1 ms), so they are decoded. Three AVIF photos of 1920x1280 from the web (8 bits, 4:2:0, no thumbnail item) took 16-40 ms each, most of it dav1d's (forest-path: 32 of 39 ms; libheif's conversion to RGBA the rest): a still frame without tiles decodes on few threads. A folder of 21 images (3 of them AVIF) through the pool of 4 thumbnail workers: every thumbnail in ~170-200 ms, the AVIFs at 107-168 ms among the others.
+
+| Thumbnails | Time |
+|---|---|
+| libheif's example HEIC (1280x854), side 256, its own 320 px thumbnail (`heif::decode_within`) | ~4-5 ms |
+| The same decoded whole (side 768) | ~35-50 ms |
+| 14 AVIF/HEIC files, 4 workers, dav1d on all processors | 232-248 ms |
+| The same, dav1d limited to 4, 6 or 8 threads (`num_codec_threads`) | 207-229 ms |
+
+- A HEIF's or AVIF's own thumbnail (an iPhone's HEIC has one of 320 px) is taken when it is at least as large as the side asked for.
+- Limiting dav1d's threads for thumbnails gained ~8% and would have needed `heif_decoding_options` laid out by hand: not done.
+
+| Size | Before | With dav1d |
+|---|---|---|
+| `heif.dll` | 1686 KB | 3495 KB (+1.8 MB) |
+| Installer (LZMA) | 7.34 MB (0.8.0) | 7.89 MB (+0.53 MB) |
+| Portable zip | 7.68 MB (0.8.0) | 8.41 MB (+0.71 MB) |
+
+Linked into `heif.dll` rather than shipped as `dav1d.dll` (BSD-2-Clause permits it), so the files beside the exe stay the same. Only 8-bit decoding would save roughly 0.8 MB (an estimate, not built), but AVIF photos are often 10-bit (HDR from phones), so 10/12 bits stay. `image`'s `avif-native` feature (dav1d-sys, the same decoder linked into the exe) would have cost about as much and needed pkg-config and a prebuilt dav1d.
 
 ### RAR archives
 
@@ -320,7 +351,7 @@ Save With Options shrinks the image on the saving thread after it is turned, cro
 | Gallery thumbnails of a folder | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release thumbnail_timings -- --ignored --nocapture` |
 | One file through WIC | `$env:QVIEW_WIC_FILE="<file>"; cargo test --release wic_file -- --ignored --nocapture` |
 | A JPEG through WIC at full, half, quarter and eighth size (DCT scaling) | `$env:QVIEW_WIC_FILE="<jpeg>"; cargo test --release wic_scaled -- --ignored --nocapture` |
-| HEIC through libheif and WIC | `$env:QVIEW_HEIF_FILE="<heic>"; cargo test --release heif_file -- --ignored --nocapture` |
+| HEIC or AVIF through libheif and WIC | `$env:QVIEW_HEIF_FILE="<heic or avif>"; cargo test --release heif_file -- --ignored --nocapture` |
 | Histogram counting of one file, and decoding with and without it | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release histogram_timings -- --ignored --nocapture` |
 | A histogram read again (the section opened on a decoded image) | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release read_again_timings -- --ignored --nocapture` |
 | Finding the pixel under the pointer | `cargo test --release pick_timings -- --ignored --nocapture` |

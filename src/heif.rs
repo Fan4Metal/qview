@@ -1,12 +1,14 @@
-//! HEIC/HEIF through libheif with its built-in HEVC decoder (libde265),
-//! loaded at run time from `heif.dll` next to qview.exe (with `libde265.dll`
-//! beside it; `tools/build_heif.py` builds both). Without them HEIF goes to
-//! Windows' codecs (`wic`) as before; with them it opens without the HEIF
-//! and HEVC extensions from the Microsoft Store, and a file libheif cannot
-//! read still goes to Windows.
+//! HEIC/HEIF and AVIF through libheif with its built-in HEVC decoder
+//! (libde265) and AV1 decoder (dav1d, linked into heif.dll), loaded at run
+//! time from `heif.dll` next to qview.exe (with `libde265.dll` beside it;
+//! `tools/build_heif.py` builds both). Without them HEIF and AVIF go to
+//! Windows' codecs (`wic`) as before; with them they open without the HEIF,
+//! HEVC and AV1 extensions from the Microsoft Store, and a file libheif
+//! cannot read still goes to Windows. A heif.dll without an AV1 decoder
+//! (`Lib::av1`) leaves AVIF to Windows.
 //!
-//! Both libraries are LGPL: they stay separate DLLs, called through the C
-//! API declared here by hand (`heif.h` of libheif 1.23).
+//! libheif and libde265 are LGPL: they stay separate DLLs, called through
+//! the C API declared here by hand (`heif.h` of libheif 1.23).
 //!
 //! libheif applies the container's rotation and mirroring itself, so the
 //! orientation reported is always 1, as with Windows' HEIF decoder.
@@ -36,6 +38,8 @@ type HeifImage = *mut c_void;
 const COLORSPACE_RGB: c_int = 1;
 const CHROMA_INTERLEAVED_RGBA: c_int = 11;
 const CHANNEL_INTERLEAVED: c_int = 10;
+/// `heif_compression_AV1`.
+const COMPRESSION_AV1: c_int = 4;
 
 /// `heif_reader`, version 1: libheif reads the file through it, only the
 /// boxes it needs.
@@ -71,6 +75,10 @@ struct Lib {
     metadata: unsafe extern "C" fn(Handle, u32, *mut c_void) -> Error,
     icc_size: unsafe extern "C" fn(Handle) -> usize,
     icc: unsafe extern "C" fn(Handle, *mut c_void) -> Error,
+    thumbnail_ids: unsafe extern "C" fn(Handle, *mut u32, c_int) -> c_int,
+    thumbnail: unsafe extern "C" fn(Handle, u32, *mut Handle) -> Error,
+    /// Whether it decodes AV1 (dav1d built in), so reads AVIF.
+    av1: bool,
 }
 
 /// Where heif.dll is looked for: next to the program, and for the tests
@@ -143,10 +151,19 @@ fn load(path: &Path) -> Option<Lib> {
         metadata: get!("heif_image_handle_get_metadata"),
         icc_size: get!("heif_image_handle_get_raw_color_profile_size"),
         icc: get!("heif_image_handle_get_raw_color_profile"),
+        thumbnail_ids: get!("heif_image_handle_get_list_of_thumbnail_IDs"),
+        thumbnail: get!("heif_image_handle_get_thumbnail"),
+        av1: false,
     };
     // Never matched by heif_deinit: the library stays for the process.
     check(unsafe { init(std::ptr::null()) }).ok()?;
-    Some(lib)
+    // Asked after heif_init, which registers the built-in decoders.
+    let have_decoder: unsafe extern "C" fn(c_int) -> c_int = get!("heif_have_decoder_for_format");
+    let av1 = unsafe { have_decoder(COMPRESSION_AV1) } != 0;
+    if !av1 {
+        log::debug!("{} has no AV1 decoder: AVIF goes to Windows' codecs", path.display());
+    }
+    Some(Lib { av1, ..lib })
 }
 
 fn check(e: Error) -> Result<(), String> {
@@ -161,10 +178,17 @@ fn check(e: Error) -> Result<(), String> {
     Err(format!("libheif: {message} ({}.{})", e.code, e.subcode))
 }
 
-/// Whether heif.dll is there to read `path`: a HEIF file by its extension.
+/// Whether heif.dll is there to read `path`: a HEIF file by its extension,
+/// or an AVIF one when the DLL decodes AV1.
 pub fn takes(path: &Path) -> bool {
-    let heif = path.extension().is_some_and(|e| ["heic", "heif", "hif"].iter().any(|x| e.eq_ignore_ascii_case(x)));
-    heif && lib().is_some()
+    let Some(ext) = path.extension() else { return false };
+    if ["heic", "heif", "hif"].iter().any(|x| ext.eq_ignore_ascii_case(x)) {
+        lib().is_some()
+    } else if ext.eq_ignore_ascii_case("avif") {
+        lib().is_some_and(|lib| lib.av1)
+    } else {
+        false
+    }
 }
 
 /// A libheif context with the primary image's handle, freed when dropped.
@@ -212,10 +236,57 @@ pub fn decode(path: &Path, bgra: bool) -> Option<Result<Image, String>> {
         return None;
     }
     let lib = lib()?;
-    Some(decode_with(lib, path, bgra))
+    Some(decode_with(lib, path, bgra, None).map(|(image, _)| image))
 }
 
-fn decode_with(lib: &'static Lib, path: &Path, bgra: bool) -> Result<Image, String> {
+/// `decode` for a thumbnail fitted into `side` x `side`: the file's own
+/// thumbnail when one is at least that large (an iPhone's HEIC has one of
+/// 320 px; libheif's example HEIC: 4-5 ms instead of ~50), otherwise the
+/// primary image. With the upright size of the primary image, which a
+/// thumbnail is not. (Fewer codec threads for thumbnails, which decode side
+/// by side, gained ~8% on four workers: not done.)
+pub fn decode_within(path: &Path, side: u32, bgra: bool) -> Option<Result<WithSize, String>> {
+    if !takes(path) {
+        return None;
+    }
+    let lib = lib()?;
+    Some(decode_with(lib, path, bgra, Some(side)))
+}
+
+/// The smallest of the primary image's thumbnails at least `side` on its
+/// longer side, released when dropped.
+fn thumbnail_within(lib: &'static Lib, primary: Handle, side: u32) -> Option<Thumbnail> {
+    let mut ids = [0u32; 8];
+    let n = unsafe { (lib.thumbnail_ids)(primary, ids.as_mut_ptr(), ids.len() as c_int) };
+    let mut best: Option<(i64, Thumbnail)> = None;
+    for &id in &ids[..n.clamp(0, ids.len() as c_int) as usize] {
+        let mut handle = null_mut();
+        if check(unsafe { (lib.thumbnail)(primary, id, &mut handle) }).is_err() || handle.is_null() {
+            continue;
+        }
+        let thumbnail = Thumbnail(lib, handle);
+        let (w, h) = unsafe { ((lib.handle_width)(handle), (lib.handle_height)(handle)) };
+        let long = i64::from(w.max(h));
+        if long >= i64::from(side) && best.as_ref().is_none_or(|(b, _)| long < *b) {
+            best = Some((long, thumbnail));
+        }
+    }
+    best.map(|(_, t)| t)
+}
+
+struct Thumbnail(&'static Lib, Handle);
+
+impl Drop for Thumbnail {
+    fn drop(&mut self) {
+        unsafe { (self.0.handle_release)(self.1) };
+    }
+}
+
+/// What was decoded (the image or a thumbnail of it) and the upright size
+/// of the primary image.
+pub type WithSize = (Image, (u32, u32));
+
+fn decode_with(lib: &'static Lib, path: &Path, bgra: bool, within: Option<u32>) -> Result<WithSize, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let primary = Primary::new(lib, |context| unsafe {
         (lib.read_from_memory)(context, bytes.as_ptr().cast(), bytes.len(), std::ptr::null())
@@ -228,9 +299,12 @@ fn decode_with(lib: &'static Lib, path: &Path, bgra: bool) -> Result<Image, Stri
     if w.max(0) as u64 * h.max(0) as u64 * 4 > crate::loader::MAX_ALLOC {
         return Err(format!("libheif: the image is too large ({w}x{h})"));
     }
+    let full = (w.max(0) as u32, h.max(0) as u32);
+    let thumbnail = within.and_then(|side| thumbnail_within(lib, primary.handle, side));
+    let handle = thumbnail.as_ref().map_or(primary.handle, |t| t.1);
     let mut decoded = null_mut();
     let e = unsafe {
-        (lib.decode_image)(primary.handle, &mut decoded, COLORSPACE_RGB, CHROMA_INTERLEAVED_RGBA, std::ptr::null())
+        (lib.decode_image)(handle, &mut decoded, COLORSPACE_RGB, CHROMA_INTERLEAVED_RGBA, std::ptr::null())
     };
     struct Decoded(&'static Lib, HeifImage);
     impl Drop for Decoded {
@@ -261,7 +335,8 @@ fn decode_with(lib: &'static Lib, path: &Path, bgra: bool) -> Result<Image, Stri
         }
     }
     let bits = luma * if alpha { 4 } else { 3 };
-    Ok(Image { width: width as u32, height: height as u32, pixels, orientation: 1, bits, alpha: Some(alpha) })
+    let image = Image { width: width as u32, height: height as u32, pixels, orientation: 1, bits, alpha: Some(alpha) };
+    Ok((image, full))
 }
 
 /// Straight RGBA `src` to premultiplied BGRA in `out`, of the same length.
@@ -368,8 +443,8 @@ unsafe extern "C" fn wait_for_file_size(target: i64, state: *mut c_void) -> c_in
 mod tests {
     use super::*;
 
-    fn example() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("target/heif/src/libheif/examples/example.heic")
+    fn example(ext: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("target/heif/src/libheif/examples/example.{ext}"))
     }
 
     #[test]
@@ -385,24 +460,42 @@ mod tests {
     /// Needs `python tools/build_heif.py`; passes without it.
     #[test]
     fn decodes_through_libheif() {
-        let path = example();
-        if lib().is_none() || !path.exists() {
-            eprintln!("heif.dll or {} missing: run tools/build_heif.py", path.display());
-            return;
+        // The DLL built by build_heif.py decodes both; HEIC and AVIF alike.
+        for ext in ["heic", "avif"] {
+            let path = example(ext);
+            if lib().is_none() || !path.exists() {
+                eprintln!("heif.dll or {} missing: run tools/build_heif.py", path.display());
+                return;
+            }
+            assert!(takes(&path), "{ext}");
+            let (w, h) = size(&path).expect("size");
+            let image = decode(&path, true).expect("taken").expect("decoded");
+            assert_eq!((image.width, image.height), (w, h), "{ext}");
+            assert_eq!(image.pixels.len(), (w * h * 4) as usize);
+            assert!(image.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255), "{ext}");
+            // Not black: the AV1 or HEVC data was decoded.
+            assert!(image.pixels.as_chunks::<4>().0.iter().any(|p| p[..3] != [0, 0, 0]), "{ext}");
+            // For a thumbnail larger than any the file holds: the image.
+            let (image, full) = decode_within(&path, 4096, true).unwrap().unwrap();
+            assert_eq!(((image.width, image.height), full), ((w, h), (w, h)), "{ext}");
         }
-        let (w, h) = size(&path).expect("size");
-        let image = decode(&path, true).expect("taken").expect("decoded");
-        assert_eq!((image.width, image.height), (w, h));
-        assert_eq!(image.pixels.len(), (w * h * 4) as usize);
-        assert!(image.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
-        // Not a HEIF file: an error, not a crash.
+        // The example HEIC holds a thumbnail of 320 px, given for a smaller
+        // side with the image's size.
+        let (image, full) = decode_within(&example("heic"), 256, true).unwrap().unwrap();
+        assert_eq!(full, size(&example("heic")).unwrap());
+        assert!(image.width.max(image.height) >= 256 && image.width < full.0, "{}x{}", image.width, image.height);
+        // Not a HEIF or AVIF file: an error, not a crash.
         let dir = std::env::temp_dir().join(format!("qview_heif_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let broken = dir.join("broken.heic");
-        std::fs::write(&broken, b"not an image").unwrap();
-        assert!(decode(&broken, true).unwrap().is_err());
-        assert!(size(&broken).is_none());
+        for name in ["broken.heic", "broken.avif"] {
+            let broken = dir.join(name);
+            std::fs::write(&broken, b"not an image").unwrap();
+            assert!(decode(&broken, true).unwrap().is_err(), "{name}");
+            assert!(size(&broken).is_none(), "{name}");
+        }
         std::fs::remove_dir_all(&dir).ok();
+        // Other extensions are not libheif's.
+        assert!(!takes(Path::new("a.jpg")) && !takes(Path::new("avif")));
     }
 
     /// `$env:QVIEW_HEIF_FILE="<file>"; cargo test --release heif_file -- --ignored --nocapture`:

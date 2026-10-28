@@ -39,6 +39,7 @@ LICENSE_FILES = [
     "LICENSE",
     "THIRD_PARTY_LICENSES.md",
     "licenses/LGPL-3.0.txt",
+    "licenses/dav1d-license.txt",
     "licenses/unrar-license.txt",
     "licenses/THIRD_PARTY_NOTICES.txt",
 ]

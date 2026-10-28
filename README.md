@@ -22,7 +22,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 ## Features
 
 - **Fast**: the first image appears about 0.2 s after start-up, and the neighbouring images are decoded in advance, so that browsing has no delays.
-- **Many formats**: JPEG, PNG, GIF, WebP, TIFF, HEIC, SVG and others are read by the program itself, AVIF, camera RAW and other formats through the codecs installed in Windows; animated GIF and WebP are played (see [Supported formats](#supported-formats)).
+- **Many formats**: JPEG, PNG, GIF, WebP, TIFF, HEIC, AVIF, SVG and others are read by the program itself, camera RAW and other formats through the codecs installed in Windows; animated GIF and WebP are played (see [Supported formats](#supported-formats)).
 - **Gallery**: the folder tree and the images of a folder as thumbnails, with sub-folders and comic books as cells, sorting, a filter by name and the choice of several images at once (see [Gallery](#gallery)).
 - **Sorting photos into folders**: favorites gathered from any folders, folders pinned to Quick Access with the keys `Alt+1`–`Alt+9`, moving and copying into a new or any other folder (see [Favorites](#favorites) and [Quick Access](#quick-access)).
 - **Comic books**: CBZ and CBR, as well as ZIP and RAR archives in general, are viewed without unpacking (see [Comic books and archives](#comic-books-and-archives)).
@@ -68,8 +68,7 @@ Only one window of qview is open at a time: when qview is already running, a fil
 |---|---|---|
 | JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM (PBM, PGM, PPM, PAM) | the program itself | nothing |
 | SVG, SVGZ | the program itself (the [resvg](https://github.com/linebender/resvg) library) | nothing |
-| HEIC, HEIF | the [libheif](https://github.com/strukturag/libheif) and [libde265](https://github.com/strukturag/libde265) libraries supplied with the program | nothing: no extension from the Microsoft Store |
-| AVIF | the Windows codec | the AV1 Video Extension from the Microsoft Store |
+| HEIC, HEIF, AVIF | the [libheif](https://github.com/strukturag/libheif), [libde265](https://github.com/strukturag/libde265) and [dav1d](https://code.videolan.org/videolan/dav1d) libraries supplied with the program | nothing: no extension from the Microsoft Store |
 | Camera RAW: CR2, CR3, NEF, ARW, DNG and others | the Windows codec | the Raw Image Extension, included in Windows 11 |
 | JPEG XR, DDS, the formats of other installed codecs | the Windows codecs (Windows Imaging Component) | the codec |
 | CBZ, CBR, ZIP, RAR | the program itself (pages in the formats of the first row) | nothing (see [Comic books and archives](#comic-books-and-archives)) |
@@ -77,10 +76,9 @@ Only one window of qview is open at a time: when qview is already running, a fil
 Animated GIF and WebP images are played in the viewer, in a loop or as many times as the file specifies; the gallery shows their first frame, and the status bar marks them as animated.
 
 <details>
-<summary>Windows codecs, AVIF and SVG drawings</summary>
+<summary>Windows codecs and SVG drawings</summary>
 
 - The Windows codecs also take over the files that the program's own decoders and libheif cannot read.
-- AVIF files are always listed; when the extension they need is missing, the image area names it.
 - An SVG drawing is taken to be of the size written in it (its width and height, otherwise its `viewBox`): 100%, the dimensions in the status bar and in the information panel refer to that size, and Fit Image (`2`) does not enlarge a small icon (Fill Window, `3`, does). The drawing is rendered large enough to fill the screen, and zoomed in further, the part in the window is drawn anew at the screen's resolution a moment later, so that it stays sharp at any zoom; text is drawn with the fonts installed in Windows. A rotated or cropped drawing, Convert To and Copy Image give a raster image of the drawing's size; Save As offers PNG first.
 
 </details>
@@ -501,7 +499,7 @@ cargo test
 
 `build.py` first closes a `qview.exe` running from the project's `target` folder, which would otherwise lock the file, and then runs `cargo build --release`; extra arguments are passed to cargo. Its only dependency, `psutil`, is installed by uv. When qview is not running, plain `cargo build --release` works as well.
 
-The window is drawn by egui/eframe through OpenGL (glow), images are decoded by the `image` crate. HEIC/HEIF is decoded by libheif with libde265, loaded at run time from `heif.dll` and `libde265.dll` next to `qview.exe`; without them these files go to Windows' codecs. Both libraries are built by `tools/build_heif.py` (git and CMake from the Visual Studio Build Tools are required) into `target\heif\bin`, at the versions given in the script and with the C runtime linked in, so they need no Visual C++ Redistributable; the executable links the C runtime in as well (`.cargo/config.toml`, `crt-static`), so qview needs nothing beyond Windows itself; `build.py` runs it the first time and copies the libraries next to the executable. Setting the environment variable `QVIEW_TRACE=1` writes start-up and decoding times, as well as the GPU time of the filters, to stderr. The measurements behind the design and the decisions based on them are described in [doc/PERFORMANCE.md](doc/PERFORMANCE.md).
+The window is drawn by egui/eframe through OpenGL (glow), images are decoded by the `image` crate. HEIC/HEIF and AVIF are decoded by libheif with libde265 (HEVC) and dav1d (AV1), loaded at run time from `heif.dll` and `libde265.dll` next to `qview.exe`, dav1d being linked into `heif.dll`; without them these files go to Windows' codecs. The libraries are built by `tools/build_heif.py` (git and CMake from the Visual Studio Build Tools are required; Meson, Ninja and NASM for dav1d are downloaded by the script into `target\heif\tools`) into `target\heif\bin`, at the versions given in the script and with the C runtime linked in, so they need no Visual C++ Redistributable; the executable links the C runtime in as well (`.cargo/config.toml`, `crt-static`), so qview needs nothing beyond Windows itself; `build.py` runs it the first time and copies the libraries next to the executable. Setting the environment variable `QVIEW_TRACE=1` writes start-up and decoding times, as well as the GPU time of the filters, to stderr. The measurements behind the design and the decisions based on them are described in [doc/PERFORMANCE.md](doc/PERFORMANCE.md).
 
 </details>
 
@@ -563,10 +561,10 @@ qview is built on the following open-source projects:
 - [egui / eframe](https://github.com/emilk/egui): the user interface and the window;
 - [image](https://github.com/image-rs/image): decoding and encoding of most formats;
 - [resvg](https://github.com/linebender/resvg): drawing of SVG and SVGZ;
-- [libheif](https://github.com/strukturag/libheif) and [libde265](https://github.com/strukturag/libde265): decoding of HEIC/HEIF;
+- [libheif](https://github.com/strukturag/libheif), [libde265](https://github.com/strukturag/libde265) and [dav1d](https://code.videolan.org/videolan/dav1d): decoding of HEIC/HEIF and AVIF;
 - [UnRAR](https://www.rarlab.com/rar_add.htm) by Alexander Roshal, through [unrar-ng-sys](https://github.com/ttys3/unrar.rs): reading of RAR archives;
 - [Inno Setup](https://jrsoftware.org/isinfo.php): the installer.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The included `heif.dll` and `libde265.dll` (libheif and libde265, for HEIC and HEIF) are licensed under the GNU Lesser General Public License version 3; they remain separate files, which can be replaced with other builds, and their sources are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). The UnRAR source code, built into the program unmodified, is freeware under its own licence, which allows its use for reading RAR archives but not for re-creating the RAR compression ([licenses/unrar-license.txt](licenses/unrar-license.txt)). The licences and copyright notices of the Rust libraries and fonts compiled into the program are in [licenses/THIRD_PARTY_NOTICES.txt](licenses/THIRD_PARTY_NOTICES.txt). The program shows all of these texts in its About window (**Licenses…**), and the installer and the portable archive include them as files.
+MIT, see [LICENSE](LICENSE). The included `heif.dll` and `libde265.dll` (libheif and libde265, for HEIC, HEIF and AVIF) are licensed under the GNU Lesser General Public License version 3; they remain separate files, which can be replaced with other builds, and their sources are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). The AV1 decoder dav1d, linked into `heif.dll`, is licensed under the BSD 2-Clause License ([licenses/dav1d-license.txt](licenses/dav1d-license.txt)). The UnRAR source code, built into the program unmodified, is freeware under its own licence, which allows its use for reading RAR archives but not for re-creating the RAR compression ([licenses/unrar-license.txt](licenses/unrar-license.txt)). The licences and copyright notices of the Rust libraries and fonts compiled into the program are in [licenses/THIRD_PARTY_NOTICES.txt](licenses/THIRD_PARTY_NOTICES.txt). The program shows all of these texts in its About window (**Licenses…**), and the installer and the portable archive include them as files.

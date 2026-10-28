@@ -61,14 +61,16 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-; libheif with libde265 for HEIC/HEIF (tools\build_heif.py), LGPL: separate
-; DLLs; their licence and sources in THIRD_PARTY_LICENSES.md and licenses.
+; libheif with libde265 and dav1d for HEIC/HEIF and AVIF (tools\build_heif.py),
+; LGPL: separate DLLs (dav1d, BSD, linked into heif.dll); their licences and
+; sources in THIRD_PARTY_LICENSES.md and licenses.
 Source: "..\target\release\heif.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\libde265.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; The licences (make_release.py's LICENSE_FILES; the exe shows them too).
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_LICENSES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\licenses\LGPL-3.0.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\licenses\dav1d-license.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "..\licenses\unrar-license.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "..\licenses\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion

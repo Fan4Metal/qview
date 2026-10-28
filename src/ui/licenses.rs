@@ -1,6 +1,7 @@
 //! The Licenses window (from About): the program's own licence with the
 //! overview of the others (THIRD_PARTY_LICENSES.md), the LGPL v3 of libheif
-//! and libde265 (the DLLs shipped beside the exe), UnRAR's licence, and the
+//! and libde265 (the DLLs shipped beside the exe), dav1d's licence (linked
+//! into heif.dll), UnRAR's licence, and the
 //! notices of the Rust crates and fonts compiled into the exe. The texts are
 //! embedded, so the exe carries them wherever it goes; the installer and the
 //! portable archive ship them as files too. Long lines are wrapped at words
@@ -15,6 +16,7 @@ const QVIEW: &str = include_str!("../../LICENSE");
 const THIRD_PARTY: &str = include_str!("../../THIRD_PARTY_LICENSES.md");
 const LGPL: &str = include_str!("../../licenses/LGPL-3.0.txt");
 const UNRAR: &str = include_str!("../../licenses/unrar-license.txt");
+const DAV1D: &str = include_str!("../../licenses/dav1d-license.txt");
 /// Written by tools/notices.py.
 const NOTICES: &str = include_str!("../../licenses/THIRD_PARTY_NOTICES.txt");
 
@@ -30,17 +32,19 @@ enum Part {
     #[default]
     Program,
     Heif,
+    Dav1d,
     Unrar,
     Crates,
 }
 
 impl Part {
-    const ALL: [Part; 4] = [Part::Program, Part::Heif, Part::Unrar, Part::Crates];
+    const ALL: [Part; 5] = [Part::Program, Part::Heif, Part::Dav1d, Part::Unrar, Part::Crates];
 
     fn title(self) -> &'static str {
         match self {
             Part::Program => tr!("qview: MIT", "qview: MIT"),
             Part::Heif => tr!("libheif, libde265: GNU LGPL v3", "libheif, libde265: GNU LGPL v3"),
+            Part::Dav1d => tr!("dav1d: BSD 2-Clause", "dav1d: BSD 2-Clause"),
             Part::Unrar => tr!("UnRAR: its own licence", "UnRAR: собственная лицензия"),
             Part::Crates => tr!("Libraries and fonts", "Библиотеки и шрифты"),
         }
@@ -50,6 +54,7 @@ impl Part {
         match self {
             Part::Program => &[QVIEW, THIRD_PARTY],
             Part::Heif => &[LGPL],
+            Part::Dav1d => &[DAV1D],
             Part::Unrar => &[UNRAR],
             Part::Crates => &[NOTICES],
         }
@@ -257,6 +262,11 @@ mod tests {
             assert!(THIRD_PARTY.contains(&source), "THIRD_PARTY_LICENSES.md lacks {source}");
             assert!(THIRD_PARTY.contains(&format!("{name}]")) && THIRD_PARTY.contains(tag.trim_start_matches('v')));
         }
+        let line = script.lines().find(|l| l.starts_with("DAV1D = (")).unwrap();
+        let tag = line.rsplit('"').nth(1).unwrap();
+        let source = format!("https://code.videolan.org/videolan/dav1d/-/tree/{tag}");
+        assert!(THIRD_PARTY.contains(&source), "THIRD_PARTY_LICENSES.md lacks {source}");
+        assert!(THIRD_PARTY.contains(&format!("[dav1d](https://code.videolan.org/videolan/dav1d) {tag}")));
     }
 
     #[test]
@@ -268,7 +278,7 @@ mod tests {
         assert_eq!(out, ["short", "  one two", "  three", "  four", "abcdef", "ghijkl", "mnop"]);
         // Every line of the texts fits.
         let mut all = Vec::new();
-        for text in [QVIEW, THIRD_PARTY, LGPL, UNRAR, NOTICES] {
+        for text in [QVIEW, THIRD_PARTY, LGPL, DAV1D, UNRAR, NOTICES] {
             for line in text.lines() {
                 wrap(line.trim_end_matches('\r'), 80, &mut all);
             }
@@ -281,6 +291,7 @@ mod tests {
         assert!(QVIEW.contains("MIT License"));
         assert!(LGPL.contains("GNU LESSER GENERAL PUBLIC LICENSE") && LGPL.contains("GNU GENERAL PUBLIC LICENSE"));
         assert!(UNRAR.contains("UnRAR"));
+        assert!(DAV1D.contains("VideoLAN and dav1d authors") && DAV1D.contains("Alliance for Open Media Patent License"));
         assert!(NOTICES.contains("egui") && NOTICES.contains("OFL") && NOTICES.contains("resvg"));
     }
 }

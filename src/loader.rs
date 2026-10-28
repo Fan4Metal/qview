@@ -327,13 +327,18 @@ pub fn read(path: &Path) -> Result<(DynamicImage, Meta), String> {
 }
 
 /// `read`, except that a drawing (`svg`) larger than `side` x `side` is
-/// drawn fitted into it, not at its size: a thumbnail.
+/// drawn fitted into it, not at its size, and a HEIF or AVIF may give its
+/// own thumbnail (`heif::decode_within`): a thumbnail, possibly larger
+/// than `side`; `Meta` is the image's.
 pub fn read_within(path: &Path, side: u32) -> Result<(DynamicImage, Meta), String> {
     if crate::svg::takes(path) {
         let bytes = crate::archive::read(path).map_err(|e| e.to_string())?;
         if crate::svg::is_svg(path, &bytes) {
             return svg_image(path, &bytes, |w, h| (side as f32 / w.max(h) as f32).min(1.0));
         }
+    }
+    if !crate::archive::inside(path) && crate::heif::takes(path) {
+        return read_wic_within(path, false, Some(side));
     }
     read(path)
 }
@@ -374,23 +379,43 @@ fn svg_image(path: &Path, bytes: &[u8], scale: impl FnOnce(u32, u32) -> f32) -> 
 /// fails. Otherwise the error says which extension from the Microsoft
 /// Store the format needs.
 pub fn read_wic(path: &Path, bgra: bool) -> Result<(DynamicImage, Meta), String> {
+    read_wic_within(path, bgra, None)
+}
+
+/// `read_wic`, with `within` a thumbnail's side: libheif may then give the
+/// file's own smaller thumbnail (`heif::decode_within`); `Meta` keeps the
+/// image's size.
+fn read_wic_within(path: &Path, bgra: bool, within: Option<u32>) -> Result<(DynamicImage, Meta), String> {
     use std::os::windows::fs::MetadataExt;
     let file = std::fs::metadata(path).map_err(|e| e.to_string())?;
-    let image = match crate::heif::decode(path, bgra) {
-        Some(Ok(image)) => image,
-        Some(Err(e)) => crate::wic::decode(path, bgra).map_err(|_| e)?,
-        None => crate::wic::decode(path, bgra).map_err(|e| match crate::wic::needs(path) {
-            Some(needs) => format!("{e}\n\n{needs}"),
-            None => e,
-        })?,
+    let heif = match within {
+        Some(side) => crate::heif::decode_within(path, side, bgra).map(|r| r.map(|(image, full)| (image, Some(full)))),
+        None => crate::heif::decode(path, bgra).map(|r| r.map(|image| (image, None))),
+    };
+    let (image, full) = match heif {
+        Some(Ok(decoded)) => decoded,
+        Some(Err(e)) => (crate::wic::decode(path, bgra).map_err(|_| e)?, None),
+        None => (
+            crate::wic::decode(path, bgra).map_err(|e| match crate::wic::needs(path) {
+                Some(needs) => format!("{e}\n\n{needs}"),
+                None => e,
+            })?,
+            None,
+        ),
     };
     let buffer = image::RgbaImage::from_raw(image.width, image.height, image.pixels).ok_or("bad image size")?;
     let mut img = DynamicImage::ImageRgba8(buffer);
     img.apply_orientation(Orientation::from_exif(image.orientation as u8).unwrap_or(Orientation::NoTransforms));
-    let format = ImageFormat::from_path(path).map_or_else(|_| crate::wic::format_name(path), format_name);
+    let (width, height) = full.unwrap_or((img.width(), img.height()));
+    // `image` knows .avif and .dds by name without decoding them: their
+    // names come from the extension, as for the formats it does not know.
+    let format = match ImageFormat::from_path(path).map(format_name) {
+        Ok(name) if name != "IMAGE" => name,
+        _ => crate::wic::format_name(path),
+    };
     let meta = Meta {
-        width: img.width(),
-        height: img.height(),
+        width,
+        height,
         bits: image.bits,
         alpha: image.alpha,
         format,
@@ -791,6 +816,12 @@ mod tests {
         let e = decode(&heic, 16384, false).err().unwrap();
         let expected = if crate::heif::takes(&heic) { "libheif" } else { "HEVC" };
         assert!(e.contains(expected), "{e}");
+        // An AVIF through libheif is named so, not "IMAGE".
+        let avif = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/heif/src/libheif/examples/example.avif");
+        if crate::heif::takes(&avif) && avif.exists() {
+            let (_, meta) = read_wic(&avif, true).unwrap();
+            assert_eq!(meta.format, "AVIF");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

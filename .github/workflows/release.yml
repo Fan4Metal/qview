@@ -36,7 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # libheif and libde265 (tools/build_heif.py, run by make_release.py):
+      # libheif, libde265 and dav1d (tools/build_heif.py, run by make_release.py):
       # built again only when the script, with their versions, changes.
       - uses: actions/cache@v6
         with:
