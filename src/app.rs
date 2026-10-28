@@ -1445,12 +1445,32 @@ impl App {
             return;
         }
         d.groups = groups;
+        // Without the images deleted or moved away while they were looked
+        // for.
+        self.retain_listed_dups();
         self.selection.clear();
         self.filter_changed();
         // The first group from its top.
         if let Some(gallery) = &mut self.gallery {
             gallery.scroll = Some(Scroll::Visible);
         }
+    }
+
+    /// Only the groups' members `keep` takes (`duplicates::Group::retain`),
+    /// no group left empty.
+    fn retain_dups(&mut self, mut keep: impl FnMut(&Path) -> bool) {
+        if let Some(d) = &mut self.dups {
+            for g in &mut d.groups {
+                g.retain(&mut keep);
+            }
+            d.groups.retain(|g| !g.members.is_empty());
+        }
+    }
+
+    /// The groups without the images no longer listed.
+    fn retain_listed_dups(&mut self) {
+        let listed: std::collections::HashSet<PathBuf> = self.listed.iter().cloned().collect();
+        self.retain_dups(|m| listed.contains(m));
     }
 
     /// The copies of the originals in the groups shown, for Delete: the
@@ -2211,11 +2231,17 @@ impl App {
                 self.listed = self.current.iter().cloned().collect();
             }
         }
-        self.files = self.filtered();
+        // Listed again with the duplicates shown (a new order, a rename, a
+        // save): the groups stay, without what is no longer listed.
+        let groups = self.dups_shown();
+        if groups {
+            self.retain_listed_dups();
+        }
+        self.files = if groups { self.dup_files() } else { self.filtered() };
         // The folder with the cursor keeps it in a new order; one gone
         // leaves it on the cell that took its place.
         let focused = self.focused_folder();
-        self.folders = self.filtered_folders();
+        self.folders = if groups { Vec::new() } else { self.filtered_folders() };
         self.folder_focus = focused
             .and_then(|f| self.folders.iter().position(|g| folder::same_path(g, &f)))
             .or(self.folder_focus.filter(|&k| k < self.folders.len()));
@@ -2239,7 +2265,7 @@ impl App {
             }
             self.set_current(None);
         }
-        self.starts = folder::starts(&self.files);
+        self.update_starts();
         self.selection.retain_listed(&self.files, &self.folders);
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
         if std::mem::take(&mut self.centre_after_scan)
@@ -2806,12 +2832,7 @@ impl App {
             self.listed.remove(pos);
         }
         let was_current = self.current.as_deref().is_some_and(|c| folder::same_path(c, path));
-        if let Some(d) = &mut self.dups {
-            for g in &mut d.groups {
-                g.members.retain(|m| !folder::same_path(m, path));
-            }
-            d.groups.retain(|g| !g.members.is_empty());
-        }
+        self.retain_dups(|m| !folder::same_path(m, path));
         match folder::position(&self.files, path) {
             Some(pos) => {
                 self.files.remove(pos);

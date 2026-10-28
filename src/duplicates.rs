@@ -239,6 +239,57 @@ pub struct Group {
     pub why: Vec<Criteria>,
 }
 
+impl Group {
+    /// Only the members `keep` takes (the others deleted, moved away or
+    /// no longer listed), their kinds and reasons with them. A set left
+    /// without its original has its first copy as the original, nothing
+    /// telling them apart any more, so that Select Copies never takes the
+    /// last of a picture; a set left with one image is only alike.
+    pub fn retain(&mut self, mut keep: impl FnMut(&Path) -> bool) {
+        let kept: Vec<bool> = self.members.iter().map(|m| keep(m)).collect();
+        if kept.iter().all(|&k| k) {
+            return;
+        }
+        let mut k = kept.iter();
+        self.members.retain(|_| *k.next().unwrap());
+        let mut k = kept.iter();
+        self.kinds.retain(|_| *k.next().unwrap());
+        let mut k = kept.iter();
+        self.why.retain(|_| *k.next().unwrap());
+        let mut numbers: Vec<u16> = self
+            .kinds
+            .iter()
+            .filter_map(|kind| match kind {
+                Kind::Original(n) | Kind::Copy(n) => Some(*n),
+                Kind::Alike => None,
+            })
+            .collect();
+        numbers.dedup();
+        for n in numbers {
+            let set: Vec<usize> = (0..self.kinds.len()).filter(|&i| matches!(self.kinds[i], Kind::Original(m) | Kind::Copy(m) if m == n)).collect();
+            if set.len() == 1 {
+                self.kinds[set[0]] = Kind::Alike;
+                self.why[set[0]] = Criteria::default();
+                continue;
+            }
+            match set.iter().find(|&&i| self.kinds[i] == Kind::Original(n)) {
+                // The original's reasons are those of the copies left.
+                Some(&original) => {
+                    let all = set.iter().filter(|&&i| i != original).fold(Criteria::default(), |a, &i| a.union(self.why[i]));
+                    self.why[original] = all;
+                }
+                // The original went first, its copies after it.
+                None => {
+                    self.kinds[set[0]] = Kind::Original(n);
+                    for &i in &set {
+                        self.why[i] = Criteria::default();
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// What can tell an original from its copy, in the order `keeper` weighs
 /// them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -510,13 +561,14 @@ fn group(entries: &[Entry], level: Level, cancel: &AtomicBool) -> Vec<Vec<usize>
 }
 
 /// How `a` compares with `b` as an original by each criterion, in
-/// `keeper`'s order (greater is better): unknown dates and the sizes of
-/// files of other formats tell nothing.
+/// `keeper`'s order (greater is better): unknown sizes and dates and the
+/// sizes of files of other formats tell nothing.
 fn ranks(a: &Entry, b: &Entry) -> [(Criterion, Ordering); 4] {
     let older = |x: u64, y: u64| if x == 0 || y == 0 { Ordering::Equal } else { y.cmp(&x) };
+    let more = if a.pixels == 0 || b.pixels == 0 { Ordering::Equal } else { a.pixels.cmp(&b.pixels) };
     let larger = if a.format == b.format { a.file_size.cmp(&b.file_size) } else { Ordering::Equal };
     [
-        (Criterion::Pixels, a.pixels.cmp(&b.pixels)),
+        (Criterion::Pixels, more),
         (Criterion::Modified, older(a.modified, b.modified)),
         (Criterion::Created, older(a.created, b.created)),
         (Criterion::FileSize, larger),
@@ -743,6 +795,10 @@ mod tests {
         // Unknown dates do not count as the oldest: listed later, it loses.
         let undated = at(5, 100, 0, 0, 1, "png");
         assert_eq!(keeper(&[&undated, &avif]), 1);
+        // Nor an unknown size as the smallest: the dates decide.
+        let unknown = at(6, 0, 5, 5, 44, "avif");
+        assert_eq!(keeper(&[&avif, &unknown]), 1);
+        assert_eq!(decided(&unknown, &avif), Some(Criterion::Modified));
         // What decided each.
         assert_eq!(decided(&avif, &jpeg), Some(Criterion::Modified));
         assert_eq!(decided(&jpeg, &small), Some(Criterion::Pixels));
@@ -772,6 +828,9 @@ mod tests {
         let e = off(20);
         let mut entries: Vec<Entry> = [c, a, e, d, b].into_iter().enumerate().map(|(i, p)| entry_of(i, p)).collect();
         // The best image of the group is b, of the set {a, b}; d beats c.
+        for e in &mut entries {
+            e.pixels = 1;
+        }
         entries[4].pixels = 10;
         entries[3].pixels = 5;
         let arranged = arrange(&entries, &[0, 1, 2, 3, 4]);
@@ -780,6 +839,43 @@ mod tests {
         // Told apart by their pixels, the image only alike by nothing.
         let pixels = Criteria::default().with(Criterion::Pixels);
         assert_eq!(arranged.iter().map(|&(_, _, why)| why).collect::<Vec<_>>(), vec![pixels, pixels, pixels, pixels, Criteria::default()]);
+    }
+
+    /// Members taken out keep the others' marks in place; a set without its
+    /// original gets one, a set of one is only alike.
+    #[test]
+    fn a_group_keeps_its_marks_when_members_go() {
+        let p = |s: &str| PathBuf::from(s);
+        let pixels = Criteria::default().with(Criterion::Pixels);
+        let dated = Criteria::default().with(Criterion::Modified);
+        let group = || Group {
+            members: ["o1", "c1a", "c1b", "o2", "c2", "alike"].iter().map(|s| p(s)).collect(),
+            kinds: vec![Kind::Original(1), Kind::Copy(1), Kind::Copy(1), Kind::Original(2), Kind::Copy(2), Kind::Alike],
+            why: vec![pixels.union(dated), pixels, dated, pixels, pixels, Criteria::default()],
+        };
+        // A copy deleted: the next member keeps its own mark.
+        let mut g = group();
+        g.retain(|m| m != Path::new("c1a"));
+        assert_eq!(g.members, ["o1", "c1b", "o2", "c2", "alike"].map(p));
+        assert_eq!(g.kinds, vec![Kind::Original(1), Kind::Copy(1), Kind::Original(2), Kind::Copy(2), Kind::Alike]);
+        assert_eq!(g.why, vec![dated, dated, pixels, pixels, Criteria::default()]);
+        // The original deleted: its first copy is the original.
+        let mut g = group();
+        g.retain(|m| m != Path::new("o1"));
+        assert_eq!(&g.kinds[..2], &[Kind::Original(1), Kind::Copy(1)]);
+        assert_eq!(&g.why[..2], &[Criteria::default(), Criteria::default()]);
+        // A set of one left: only alike, no copy to select.
+        let mut g = group();
+        g.retain(|m| m != Path::new("c2"));
+        assert_eq!(g.kinds[3], Kind::Alike);
+        assert_eq!(g.why[3], Criteria::default());
+        let mut g = group();
+        g.retain(|m| m != Path::new("o2"));
+        assert_eq!(g.kinds[3], Kind::Alike);
+        // Nothing taken out: nothing changes.
+        let mut g = group();
+        g.retain(|_| true);
+        assert_eq!(g, group());
     }
 
     #[test]
