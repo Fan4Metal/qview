@@ -7,7 +7,7 @@ use egui::{Align, Align2, Color32, FontId, Layout, Margin, Painter, PointerButto
 
 use super::{TEXT, TEXT_WEAK, panel_frame};
 use crate::app::{App, file_name};
-use crate::gallery::{self, ASPECTS, Cell, HEADER, HOVER_DELAY, LABEL, MAX_COLUMNS_SIZE, MAX_SIZE, MIN_COLUMNS, MIN_SIZE, PAD, Scroll};
+use crate::gallery::{self, ASPECTS, Badge, Cell, HEADER, HOVER_DELAY, LABEL, MAX_COLUMNS_SIZE, MAX_SIZE, MIN_COLUMNS, MIN_SIZE, PAD, Scroll};
 use crate::input::Cmd;
 use crate::thumbs::Request;
 use crate::tree::Action;
@@ -700,16 +700,18 @@ impl App {
         let favorites = &self.favorites;
         let pinned = &self.pinned;
         let selection = &self.selection;
+        let badges = self.thumb_badges;
         // The duplicates' marks: the original of each set of the same
         // picture and its copies; the images only alike have none.
-        let marks: std::collections::HashMap<&std::path::Path, crate::duplicates::Kind> = self
+        // With what told an original from its copies.
+        let marks: std::collections::HashMap<&std::path::Path, (crate::duplicates::Kind, crate::duplicates::Criteria)> = self
             .dups
             .iter()
             .filter(|_| groups)
             .flat_map(|d| &d.groups)
-            .flat_map(|g| g.members.iter().zip(&g.kinds))
-            .filter(|(_, kind)| **kind != crate::duplicates::Kind::Alike)
-            .map(|(p, kind)| (p.as_path(), *kind))
+            .flat_map(|g| g.members.iter().zip(&g.kinds).zip(&g.why))
+            .filter(|((_, kind), _)| **kind != crate::duplicates::Kind::Alike)
+            .map(|((p, kind), why)| (p.as_path(), (*kind, *why)))
             .collect();
         let band = selection.band.as_ref().map(|b| b.start).zip(ctx.pointer_latest_pos());
         // A folder whose header was double-clicked.
@@ -808,7 +810,7 @@ impl App {
                             painter.rect_filled(square.shrink(square.size().min_elem() * 0.08), 2.0, FOLDER_SLOT);
                         }
                     }
-                    comic_badge(&painter, badge_frame, path);
+                    type_badge(&painter, badge_frame, path);
                     let name = path.file_stem().map_or_else(|| file_name(path), |s| s.to_string_lossy().into_owned());
                     let name = match &preview {
                         Some(p) if p.count > 0 => format!("{name} · {}", p.count),
@@ -912,6 +914,8 @@ impl App {
                 let mut corner = square.right_top();
                 let mut left = square.left_top();
                 let mut bottom = square.left_bottom();
+                // The thumbnail on screen, the image's size and the file's.
+                let mut shown = None;
                 match gallery.thumb(path) {
                     Some(t) => match &t.texture {
                         Some(texture) => {
@@ -921,6 +925,7 @@ impl App {
                             corner = rect.right_top();
                             left = rect.left_top();
                             bottom = rect.left_bottom();
+                            shown = Some((rect, t.width, t.height, t.file_size, t.modified, t.created));
                         }
                         None => {
                             let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
@@ -934,7 +939,57 @@ impl App {
                 if favorites.contains(path) {
                     star(&painter, corner);
                 }
-                if let Some(&kind) = marks.get(path.as_path()) {
+                // Along the bottom of a thumbnail large enough: the type on
+                // the right, the dimensions and the size on the left, a
+                // duplicate's mark above them.
+                let large = shown.is_some_and(|(rect, ..)| rect.width() >= BADGES_MIN.x && rect.height() >= BADGES_MIN.y);
+                let mark = marks.get(path.as_path()).copied();
+                // Among duplicates, what told the original from its copies
+                // is shown even when its badge is not, green on the
+                // original, red on the copy.
+                let why = mark.map_or_else(Default::default, |(_, why)| why);
+                if let Some((rect, w, h, size, modified, created)) = shown.filter(|_| large && (badges.any() || why != Default::default())) {
+                    use crate::duplicates::{Criterion, Kind};
+                    let original = matches!(mark, Some((Kind::Original(_), _)));
+                    let tone = |c: Criterion| match why.has(c) {
+                        true if original => BETTER,
+                        true => WORSE,
+                        false => TEXT,
+                    };
+                    let shows = |b: Badge, c: Criterion| badges.has(b) || why.has(c);
+                    let kind = if badges.has(Badge::Type) { type_badge(&painter, rect, path) } else { vec2(0.0, 0.0) };
+                    // The lines from the bottom up.
+                    let mut lines: Vec<Vec<(String, Color32)>> = vec![Vec::new()];
+                    if shows(Badge::Dimensions, Criterion::Pixels) && w > 0 && h > 0 {
+                        lines[0].push((format!("{w}×{h}"), tone(Criterion::Pixels)));
+                    }
+                    if shows(Badge::FileSize, Criterion::FileSize) && size > 0 {
+                        lines[0].push((crate::format::file_size(size), tone(Criterion::FileSize)));
+                    }
+                    let date = |prefix: &str, filetime: u64| crate::win::local_date(filetime).map(|d| format!("{prefix} {d}"));
+                    if shows(Badge::DateModified, Criterion::Modified)
+                        && let Some(d) = date(tr!("mod.", "изм."), modified)
+                    {
+                        lines.push(vec![(d, tone(Criterion::Modified))]);
+                    }
+                    if shows(Badge::DateCreated, Criterion::Created)
+                        && let Some(d) = date(tr!("cr.", "созд."), created)
+                    {
+                        lines.push(vec![(d, tone(Criterion::Created))]);
+                    }
+                    let info = info_lines(&painter, rect, &lines, kind.x);
+                    // The mark goes above the badges.
+                    let row = info.max(kind.y);
+                    if row > 0.0 {
+                        bottom.y -= row + 2.0;
+                    }
+                }
+                // A thumbnail too small for a badge (a stripe, an icon):
+                // the mark under it, in the corner of its frame.
+                if shown.is_some() && !large {
+                    bottom = square.left_bottom();
+                }
+                if let Some((kind, _)) = mark {
                     duplicate_badge(&painter, bottom, kind);
                 }
                 let circle = choosing.then(|| left + vec2(TICK_INSET, TICK_INSET));
@@ -1038,6 +1093,7 @@ impl App {
             self.show_menu_bar_item(ui);
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
             self.duplicates_items(ui);
+            self.badges_menu(ui);
             if sections {
                 self.follow_item(ui);
             }
@@ -1337,17 +1393,62 @@ fn tick(painter: &Painter, c: Pos2, chosen: bool) {
     }
 }
 
-/// A comic book archive's type ("CBZ", "CBR") in the bottom right corner
-/// of `frame` (its cover), in the colours of its file type icon.
-fn comic_badge(painter: &Painter, frame: Rect, path: &std::path::Path) {
+/// The file type of `path` ("JPG", "CBZ") in the bottom right corner of
+/// `frame` (its thumbnail, a comic book's cover), in the colours of its
+/// file type icon; its size, zero for none.
+fn type_badge(painter: &Painter, frame: Rect, path: &std::path::Path) -> egui::Vec2 {
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    let Some(t) = crate::filetypes::FILE_TYPES.iter().find(|t| t.extensions.contains(&ext.as_str())) else { return };
     let rgb = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
-    let galley = painter.layout_no_wrap(t.label.to_owned(), FontId::proportional(11.0), rgb(t.ink));
+    // A type qview registers, in its icon's colours; any other (a codec's,
+    // a file of another extension) by its extension in grey.
+    let (label, ink, band) = match crate::filetypes::FILE_TYPES.iter().find(|t| t.extensions.contains(&ext.as_str())) {
+        Some(t) => (t.label.to_owned(), rgb(t.ink), rgb(t.band)),
+        None if !ext.is_empty() => (ext.to_uppercase(), Color32::WHITE, COPY_BADGE),
+        None => return vec2(0.0, 0.0),
+    };
+    let galley = painter.layout_no_wrap(label, FontId::proportional(11.0), ink);
     let size = galley.size() + vec2(8.0, 2.0);
     let badge = Rect::from_min_size(frame.right_bottom() - size - vec2(3.0, 3.0), size);
-    painter.rect(badge, 3.0, rgb(t.band), egui::Stroke::new(1.0, Color32::from_black_alpha(140)), egui::StrokeKind::Inside);
-    painter.galley(badge.min + vec2(4.0, 1.0), galley, rgb(t.ink));
+    painter.rect(badge, 3.0, band, egui::Stroke::new(1.0, Color32::from_black_alpha(140)), egui::StrokeKind::Inside);
+    painter.galley(badge.min + vec2(4.0, 1.0), galley, ink);
+    size
+}
+
+/// `lines` of coloured parts (the dimensions and the file size, the
+/// dates) in the bottom left corner of the thumbnail `frame`, the first at
+/// the bottom beside `reserved` points on the right, each above the one
+/// before; a line too wide keeps its first part, or is left out, and lines
+/// stop below the top corners. The height taken, 0 for none.
+fn info_lines(painter: &Painter, frame: Rect, lines: &[Vec<(String, Color32)>], reserved: f32) -> f32 {
+    let font = FontId::proportional(11.0);
+    let layout = |parts: &[(String, Color32)]| {
+        let mut job = LayoutJob::default();
+        for (k, (text, colour)) in parts.iter().enumerate() {
+            if k > 0 {
+                job.append(" · ", 0.0, egui::TextFormat::simple(font.clone(), TEXT));
+            }
+            job.append(text, 0.0, egui::TextFormat::simple(font.clone(), *colour));
+        }
+        painter.layout_job(job)
+    };
+    let bottom = frame.bottom() - 3.0;
+    let mut y = bottom;
+    for (n, parts) in lines.iter().enumerate().filter(|(_, p)| !p.is_empty()) {
+        let room = frame.width() - 6.0 - if n == 0 && reserved > 0.0 { reserved + 4.0 } else { 0.0 };
+        let fits = |g: &std::sync::Arc<egui::Galley>| g.size().x + 8.0 <= room;
+        let galley = Some(layout(parts)).filter(fits).or_else(|| Some(layout(&parts[..1])).filter(fits));
+        let Some(galley) = galley else { continue };
+        let size = galley.size() + vec2(8.0, 2.0);
+        // Not into the corners at the top (the tick, the star).
+        if y - size.y < frame.top() + 24.0 {
+            break;
+        }
+        let badge = Rect::from_min_size(pos2(frame.left() + 3.0, y - size.y), size);
+        painter.rect_filled(badge, 3.0, Color32::from_rgba_unmultiplied(0x10, 0x10, 0x10, 0xc0));
+        painter.galley(badge.min + vec2(4.0, 1.0), galley, TEXT);
+        y -= size.y + 2.0;
+    }
+    if y < bottom { bottom - y - 2.0 } else { 0.0 }
 }
 
 /// The file name under a thumbnail, cut short with an ellipsis.
@@ -1377,6 +1478,14 @@ fn duplicate_badge(painter: &Painter, corner: Pos2, kind: crate::duplicates::Kin
     painter.rect(badge, 3.0, fill, egui::Stroke::new(1.0, Color32::from_black_alpha(140)), egui::StrokeKind::Inside);
     painter.galley(badge.min + vec2(4.0, 1.0), galley, Color32::WHITE);
 }
+
+/// The smallest thumbnail on screen that gets the badges (View → Thumbnail
+/// Badges), in points: smaller ones would be covered by them.
+const BADGES_MIN: egui::Vec2 = vec2(64.0, 40.0);
+
+/// What made an original the original: green on it, red on its copy.
+const BETTER: Color32 = Color32::from_rgb(0x6c, 0xd4, 0x78);
+const WORSE: Color32 = Color32::from_rgb(0xff, 0x7a, 0x7a);
 
 /// The ground of a copy's badge.
 const COPY_BADGE: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5a);

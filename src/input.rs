@@ -137,6 +137,11 @@ pub enum Cmd {
     Duplicates,
     /// Choose the copies of the originals in the groups of duplicates.
     SelectCopies,
+    /// Show or hide this over the gallery's thumbnails (View → Thumbnail
+    /// Badges).
+    ThumbBadge(crate::gallery::Badge),
+    /// Show every badge over the thumbnails, or none.
+    ThumbBadgesAll(bool),
     /// Save it in this format beside its file, which stays current (File →
     /// Convert To).
     ConvertTo(crate::edit::Format),

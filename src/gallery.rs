@@ -83,7 +83,9 @@ pub struct Thumb {
     pub width: u32,
     pub height: u32,
     pub file_size: u64,
+    /// FILETIMEs, 0 when unknown.
     pub modified: u64,
+    pub created: u64,
     /// Frame it was last drawn in.
     used: u64,
 }
@@ -104,6 +106,88 @@ pub const PREVIEW_IMAGES: usize = 4;
 /// look alike in any folder and a portrait folder does not make them tall.
 pub fn folder_frame(frame: Vec2) -> Vec2 {
     egui::vec2(frame.x, (frame.x * 0.75).round())
+}
+
+/// One of what a cell can show over its thumbnail (View → Thumbnail
+/// Badges).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Badge {
+    /// The file type's label in its colours, as on its icon.
+    Type,
+    /// The image's width x height.
+    Dimensions,
+    FileSize,
+    DateModified,
+    DateCreated,
+}
+
+impl Badge {
+    pub const ALL: [Badge; 5] = [Badge::Type, Badge::Dimensions, Badge::FileSize, Badge::DateModified, Badge::DateCreated];
+
+    /// As persisted (`thumb_badges`).
+    fn name(self) -> &'static str {
+        match self {
+            Badge::Type => "type",
+            Badge::Dimensions => "dimensions",
+            Badge::FileSize => "size",
+            Badge::DateModified => "modified",
+            Badge::DateCreated => "created",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Badge::Type => tr!("File Type", "Тип файла"),
+            Badge::Dimensions => tr!("Dimensions", "Разрешение"),
+            Badge::FileSize => tr!("File Size", "Размер файла"),
+            Badge::DateModified => tr!("Date Modified", "Дата изменения"),
+            Badge::DateCreated => tr!("Date Created", "Дата создания"),
+        }
+    }
+}
+
+/// The badges shown, none by default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Badges(u8);
+
+impl Badges {
+    pub fn has(self, b: Badge) -> bool {
+        self.0 & (1 << b as u8) != 0
+    }
+
+    pub fn toggle(&mut self, b: Badge) {
+        self.0 ^= 1 << b as u8;
+    }
+
+    /// Whether every one is shown.
+    pub fn all(self) -> bool {
+        Badge::ALL.iter().all(|&b| self.has(b))
+    }
+
+    /// Every one, or none.
+    pub fn set_all(&mut self, on: bool) {
+        *self = if on { Badges(Badge::ALL.iter().fold(0, |m, &b| m | 1 << b as u8)) } else { Badges::default() };
+    }
+
+    pub fn any(self) -> bool {
+        self.0 != 0
+    }
+
+    /// Their names joined by commas ("" for none), as persisted.
+    pub fn to_names(self) -> String {
+        Badge::ALL.iter().filter(|&&b| self.has(b)).map(|b| b.name()).collect::<Vec<_>>().join(",")
+    }
+
+    /// From `to_names`; unknown names are skipped.
+    pub fn from_names(names: &str) -> Badges {
+        let mut badges = Badges::default();
+        for name in names.split(',').map(str::trim) {
+            if let Some(&b) = Badge::ALL.iter().find(|b| b.name() == name) {
+                badges.toggle(b);
+            }
+        }
+        badges
+    }
 }
 
 /// Where to scroll the grid to on the next frame.
@@ -355,12 +439,13 @@ impl Gallery {
                         height: t.height,
                         file_size: t.file_size,
                         modified: t.modified,
+                        created: t.created,
                         used: self.frame,
                     }
                 }
                 Err(e) => {
                     log::debug!("no thumbnail of {}: {e}", made.request.path.display());
-                    Thumb { texture: None, px: [0, 0], side: u32::MAX, width: 0, height: 0, file_size: 0, modified: 0, used: self.frame }
+                    Thumb { texture: None, px: [0, 0], side: u32::MAX, width: 0, height: 0, file_size: 0, modified: 0, created: 0, used: self.frame }
                 }
             };
             self.pixels += texture_pixels(&thumb);
@@ -857,6 +942,27 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn badges_round_trip() {
+        let mut b = Badges::default();
+        assert_eq!(b.to_names(), "");
+        b.toggle(Badge::FileSize);
+        b.toggle(Badge::Type);
+        assert!(b.has(Badge::Type) && !b.has(Badge::Dimensions) && b.has(Badge::FileSize));
+        assert_eq!(b.to_names(), "type,size");
+        assert_eq!(Badges::from_names("type,size"), b);
+        assert_eq!(Badges::from_names(" size , later ,type"), b);
+        assert_eq!(Badges::from_names(""), Badges::default());
+        b.toggle(Badge::Type);
+        assert_eq!(b.to_names(), "size");
+        b.set_all(true);
+        assert!(b.all() && b.any());
+        assert_eq!(b.to_names(), "type,dimensions,size,modified,created");
+        assert_eq!(Badges::from_names(&b.to_names()), b);
+        b.set_all(false);
+        assert!(!b.any() && b == Badges::default());
+    }
 
     #[test]
     fn grid_fills_the_width() {

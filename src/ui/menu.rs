@@ -106,6 +106,21 @@ impl App {
         self.item(ui, tr!("Exit", "Выход").into(), "Ctrl+W", Cmd::Close, true);
     }
 
+    /// What the gallery's cells show over their thumbnails, each on or off.
+    pub(super) fn badges_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button(tr!("Thumbnail Badges", "Значки на миниатюрах"), |ui| {
+            for b in crate::gallery::Badge::ALL {
+                self.check_item(ui, b.label().into(), "", Cmd::ThumbBadge(b), self.thumb_badges.has(b));
+            }
+            ui.separator();
+            if self.thumb_badges.all() {
+                self.item(ui, tr!("Hide All", "Скрыть все").into(), "", Cmd::ThumbBadgesAll(false), true);
+            } else {
+                self.item(ui, tr!("Show All", "Показать все").into(), "", Cmd::ThumbBadgesAll(true), true);
+            }
+        });
+    }
+
     /// Find Duplicates among the images listed, shown in the gallery as
     /// groups (checked while they are; again, or Esc, for the listing),
     /// and then Select Copies.
@@ -138,6 +153,7 @@ impl App {
         });
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         self.duplicates_items(ui);
+        self.badges_menu(ui);
         ui.separator();
         ui.menu_button(tr!("Zoom", "Масштаб"), |ui| self.zoom_items(ui, &e));
         self.rotate_menu(ui, &e);

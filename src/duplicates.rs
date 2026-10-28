@@ -233,6 +233,38 @@ pub struct Group {
     pub members: Vec<PathBuf>,
     /// What each member is.
     pub kinds: Vec<Kind>,
+    /// What told the original of each set from its copies (`decided`): a
+    /// copy's own, all of its copies' for the original, none for an image
+    /// only alike.
+    pub why: Vec<Criteria>,
+}
+
+/// What can tell an original from its copy, in the order `keeper` weighs
+/// them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Criterion {
+    Pixels,
+    Modified,
+    Created,
+    FileSize,
+}
+
+/// A set of `Criterion`s.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Criteria(u8);
+
+impl Criteria {
+    pub fn has(self, c: Criterion) -> bool {
+        self.0 & (1 << c as u8) != 0
+    }
+
+    fn with(self, c: Criterion) -> Criteria {
+        Criteria(self.0 | 1 << c as u8)
+    }
+
+    fn union(self, other: Criteria) -> Criteria {
+        Criteria(self.0 | other.0)
+    }
 }
 
 /// Where each group starts in `files`, the groups' members as listed (some
@@ -333,10 +365,11 @@ fn find(files: &[PathBuf], cancel: &AtomicBool, done: &AtomicUsize) -> Vec<Group
     group(&entries, SIMILAR, cancel)
         .into_iter()
         .map(|members| {
-            let mut group = Group { members: Vec::new(), kinds: Vec::new() };
-            for (k, kind) in arrange(&entries, &members) {
+            let mut group = Group { members: Vec::new(), kinds: Vec::new(), why: Vec::new() };
+            for (k, kind, why) in arrange(&entries, &members) {
                 group.members.push(files[entries[k].index].clone());
                 group.kinds.push(kind);
+                group.why.push(why);
             }
             group
         })
@@ -349,7 +382,7 @@ fn find(files: &[PathBuf], cancel: &AtomicBool, done: &AtomicUsize) -> Vec<Group
 /// of the group's best image first, the others in the order of their
 /// first members; an image only alike is a set of its own. The sets of
 /// two or more are numbered when there are several (see `Kind`).
-fn arrange(entries: &[Entry], members: &[usize]) -> Vec<(usize, Kind)> {
+fn arrange(entries: &[Entry], members: &[usize]) -> Vec<(usize, Kind, Criteria)> {
     // Sets by the same joining as the groups, within the group.
     let within: Vec<Entry> = members.iter().map(|&k| entries[k].clone()).collect();
     let sets = group(&within, SAME, &AtomicBool::new(false));
@@ -372,21 +405,23 @@ fn arrange(entries: &[Entry], members: &[usize]) -> Vec<(usize, Kind)> {
     let mut out = Vec::with_capacity(members.len());
     for mut set in ordered {
         if set.len() == 1 {
-            out.push((members[set[0]], Kind::Alike));
+            out.push((members[set[0]], Kind::Alike, Criteria::default()));
             continue;
         }
         number += 1;
         let n = if numbered { number } else { 0 };
         let original = set.remove(keeper(&set.iter().map(|&j| &within[j]).collect::<Vec<_>>()));
-        out.push((members[original], Kind::Original(n)));
-        out.extend(set.into_iter().map(|j| (members[j], Kind::Copy(n))));
+        let copies: Vec<Criteria> =
+            set.iter().map(|&j| decided(&within[original], &within[j]).map_or_else(Criteria::default, |c| Criteria::default().with(c))).collect();
+        let all = copies.iter().fold(Criteria::default(), |a, &c| a.union(c));
+        out.push((members[original], Kind::Original(n), all));
+        out.extend(set.into_iter().zip(copies).map(|(j, why)| (members[j], Kind::Copy(n), why)));
     }
     out
 }
 
 /// The entry of an image from its thumbnail; `None` when it has none.
 fn entry(path: &Path, index: usize) -> Option<Entry> {
-    use std::os::windows::fs::MetadataExt;
     let thumb = match crate::thumbs::make(path, THUMB_SIDE) {
         Ok(t) => t,
         Err(e) => {
@@ -396,9 +431,6 @@ fn entry(path: &Path, index: usize) -> Option<Entry> {
     };
     let p = &thumb.pixels;
     let print = Print::of_bgra(&p.levels[0], p.width as usize, p.height as usize, Some((thumb.width, thumb.height)))?;
-    // An image in an archive has no file of its own: its dates are the
-    // thumbnail's.
-    let created = std::fs::metadata(path).map_or(thumb.modified, |m| m.creation_time());
     let format = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     Some(Entry {
         index,
@@ -406,7 +438,7 @@ fn entry(path: &Path, index: usize) -> Option<Entry> {
         pixels: u64::from(thumb.width) * u64::from(thumb.height),
         file_size: thumb.file_size,
         modified: thumb.modified,
-        created,
+        created: thumb.created,
         format,
     })
 }
@@ -477,19 +509,32 @@ fn group(entries: &[Entry], level: Level, cancel: &AtomicBool) -> Vec<Vec<usize>
     groups
 }
 
+/// How `a` compares with `b` as an original by each criterion, in
+/// `keeper`'s order (greater is better): unknown dates and the sizes of
+/// files of other formats tell nothing.
+fn ranks(a: &Entry, b: &Entry) -> [(Criterion, Ordering); 4] {
+    let older = |x: u64, y: u64| if x == 0 || y == 0 { Ordering::Equal } else { y.cmp(&x) };
+    let larger = if a.format == b.format { a.file_size.cmp(&b.file_size) } else { Ordering::Equal };
+    [
+        (Criterion::Pixels, a.pixels.cmp(&b.pixels)),
+        (Criterion::Modified, older(a.modified, b.modified)),
+        (Criterion::Created, older(a.created, b.created)),
+        (Criterion::FileSize, larger),
+    ]
+}
+
+/// What made `original` the original rather than `copy`: the first
+/// criterion that tells them apart; None when only the order listed did.
+fn decided(original: &Entry, copy: &Entry) -> Option<Criterion> {
+    ranks(original, copy).into_iter().find(|(_, o)| o.is_ne()).map(|(c, _)| c)
+}
+
 /// Which of a group's `members` to keep (see the module's description);
 /// the first listed when nothing tells them apart.
 fn keeper(members: &[&Entry]) -> usize {
     // Greater is better.
     let rank = |a: &Entry, b: &Entry| -> Ordering {
-        let older = |x: u64, y: u64| if x == 0 || y == 0 { Ordering::Equal } else { y.cmp(&x) };
-        let larger = if a.format == b.format { a.file_size.cmp(&b.file_size) } else { Ordering::Equal };
-        a.pixels
-            .cmp(&b.pixels)
-            .then(older(a.modified, b.modified))
-            .then(older(a.created, b.created))
-            .then(larger)
-            .then(b.index.cmp(&a.index))
+        ranks(a, b).into_iter().map(|(_, o)| o).find(|o| o.is_ne()).unwrap_or_else(|| b.index.cmp(&a.index))
     };
     (0..members.len()).reduce(|best, k| if rank(members[k], members[best]) == Ordering::Greater { k } else { best }).unwrap_or(0)
 }
@@ -656,7 +701,11 @@ mod tests {
     #[test]
     fn sections_follow_the_groups() {
         let p = |s: &str| PathBuf::from(s);
-        let group = |m: &[&str]| Group { members: m.iter().map(|s| p(s)).collect(), kinds: vec![Kind::Alike; m.len()] };
+        let group = |m: &[&str]| Group {
+            members: m.iter().map(|s| p(s)).collect(),
+            kinds: vec![Kind::Alike; m.len()],
+            why: vec![Criteria::default(); m.len()],
+        };
         let groups = vec![group(&["a", "b"]), group(&["c", "d", "e"])];
         assert_eq!(starts(&[p("a"), p("b"), p("c"), p("d"), p("e")], &groups), vec![0, 2]);
         // The first group's original filtered out, the second's copies too.
@@ -694,6 +743,13 @@ mod tests {
         // Unknown dates do not count as the oldest: listed later, it loses.
         let undated = at(5, 100, 0, 0, 1, "png");
         assert_eq!(keeper(&[&undated, &avif]), 1);
+        // What decided each.
+        assert_eq!(decided(&avif, &jpeg), Some(Criterion::Modified));
+        assert_eq!(decided(&jpeg, &small), Some(Criterion::Pixels));
+        assert_eq!(decided(&avif, &copy), Some(Criterion::Created));
+        assert_eq!(decided(&better, &avif), Some(Criterion::FileSize));
+        assert_eq!(decided(&avif, &avif.clone()), None);
+        assert_eq!(decided(&avif, &undated), None);
     }
 
     /// A group of five alike, as found in a real folder: two pictures
@@ -719,7 +775,11 @@ mod tests {
         entries[4].pixels = 10;
         entries[3].pixels = 5;
         let arranged = arrange(&entries, &[0, 1, 2, 3, 4]);
-        assert_eq!(arranged, vec![(4, Kind::Original(1)), (1, Kind::Copy(1)), (3, Kind::Original(2)), (0, Kind::Copy(2)), (2, Kind::Alike)]);
+        let kinds: Vec<(usize, Kind)> = arranged.iter().map(|&(k, kind, _)| (k, kind)).collect();
+        assert_eq!(kinds, vec![(4, Kind::Original(1)), (1, Kind::Copy(1)), (3, Kind::Original(2)), (0, Kind::Copy(2)), (2, Kind::Alike)]);
+        // Told apart by their pixels, the image only alike by nothing.
+        let pixels = Criteria::default().with(Criterion::Pixels);
+        assert_eq!(arranged.iter().map(|&(_, _, why)| why).collect::<Vec<_>>(), vec![pixels, pixels, pixels, pixels, Criteria::default()]);
     }
 
     #[test]
@@ -797,10 +857,16 @@ mod tests {
                 .members
                 .iter()
                 .zip(&g.kinds)
-                .map(|(p, kind)| {
+                .zip(&g.why)
+                .map(|((p, kind), why)| {
+                    let by: String = [(Criterion::Pixels, "px"), (Criterion::Modified, "mod"), (Criterion::Created, "cr"), (Criterion::FileSize, "size")]
+                        .iter()
+                        .filter(|(c, _)| why.has(*c))
+                        .map(|(_, n)| format!("[{n}]"))
+                        .collect();
                     let mark = match kind {
-                        Kind::Original(n) => format!("original {n} "),
-                        Kind::Copy(n) => format!("copy {n} "),
+                        Kind::Original(n) => format!("original {n}{by} "),
+                        Kind::Copy(n) => format!("copy {n}{by} "),
                         Kind::Alike => String::new(),
                     };
                     format!("{mark}{}", p.file_name().unwrap().to_string_lossy())

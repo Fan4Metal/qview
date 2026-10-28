@@ -124,6 +124,7 @@ const COLOUR_KEY: &str = "info_colour";
 const SLIDESHOW_SECONDS_KEY: &str = "slideshow_seconds";
 const SLIDESHOW_LOOP_KEY: &str = "slideshow_loop";
 const THUMB_FILL_KEY: &str = "thumb_fill";
+const THUMB_BADGES_KEY: &str = "thumb_badges";
 const THUMB_ASPECT_KEY: &str = "thumb_aspect";
 /// `thumb_aspect` in the settings when it is Auto.
 const AUTO: &str = "auto";
@@ -524,6 +525,9 @@ pub struct App {
     pub tree_width: f32,
     /// The gallery's thumbnails fill their cells, cropped.
     pub thumb_fill: bool,
+    /// What the gallery's cells show over their thumbnails (View →
+    /// Thumbnail Badges), persisted as `thumb_badges`.
+    pub thumb_badges: gallery::Badges,
     /// Proportions of the gallery's cells, one of `gallery::ASPECTS`;
     /// `None`: Auto, those of most images of the folder.
     pub thumb_aspect: Option<f32>,
@@ -1014,6 +1018,7 @@ impl App {
                 .and_then(|name| crate::histogram::Channels::from_name(&name))
                 .unwrap_or(crate::histogram::Channels::Rgb),
             thumb_fill: cc.storage.and_then(|s| s.get_string(THUMB_FILL_KEY)).as_deref() == Some("true"),
+            thumb_badges: cc.storage.and_then(|s| s.get_string(THUMB_BADGES_KEY)).map_or_else(Default::default, |v| gallery::Badges::from_names(&v)),
             thumb_aspect: match cc.storage.and_then(|s| s.get_string(THUMB_ASPECT_KEY)).as_deref() {
                 Some(AUTO) => None,
                 v => Some(v.and_then(|v| gallery::ASPECTS.iter().find(|(n, _)| *n == v)).map_or(1.0, |(_, a)| *a)),
@@ -2921,6 +2926,8 @@ impl App {
             Cmd::Paste => self.paste(ctx),
             Cmd::Duplicates => self.toggle_duplicates(ctx),
             Cmd::SelectCopies => self.select_copies(),
+            Cmd::ThumbBadge(b) => self.thumb_badges.toggle(b),
+            Cmd::ThumbBadgesAll(on) => self.thumb_badges.set_all(on),
             Cmd::FlipHorizontal => self.view.mirror(true),
             Cmd::FlipVertical => self.view.mirror(false),
             // A slideshow's pause first; an animation's otherwise.
@@ -5400,6 +5407,7 @@ impl eframe::App for App {
         storage.set_string(SLIDESHOW_SECONDS_KEY, self.slideshow_seconds.to_string());
         storage.set_string(SLIDESHOW_LOOP_KEY, self.slideshow_loop.to_string());
         storage.set_string(THUMB_FILL_KEY, self.thumb_fill.to_string());
+        storage.set_string(THUMB_BADGES_KEY, self.thumb_badges.to_names());
         let aspect = self.thumb_aspect.map_or(AUTO, gallery::aspect_name);
         storage.set_string(THUMB_ASPECT_KEY, aspect.to_string());
         storage.set_string(LANGUAGE_KEY, self.lang.name().to_string());

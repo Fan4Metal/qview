@@ -46,6 +46,8 @@ pub struct Thumbnail {
     pub file_size: u64,
     /// Last write time as a FILETIME, 0 if unknown.
     pub modified: u64,
+    /// Creation time as a FILETIME, 0 if unknown (an image in an archive).
+    pub created: u64,
 }
 
 #[derive(Default)]
@@ -171,6 +173,7 @@ pub fn make(path: &Path, side: u32) -> Result<Thumbnail, String> {
                 height,
                 file_size: file.as_ref().map_or(0, |m| m.len()),
                 modified: file.as_ref().map_or(0, |m| m.last_write_time()),
+                created: file.as_ref().map_or(0, |m| m.creation_time()),
             }
         }
         Err(e) => {
@@ -185,6 +188,8 @@ pub fn make(path: &Path, side: u32) -> Result<Thumbnail, String> {
                 height: meta.height,
                 file_size: meta.file_size,
                 modified: meta.modified,
+                // Not in `Meta`; an image in an archive has no file of its own.
+                created: if crate::archive::inside(path) { 0 } else { std::fs::metadata(path).map_or(0, |m| m.creation_time()) },
             }
         }
     };
