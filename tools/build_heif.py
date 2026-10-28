@@ -8,7 +8,7 @@ installer and the portable archive take them from there.
 
 libheif and libde265 are LGPL-3.0: they stay separate DLLs that can be
 replaced. dav1d is BSD-2-Clause, so it may be linked into heif.dll. Their
-licences (licenses\LGPL-3.0.txt, licenses\dav1d-COPYING.txt) and the source of
+licences (licenses\LGPL-3.0.txt, licenses\dav1d-license.txt) and the source of
 these tags (THIRD_PARTY_LICENSES.md, which a test checks against LIBHEIF,
 LIBDE265 and DAV1D) are in the repository and shipped from there.
 

@@ -1415,8 +1415,9 @@ fn type_badge(painter: &Painter, frame: Rect, path: &std::path::Path) -> egui::V
 }
 
 /// `lines` of coloured parts (the dimensions and the file size, the
-/// dates) in the bottom left corner of the thumbnail `frame`, the first at
-/// the bottom beside `reserved` points on the right, each above the one
+/// dates) in the bottom left corner of the thumbnail `frame`, the first
+/// not empty at the bottom beside `reserved` points on the right, each
+/// above the one
 /// before; a line too wide keeps its first part, or is left out, and lines
 /// stop below the top corners. The height taken, 0 for none.
 fn info_lines(painter: &Painter, frame: Rect, lines: &[Vec<(String, Color32)>], reserved: f32) -> f32 {
@@ -1433,8 +1434,9 @@ fn info_lines(painter: &Painter, frame: Rect, lines: &[Vec<(String, Color32)>], 
     };
     let bottom = frame.bottom() - 3.0;
     let mut y = bottom;
-    for (n, parts) in lines.iter().enumerate().filter(|(_, p)| !p.is_empty()) {
-        let room = frame.width() - 6.0 - if n == 0 && reserved > 0.0 { reserved + 4.0 } else { 0.0 };
+    for parts in lines.iter().filter(|p| !p.is_empty()) {
+        // The line at the bottom, whichever it is, leaves the type its room.
+        let room = frame.width() - 6.0 - if y == bottom && reserved > 0.0 { reserved + 4.0 } else { 0.0 };
         let fits = |g: &std::sync::Arc<egui::Galley>| g.size().x + 8.0 <= room;
         let galley = Some(layout(parts)).filter(fits).or_else(|| Some(layout(&parts[..1])).filter(fits));
         let Some(galley) = galley else { continue };
