@@ -258,6 +258,17 @@ The filter by name is opened in the bar above the grid with `/`, `Ctrl+F` (also 
 
 </details>
 
+<details>
+<summary>Finding duplicates</summary>
+
+View → Find Duplicates (also in the context menu of the empty space of the grid) looks for duplicates among the images listed in the gallery, with the sub-folders when they are listed and only those passing the filter by name, and shows groups of similar images in place of the listing, each under a header "Group N" with the number of its images. Within a group, each picture found more than once is marked: its "Original", the copy recommended to keep, and its "Copy" files, which hold the same picture: a copy of the file, the picture converted to another format, saved again, made smaller, turned or mirrored. When a group holds several such pictures, their marks are numbered ("Original 1" with "Copy 1", "Original 2" with "Copy 2"). Images of a group without a mark are only alike, for instance frames of the same series or edited versions, and are left to be judged.
+
+The images are compared by their small thumbnails (those of Windows where they exist, so that no file is decoded whole), reduced to a grid of 9x9 levels of grey whose neighbouring cells are compared, together with the proportions of the images and the colours of nine zones of each, so that plain images, thin stripes and icons of one layout in other colours are not taken for each other; turned and mirrored images are compared in all eight positions. Cropped copies are not found. While the search runs and while the groups are shown, a bar tinted in blue under the bar above the grid says so, with the progress of the search or the number of groups and copies, and holds the Select Copies and Close buttons (Stop while searching); the status bar shows the same.
+
+The original is the copy with the most pixels, then the one modified earliest (a converted or saved copy is newer), then the one created earliest (a copy made in Explorer keeps the date of modification), then the larger file when both are of the same format. Select Copies, beside Find Duplicates, chooses all the copies, so that `Delete` moves them to the Recycle Bin after the usual confirmation; any image can be chosen, opened or deleted as in the listing. Find Duplicates again or `Esc` returns to the listing, as do `F5` and opening another folder.
+
+</details>
+
 ### Favorites
 
 `S`, the star button of the toolbar, the Favorites menu and the context menus of the image and of a thumbnail add the current image to the favorites or remove it from them. A favorite is marked with a star in the corner of its thumbnail, on the toolbar button and in the status bar. The Favorites entry at the top of the folder tree (also Favorites → Show Favorites) lists the favorites from all folders in the gallery as one folder.
@@ -459,6 +470,7 @@ The arrow keys scroll an image that is larger than the window in that direction;
 | Thumbnail size, or the number of columns | the slider above the grid, `+` / `-`, `Ctrl+wheel` |
 | Filter the images by name / clear the filter | `/`, `Ctrl+F` / `Esc` in the field |
 | Show the images of the sub-folders too | "With sub-folders" in the list above the grid |
+| Find duplicates / the listing again | View → Find Duplicates / `Esc` |
 | Open a sub-folder | `Enter` or double click on its cell; with "By folder", double click on its header |
 | New folder in the folder shown | `Ctrl+Shift+N` |
 | Previous / next folder shown | `Alt+←`, `Backspace` / `Alt+→`, the side buttons of the mouse, the Back / Forward buttons of the toolbar |

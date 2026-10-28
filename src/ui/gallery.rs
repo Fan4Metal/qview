@@ -40,6 +40,8 @@ const FOLDER_LINE: Color32 = Color32::from_rgb(0x8a, 0x76, 0x48);
 /// between them.
 const BAR_BG: Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2e);
 const BAR_LINE: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
+/// The bar of the duplicates' mode: the bars' grey tinted with the accent.
+const DUPS_BG: Color32 = Color32::from_rgb(0x24, 0x34, 0x48);
 const SLIDER_ICON: Color32 = Color32::from_rgb(0xb0, 0xb0, 0xb0);
 /// The slider's rail, darker than the bar, and its part left of the handle.
 const SLIDER_RAIL: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
@@ -157,6 +159,7 @@ impl App {
             None => {}
         }
         self.gallery_bar(root_ui);
+        self.dups_bar(root_ui);
         let mut open = None;
         egui::CentralPanel::no_frame().show(root_ui, |ui| open = self.grid(ui));
         // Double click: the image.
@@ -164,6 +167,51 @@ impl App {
             self.go(i);
             self.leave_gallery();
         }
+    }
+
+    /// While duplicates are looked for or shown, a bar of their own under
+    /// the gallery's, in the accent's tint: what is shown (or how far the
+    /// search is), Select Copies and Close (Stop while searching), which
+    /// shows the listing again, as Esc does.
+    fn dups_bar(&mut self, root_ui: &mut Ui) {
+        let Some(d) = &self.dups else { return };
+        let (searching, groups) = (d.finder.as_ref().map(|f| f.progress()), d.groups.len());
+        let copies = if searching.is_some() { 0 } else { self.dup_copies().len() };
+        let (title, detail) = match searching {
+            Some((n, all)) => {
+                (tr!("Looking for duplicates", "Поиск дубликатов"), tr!(format!("{n} of {all} images"), format!("изображений: {n} из {all}")))
+            }
+            None => (tr!("Duplicates", "Дубликаты"), tr!(format!("{groups} groups, {copies} copies"), format!("групп: {groups}, копий: {copies}"))),
+        };
+        let searching = searching.is_some();
+        egui::Panel::top("dups_bar")
+            .frame(panel_frame(DUPS_BG, Margin::symmetric(8, 4)))
+            .show_separator_line(false)
+            .show(root_ui, |ui| {
+                ui.horizontal(|ui| {
+                    // The mark of the mode: a stripe in the accent.
+                    let (stripe, _) = ui.allocate_exact_size(vec2(3.0, 16.0), Sense::hover());
+                    ui.painter().rect_filled(stripe, 1.0, ACCENT);
+                    ui.label(RichText::new(title).strong().color(TEXT));
+                    ui.label(RichText::new(detail).color(TEXT_WEAK));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let close = if searching { tr!("Stop", "Остановить") } else { tr!("Close", "Закрыть") };
+                        let tip = tr!("All the images again (Esc)", "Снова все изображения (Esc)");
+                        if ui.button(close).on_hover_text(tip).clicked() {
+                            self.clicked.push(Cmd::Duplicates);
+                        }
+                        if !searching {
+                            let tip = tr!(
+                                "Choose every copy, marked \"Copy\", to delete them with Delete",
+                                "Выбрать все копии, отмеченные «Копия», чтобы удалить их клавишей Delete"
+                            );
+                            if ui.add_enabled(copies > 0, egui::Button::new(tr!("Select Copies", "Выбрать копии"))).on_hover_text(tip).clicked() {
+                                self.clicked.push(Cmd::SelectCopies);
+                            }
+                        }
+                    });
+                });
+            });
     }
 
     /// The folder, the filter, what is listed and how the cells look,
@@ -361,7 +409,8 @@ impl App {
     /// By folder (`path_follows_grid`), the folder of the section at the
     /// top of the grid as it was last drawn, which the path above it shows.
     fn scrolled_folder(&self) -> Option<std::path::PathBuf> {
-        if !self.path_follows_grid || !(self.mixed() && self.by_folder) || self.scan.is_some() {
+        // The groups of duplicates are no folders.
+        if !self.path_follows_grid || !(self.mixed() && self.by_folder) || self.scan.is_some() || self.dups_shown() {
             return None;
         }
         let gallery = self.gallery.as_ref()?;
@@ -554,7 +603,9 @@ impl App {
         let frame = gallery::frame_size(self.thumb_size, aspect);
         // By folder: a section for each, under a header; not while the
         // listing in one order is still on screen.
-        let sections = mixed && self.by_folder && self.scan.is_none();
+        // Duplicates: a section for each group.
+        let groups = self.dups.as_ref().is_some_and(|d| d.finder.is_none());
+        let sections = (mixed && self.by_folder && self.scan.is_none()) || groups;
         // The sub-folders' section under its header, folded to the header
         // alone; the images then have a header of their own.
         let folded = self.folders_folded;
@@ -649,6 +700,17 @@ impl App {
         let favorites = &self.favorites;
         let pinned = &self.pinned;
         let selection = &self.selection;
+        // The duplicates' marks: the original of each set of the same
+        // picture and its copies; the images only alike have none.
+        let marks: std::collections::HashMap<&std::path::Path, crate::duplicates::Kind> = self
+            .dups
+            .iter()
+            .filter(|_| groups)
+            .flat_map(|d| &d.groups)
+            .flat_map(|g| g.members.iter().zip(&g.kinds))
+            .filter(|(_, kind)| **kind != crate::duplicates::Kind::Alike)
+            .map(|(p, kind)| (p.as_path(), *kind))
+            .collect();
         let band = selection.band.as_ref().map(|b| b.start).zip(ctx.pointer_latest_pos());
         // A folder whose header was double-clicked.
         let mut folder = None;
@@ -674,6 +736,7 @@ impl App {
                     }
                     let rect = Rect::from_min_size(origin + vec2(0.0, s.y), vec2(ui.max_rect().width(), layout.header));
                     let name = match files[s.first].parent() {
+                        _ if groups => tr!(format!("Group {}", k + 1), format!("Группа {}", k + 1)),
                         // The images after the folders' section.
                         _ if !sections => tr!("Images", "Изображения").to_string(),
                         // From anywhere: the whole path.
@@ -683,7 +746,7 @@ impl App {
                     folder_header(&painter, rect, &name, layout.len(k), None);
                     // A sub-folder's header opens it; the folder shown has
                     // nothing to open.
-                    let parent = files[s.first].parent().filter(|_| sections);
+                    let parent = files[s.first].parent().filter(|_| sections && !groups);
                     if let Some(parent) = parent.filter(|p| !archive && dir.is_none_or(|d| !crate::folder::same_path(p, d))) {
                         let response = ui
                             .interact(rect, ui.id().with(("header", k)), Sense::CLICK)
@@ -848,6 +911,7 @@ impl App {
                 // right one, the tick of a chosen image in the left.
                 let mut corner = square.right_top();
                 let mut left = square.left_top();
+                let mut bottom = square.left_bottom();
                 match gallery.thumb(path) {
                     Some(t) => match &t.texture {
                         Some(texture) => {
@@ -856,6 +920,7 @@ impl App {
                             painter.image(texture.id(), rect, uv, Color32::WHITE);
                             corner = rect.right_top();
                             left = rect.left_top();
+                            bottom = rect.left_bottom();
                         }
                         None => {
                             let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
@@ -868,6 +933,9 @@ impl App {
                 }
                 if favorites.contains(path) {
                     star(&painter, corner);
+                }
+                if let Some(&kind) = marks.get(path.as_path()) {
+                    duplicate_badge(&painter, bottom, kind);
                 }
                 let circle = choosing.then(|| left + vec2(TICK_INSET, TICK_INSET));
                 if let Some(c) = circle {
@@ -965,10 +1033,11 @@ impl App {
                 gallery.scroll = Some(Scroll::Visible);
             }
         }
-        let sections = mixed && self.by_folder;
+        let sections = mixed && self.by_folder && !self.dups_shown();
         crate::ui::context_menu(&background, |ui| {
             self.show_menu_bar_item(ui);
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
+            self.duplicates_items(ui);
             if sections {
                 self.follow_item(ui);
             }
@@ -1289,6 +1358,28 @@ fn label(painter: &Painter, name: &str, cell: Rect, top: f32) {
     let pos = pos2(cell.center().x - galley.size().x / 2.0, top + (LABEL - galley.size().y) / 2.0);
     painter.galley(pos, galley, TEXT);
 }
+
+/// "Original" (in the accent) or "Copy" (grey) in the bottom left corner
+/// of the thumbnail at `corner`: in a group of duplicates, the image
+/// recommended to keep and the copies of it, which Select Copies chooses;
+/// numbered when the group holds several pictures ("Original 2", "Copy 2").
+fn duplicate_badge(painter: &Painter, corner: Pos2, kind: crate::duplicates::Kind) {
+    use crate::duplicates::Kind;
+    let (text, n, fill) = match kind {
+        Kind::Original(n) => (tr!("Original", "Оригинал"), n, ACCENT),
+        Kind::Copy(n) => (tr!("Copy", "Копия"), n, COPY_BADGE),
+        Kind::Alike => return,
+    };
+    let text = if n > 0 { format!("{text} {n}") } else { text.to_owned() };
+    let galley = painter.layout_no_wrap(text, FontId::proportional(11.0), Color32::WHITE);
+    let size = galley.size() + vec2(8.0, 2.0);
+    let badge = Rect::from_min_size(corner + vec2(3.0, -size.y - 3.0), size);
+    painter.rect(badge, 3.0, fill, egui::Stroke::new(1.0, Color32::from_black_alpha(140)), egui::StrokeKind::Inside);
+    painter.galley(badge.min + vec2(4.0, 1.0), galley, Color32::WHITE);
+}
+
+/// The ground of a copy's badge.
+const COPY_BADGE: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5a);
 
 /// A pinned folder's key ("Alt+3") in the top left corner of its cell, if
 /// it has one.

@@ -106,6 +106,24 @@ impl App {
         self.item(ui, tr!("Exit", "Выход").into(), "Ctrl+W", Cmd::Close, true);
     }
 
+    /// Find Duplicates among the images listed, shown in the gallery as
+    /// groups (checked while they are; again, or Esc, for the listing),
+    /// and then Select Copies.
+    pub(super) fn duplicates_items(&mut self, ui: &mut Ui) {
+        let on = self.dups.is_some();
+        let can = on || (self.listed_count() > 1 && self.scan.is_none());
+        let shortcut = if on { "Esc" } else { "" };
+        let button = Button::new(tr!("Find Duplicates", "Поиск дубликатов")).shortcut_text(shortcut).selected(on);
+        if ui.add_enabled(can, button).clicked() {
+            self.clicked.push(Cmd::Duplicates);
+            ui.close();
+        }
+        if self.dups_shown() {
+            let any = !self.dup_copies().is_empty();
+            self.item(ui, tr!("Select Copies", "Выбрать копии").into(), "", Cmd::SelectCopies, any);
+        }
+    }
+
     /// Every command, the groups as submenus: the menu was 31 rows with
     /// them all at the top level.
     fn view_menu(&mut self, ui: &mut Ui) {
@@ -119,6 +137,7 @@ impl App {
             self.item(ui, tr!("Last", "Последнее").into(), "End", Cmd::Last, e.any);
         });
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
+        self.duplicates_items(ui);
         ui.separator();
         ui.menu_button(tr!("Zoom", "Масштаб"), |ui| self.zoom_items(ui, &e));
         self.rotate_menu(ui, &e);

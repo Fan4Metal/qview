@@ -10,6 +10,7 @@ mod assoc;
 mod clipboard;
 mod crop;
 mod detail;
+mod duplicates;
 mod edit;
 mod editors;
 mod exif;

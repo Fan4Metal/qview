@@ -267,8 +267,12 @@ pub struct App {
     /// by folder ("With sub-folders" in the list above the gallery's grid; folders chosen in
     /// the tree are listed the same way).
     pub deep: bool,
-    /// Where each folder's images start in `files`.
+    /// Where each folder's images start in `files` (each group's, while
+    /// duplicates are shown).
     pub starts: Vec<usize>,
+    /// The duplicates looked for or shown in the gallery (View → Find
+    /// Duplicates); None for the listing as it is.
+    pub dups: Option<Dups>,
     /// With `deep`, each folder's images are ordered and shown on their
     /// own, under a header in the gallery; otherwise in one order.
     pub by_folder: bool,
@@ -742,6 +746,14 @@ pub enum StatsOf {
 }
 
 /// `folder::Stats` of a folder or of several images (`App::update_stats`).
+/// Duplicates in the gallery: while `finder` looks for them, the listing
+/// stays on screen; once found, `files` is their groups, each a section
+/// with its recommended original first.
+pub struct Dups {
+    pub finder: Option<crate::duplicates::Finder>,
+    pub groups: Vec<crate::duplicates::Group>,
+}
+
 pub struct StatsSlot {
     pub of: StatsOf,
     /// None while counted; an error when the folder cannot be read.
@@ -857,6 +869,7 @@ impl App {
             dir: None,
             deep: false,
             starts: Vec::new(),
+            dups: None,
             by_folder: cc.storage.and_then(|s| s.get_string(BY_FOLDER_KEY)).as_deref() == Some("true"),
             scan: None,
             sort: Order {
@@ -1328,10 +1341,13 @@ impl App {
     /// the first that does is current, and with none passing it stays (the
     /// filter cleared, it is there again).
     pub fn filter_changed(&mut self) {
-        self.files = self.filtered();
-        self.folders = self.filtered_folders();
+        // The groups of duplicates, or the listing; no folder cells among
+        // the groups.
+        let groups = self.dups_shown();
+        self.files = if groups { self.dup_files() } else { self.filtered() };
+        self.folders = if groups { Vec::new() } else { self.filtered_folders() };
         self.folder_focus = None;
-        self.starts = folder::starts(&self.files);
+        self.update_starts();
         self.selection.retain_listed(&self.files, &self.folders);
         self.index = self.current.as_deref().and_then(|c| folder::position(&self.files, c));
         if self.index.is_none() && !self.files.is_empty() {
@@ -1345,6 +1361,110 @@ impl App {
     /// How many images the listing has, before the filter.
     pub fn listed_count(&self) -> usize {
         self.listed.len()
+    }
+
+    /// Whether `files` is groups of duplicates (found, not being looked
+    /// for).
+    pub fn dups_shown(&self) -> bool {
+        self.dups.as_ref().is_some_and(|d| d.finder.is_none())
+    }
+
+    /// The groups' members that pass the name filter, group after group.
+    fn dup_files(&self) -> Vec<PathBuf> {
+        let filter = self.name_filter.trim();
+        let Some(d) = &self.dups else { return Vec::new() };
+        d.groups
+            .iter()
+            .flat_map(|g| &g.members)
+            .filter(|p| filter.is_empty() || folder::matches(&self.display_name(p), filter))
+            .cloned()
+            .collect()
+    }
+
+    /// Where the gallery's sections start: the groups of duplicates when
+    /// they are shown, else each folder's images.
+    fn update_starts(&mut self) {
+        self.starts = match self.dups.as_ref().filter(|d| d.finder.is_none()) {
+            Some(d) => crate::duplicates::starts(&self.files, &d.groups),
+            None => folder::starts(&self.files),
+        };
+    }
+
+    /// Look for duplicates among the images listed (those the filter
+    /// passes), in the gallery; while they are looked for or shown, the
+    /// listing again.
+    fn toggle_duplicates(&mut self, ctx: &egui::Context) {
+        if self.dups.is_some() {
+            self.leave_dups();
+            return;
+        }
+        if self.scan.is_some() {
+            self.notice(tr!("The folder is still being read".into(), "Папка ещё читается".into()));
+            return;
+        }
+        let files = self.filtered();
+        if files.len() < 2 {
+            self.notice(tr!("Nothing to compare".into(), "Нечего сравнивать".into()));
+            return;
+        }
+        if !self.gallery_open {
+            self.enter_gallery(ctx);
+        }
+        let finder = crate::duplicates::Finder::start(files, ctx.clone());
+        self.dups = Some(Dups { finder: Some(finder), groups: Vec::new() });
+        ctx.request_repaint();
+    }
+
+    /// The listing instead of the groups of duplicates.
+    fn leave_dups(&mut self) {
+        if self.dups.take().is_some() {
+            self.selection.clear();
+            self.filter_changed();
+        }
+    }
+
+    /// Show the groups of duplicates once found; the status bar counts
+    /// meanwhile.
+    fn poll_dups(&mut self, ctx: &egui::Context) {
+        let Some(d) = &mut self.dups else { return };
+        let Some(finder) = &d.finder else { return };
+        let Some(groups) = finder.poll() else {
+            ctx.request_repaint_after(Duration::from_millis(100));
+            return;
+        };
+        d.finder = None;
+        if groups.is_empty() {
+            self.notice(tr!("No duplicates found".into(), "Дубликатов не найдено".into()));
+            self.dups = None;
+            self.filter_changed();
+            return;
+        }
+        d.groups = groups;
+        self.selection.clear();
+        self.filter_changed();
+        // The first group from its top.
+        if let Some(gallery) = &mut self.gallery {
+            gallery.scroll = Some(Scroll::Visible);
+        }
+    }
+
+    /// The copies of the originals in the groups shown, for Delete: the
+    /// same pictures, not those only alike.
+    pub fn dup_copies(&self) -> Vec<PathBuf> {
+        let Some(d) = self.dups.as_ref().filter(|d| d.finder.is_none()) else { return Vec::new() };
+        let listed: std::collections::HashSet<&PathBuf> = self.files.iter().collect();
+        d.groups
+            .iter()
+            .flat_map(|g| g.members.iter().zip(&g.kinds))
+            .filter(|(p, kind)| matches!(kind, crate::duplicates::Kind::Copy(_)) && listed.contains(p))
+            .map(|(p, _)| p.clone())
+            .collect()
+    }
+
+    /// Choose the copies (`dup_copies`).
+    fn select_copies(&mut self) {
+        let copies = self.dup_copies();
+        self.selection.set(&std::collections::HashSet::new(), copies);
     }
 
     /// Show the gallery of the folder of the current file, out of full
@@ -1385,6 +1505,9 @@ impl App {
         if !same {
             self.selection.clear();
         }
+        // Listed again (F5, another folder, a save): the listing, not the
+        // groups of duplicates, which may no longer hold.
+        self.dups = None;
         if !self.dir.as_deref().is_some_and(|d| folder::same_path(d, &dir)) {
             self.name_filter.clear();
         }
@@ -1913,6 +2036,11 @@ impl App {
         for (old, new) in pairs {
             if let Some(i) = folder::position(&self.listed, old) {
                 self.listed[i] = new.clone();
+            }
+            for g in self.dups.iter_mut().flat_map(|d| &mut d.groups) {
+                if let Some(m) = g.members.iter_mut().find(|m| *m == old) {
+                    *m = new.clone();
+                }
             }
             // A comic book archive's cell renamed.
             for list in [&mut self.listed_comics, &mut self.folders] {
@@ -2673,10 +2801,16 @@ impl App {
             self.listed.remove(pos);
         }
         let was_current = self.current.as_deref().is_some_and(|c| folder::same_path(c, path));
+        if let Some(d) = &mut self.dups {
+            for g in &mut d.groups {
+                g.members.retain(|m| !folder::same_path(m, path));
+            }
+            d.groups.retain(|g| !g.members.is_empty());
+        }
         match folder::position(&self.files, path) {
             Some(pos) => {
                 self.files.remove(pos);
-                self.starts = folder::starts(&self.files);
+                self.update_starts();
                 if was_current {
                     self.index = None;
                     if self.files.is_empty() {
@@ -2785,6 +2919,8 @@ impl App {
                 ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/")));
             }
             Cmd::Paste => self.paste(ctx),
+            Cmd::Duplicates => self.toggle_duplicates(ctx),
+            Cmd::SelectCopies => self.select_copies(),
             Cmd::FlipHorizontal => self.view.mirror(true),
             Cmd::FlipVertical => self.view.mirror(false),
             // A slideshow's pause first; an animation's otherwise.
@@ -3106,8 +3242,10 @@ impl App {
                 }
             }
             Cmd::SelectAll => self.select_all(),
-            // First what is chosen, then the program.
+            // First what is chosen, then the duplicates (or their search),
+            // then the program.
             Cmd::Escape if !self.selection.is_empty() => self.selection.clear(),
+            Cmd::Escape if self.dups.is_some() => self.leave_dups(),
             Cmd::Back => {
                 let here = self.here();
                 if let Some(place) = self.history.back(here) {
@@ -5108,6 +5246,7 @@ impl eframe::App for App {
             ctx.request_repaint();
         }
         self.poll_scan(&ctx);
+        self.poll_dups(&ctx);
         self.poll_favorites_gone();
         self.poll_pinned_gone();
         self.poll_decoded(&ctx, frame);

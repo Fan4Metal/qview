@@ -198,6 +198,20 @@ Measured with `svg_file` on a 2560x1440 screen: the classic tiger (513x525, 99 K
 - Uploads are limited per frame, and thumbnails beyond a pixel budget are evicted least recently used first, never those drawn in the last frame.
 - `cargo test --release thumbnail_timings -- --ignored --nocapture` with `QVIEW_THUMB_DIR` measures a folder.
 
+## Duplicates
+
+View → Find Duplicates (`duplicates.rs`) hashes each image's thumbnail (`thumbs::make` at 96 px: Windows' cache, ~3 ms; decoded where Windows has none) into a difference hash of a 9x9 grey grid, 144 bits, in its eight turned and mirrored forms; images within `SIMILAR` bits form a group, within `SAME` bits a set of the same picture with its original and copies. Every pair is compared, on all processors (`group_timings`, random prints):
+
+| Prints | One thread | All threads |
+|---|---|---|
+| 1 000 | 12 ms | 4 ms |
+| 5 000 | 299 ms | 34 ms |
+| 20 000 | 4 853 ms | 453 ms |
+
+A folder of 21 images (`duplicates_folder`, D:\Downloads): ~150-170 ms, three pairs of the same picture at 0-1 bits (a photo as JPEG and AVIF, two pictures saved under other names); the nearest unrelated images were 37-56 bits apart, so `SAME` (6) and `SIMILAR` (22, ~15%) leave a wide margin. The photo of a book cover joined the group of its two edited versions (each saved twice) at 12 bits, only alike. A JPEG converted from an AVIF of the same size became its copy by the dates (the AVIF had been taken first for its larger file).
+
+The difference hash alone made one group of 27 images in the same folder with its sub-folders (310 images): stripes 1 pixel wide and plain images have few bits set and matched everything, a centred object on a plain ground gave one pattern whatever its shape and colour (a set of icons, tiles of another icon set), and the transitive joining chained them. Two images now have to be near in one form by the bits, by the proportions (the image's, upright: `SAME` 3%, `SIMILAR` 15%) and by the colours of 3x3 zones (the largest gap of a zone, per channel: `SAME` 8, `SIMILAR` 48; their mean let a middle of another colour pass, and 16 still made icon sprites of other colours copies). The same folder then gave 36 groups in ~0.9 s, the icons of one picture at eight sizes together, the stripes and the tiles apart, and every copy found before.
+
 ## Filtering
 
 View → Filtering chooses how an image not shown at 100% is filtered. Bilinear is the texture's own filtering and is drawn as an egui mesh; Bicubic and Pixelated are fragment shaders of qview's own (`src/filter.rs`), drawn through egui_glow paint callbacks.
@@ -351,6 +365,8 @@ Save With Options shrinks the image on the saving thread after it is turned, cro
 | Gallery thumbnails of a folder | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release thumbnail_timings -- --ignored --nocapture` |
 | One file through WIC | `$env:QVIEW_WIC_FILE="<file>"; cargo test --release wic_file -- --ignored --nocapture` |
 | A JPEG through WIC at full, half, quarter and eighth size (DCT scaling) | `$env:QVIEW_WIC_FILE="<jpeg>"; cargo test --release wic_scaled -- --ignored --nocapture` |
+| Duplicates among a folder's images, each image's nearest | `$env:QVIEW_THUMB_DIR="<folder>"; cargo test --release duplicates_folder -- --ignored --nocapture` |
+| Grouping N random prints | `cargo test --release group_timings -- --ignored --nocapture` |
 | HEIC or AVIF through libheif and WIC | `$env:QVIEW_HEIF_FILE="<heic or avif>"; cargo test --release heif_file -- --ignored --nocapture` |
 | Histogram counting of one file, and decoding with and without it | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release histogram_timings -- --ignored --nocapture` |
 | A histogram read again (the section opened on a decoded image) | `$env:QVIEW_BENCH_FILE="<file>"; cargo test --release read_again_timings -- --ignored --nocapture` |

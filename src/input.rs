@@ -132,6 +132,11 @@ pub enum Cmd {
     SelectTo(Move),
     /// Choose every image of the gallery (Ctrl+A).
     SelectAll,
+    /// Show the groups of duplicates among the images listed, or the
+    /// listing again (View → Find Duplicates).
+    Duplicates,
+    /// Choose the copies of the originals in the groups of duplicates.
+    SelectCopies,
     /// Save it in this format beside its file, which stays current (File →
     /// Convert To).
     ConvertTo(crate::edit::Format),

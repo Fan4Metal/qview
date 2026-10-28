@@ -31,6 +31,18 @@ impl App {
             let f = self.name_filter.trim();
             fields.push(tr!(format!("Filter \"{f}\": {n} of {all}"), format!("Фильтр «{f}»: {n} из {all}")));
         }
+        if let Some(d) = &self.dups {
+            fields.push(match &d.finder {
+                Some(f) => {
+                    let (n, all) = f.progress();
+                    tr!(format!("Looking for duplicates: {n} of {all}"), format!("Поиск дубликатов: {n} из {all}"))
+                }
+                None => {
+                    let (groups, copies) = (d.groups.len(), self.dup_copies().len());
+                    tr!(format!("Duplicates: {groups} groups, {copies} copies"), format!("Дубликаты: групп {groups}, копий {copies}"))
+                }
+            });
+        }
         let chosen = self.selection.len() + self.selection.folders_len();
         if self.gallery_open && chosen > 1 {
             fields.push(tr!(format!("Selected: {chosen}"), format!("Выбрано: {chosen}")));
