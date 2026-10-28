@@ -265,7 +265,7 @@ pub struct App {
     /// The folder of `files`.
     pub dir: Option<PathBuf>,
     /// `files` has the images of all the sub-folders of `dir` too, folder
-    /// by folder ("With sub-folders" in the list above the gallery's grid; folders chosen in
+    /// by folder ("With sub-folders, by folder" or "..., one list" in the list above the gallery's grid; folders chosen in
     /// the tree are listed the same way).
     pub deep: bool,
     /// Where each folder's images start in `files` (each group's, while

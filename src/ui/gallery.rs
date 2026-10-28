@@ -89,7 +89,7 @@ enum Listing {
 
 impl Listing {
     fn offered(from_folders: bool) -> &'static [Listing] {
-        if from_folders { &[Listing::Flat, Listing::ByFolder] } else { &[Listing::Alone, Listing::Deep, Listing::DeepByFolder] }
+        if from_folders { &[Listing::Flat, Listing::ByFolder] } else { &[Listing::Alone, Listing::DeepByFolder, Listing::Deep] }
     }
 
     fn current(from_folders: bool, deep: bool, by_folder: bool) -> Listing {
@@ -117,7 +117,7 @@ impl Listing {
     fn name(self) -> &'static str {
         match self {
             Listing::Alone => tr!("This folder only", "Только эта папка"),
-            Listing::Deep => tr!("With sub-folders", "С вложенными папками"),
+            Listing::Deep => tr!("With sub-folders, one list", "С вложенными, общим списком"),
             Listing::DeepByFolder => tr!("With sub-folders, by folder", "С вложенными, по папкам"),
             Listing::Flat => tr!("One list", "Общим списком"),
             Listing::ByFolder => tr!("By folder", "По папкам"),
