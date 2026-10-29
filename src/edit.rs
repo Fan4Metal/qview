@@ -334,7 +334,10 @@ pub fn turn_jpeg(jpeg: &[u8], turns: u8, flip: bool) -> Option<Vec<u8>> {
 /// `turn_jpeg` does: the APP1 (EXIF, XMP), APP13 (Photoshop, IPTC) and
 /// comment segments are left out, and an EXIF of the orientation alone put
 /// after APP0 when it is not upright; JFIF, the ICC profile (APP2), Adobe's
-/// APP14 and the compressed data stay. None if the segments cannot be read.
+/// APP14 and the compressed data stay. What follows the image's end is
+/// dropped too (a phone's appended images, each with an EXIF of its own,
+/// a camera maker's trailer), with the APP2 MPF segment that points to
+/// those images. None if the segments cannot be read.
 pub fn strip_jpeg(jpeg: &[u8], turns: u8, flip: bool) -> Option<Vec<u8>> {
     let segments = jpeg_segments(jpeg)?;
     let exif = segments.iter().find(|&&(code, _, p, e)| code == 0xe1 && jpeg[p..e].starts_with(EXIF_HEADER));
@@ -343,13 +346,14 @@ pub fn strip_jpeg(jpeg: &[u8], turns: u8, flip: bool) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(jpeg.len());
     out.extend(&jpeg[..2]);
     let mut placed = value == 1;
-    for &(code, s, _, e) in &segments {
+    for &(code, s, p, e) in &segments {
         // After APP0 (JFIF), which must come first.
         if !placed && code != 0xe0 {
             push_app1(&mut out, &crate::exif::minimal(value))?;
             placed = true;
         }
-        if !matches!(code, 0xe1 | 0xed | 0xfe) {
+        let mpf = code == 0xe2 && jpeg[p..e].starts_with(b"MPF\0");
+        if !matches!(code, 0xe1 | 0xed | 0xfe) && !mpf {
             out.extend(&jpeg[s..e]);
         }
     }
@@ -357,8 +361,49 @@ pub fn strip_jpeg(jpeg: &[u8], turns: u8, flip: bool) -> Option<Vec<u8>> {
         push_app1(&mut out, &crate::exif::minimal(value))?;
     }
     let data = segments.last().map_or(2, |s| s.3);
-    out.extend(&jpeg[data..]);
+    out.extend(&jpeg[data..jpeg_end(jpeg, data).unwrap_or(jpeg.len())]);
     Some(out)
+}
+
+/// The offset past the JPEG's EOI marker, walking from `from` (the first
+/// marker after the segments `jpeg_segments` gives) over the scans and the
+/// segments between them (a progressive JPEG's); None if it is not found.
+fn jpeg_end(b: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    loop {
+        if *b.get(i)? != 0xff {
+            return None;
+        }
+        while *b.get(i)? == 0xff {
+            i += 1;
+        }
+        let code = b[i];
+        i += 1;
+        match code {
+            0xd9 => return Some(i),
+            0x01 | 0xd0..=0xd7 => continue,
+            _ => {}
+        }
+        let len = u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]) as usize;
+        if len < 2 {
+            return None;
+        }
+        i += len;
+        if code == 0xda {
+            // The entropy-coded data: a 0xFF in it is followed by 0x00, or
+            // is a restart marker; anything else is the next marker.
+            loop {
+                let at = i + b.get(i..)?.iter().position(|&x| x == 0xff)?;
+                match *b.get(at + 1)? {
+                    0x00 | 0xd0..=0xd7 => i = at + 2,
+                    _ => {
+                        i = at;
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// An APP1 segment with `tiff` as its EXIF; None if it is too long.
@@ -857,7 +902,11 @@ mod tests {
         extra.extend(((xmp.len() + 2) as u16).to_be_bytes());
         extra.extend(&xmp);
         extra.extend([0xff, 0xfe, 0, 7, b'h', b'e', b'l', b'l', b'o']);
+        // An MPF segment and the image it points to after the end.
+        extra.extend([0xff, 0xe2, 0, 8, b'M', b'P', b'F', 0, 1, 2]);
         turned.splice(at..at, extra);
+        let end = turned.len();
+        turned.extend(turn_jpeg(&jpeg(4, 4), 1, false).unwrap());
         std::fs::write(&src, &turned).unwrap();
         let strip = |dst: PathBuf, turns: u8, crop: Option<[u32; 4]>| Job {
             src: src.clone(),
@@ -882,7 +931,9 @@ mod tests {
         assert_eq!(app1.len(), 1);
         let (_, _, p, e) = *app1[0];
         assert_eq!(&bytes[p + EXIF_HEADER.len()..e], crate::exif::minimal(6));
-        assert!(!kinds(&bytes).contains(&0xfe));
+        assert!(!kinds(&bytes).contains(&0xfe) && !kinds(&bytes).contains(&0xe2));
+        assert_eq!(jpeg_end(&turned, jpeg_segments(&turned).unwrap().last().unwrap().3), Some(end));
+        assert!(bytes.ends_with(&[0xff, 0xd9]) && bytes.windows(4).filter(|w| *w == b"Exif").count() == 1, "the appended image is gone");
         assert_eq!(segments[0].0, 0xe0);
         assert_eq!(decoded(&bytes).to_rgb8(), decoded(&turned).to_rgb8());
 
