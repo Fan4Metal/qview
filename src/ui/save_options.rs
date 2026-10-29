@@ -197,7 +197,7 @@ impl App {
             Some(true) => {
                 let options = self.save_options.take().expect("shown");
                 self.save_quality = options.quality;
-                self.save_with(ctx, frame, true, Some(options), false);
+                self.save_with(ctx, frame, true, Some(options));
             }
             Some(false) => self.save_options = None,
             None => {}

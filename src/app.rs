@@ -224,6 +224,9 @@ struct Saving {
     jobs: Vec<edit::Job>,
     /// Copies in another format (Convert To): the originals stay current.
     convert: bool,
+    /// Copies without their metadata (Save Without Metadata): `convert`,
+    /// said so in the notices.
+    stripped: bool,
     done: mpsc::Receiver<Result<edit::Saved, String>>,
     /// The outcomes so far, in the order of `jobs`.
     results: Vec<Result<edit::Saved, String>>,
@@ -626,6 +629,7 @@ fn changes_files(cmd: Cmd) -> bool {
         Cmd::Delete
             | Cmd::Rename
             | Cmd::ConvertTo(_)
+            | Cmd::SaveWithoutMetadata
             | Cmd::Edit
             | Cmd::EditWith(_)
             | Cmd::EditWithOther
@@ -650,6 +654,7 @@ fn acts_on_files(cmd: Cmd) -> bool {
         Cmd::Copy
             | Cmd::CopyImage
             | Cmd::ConvertTo(_)
+            | Cmd::SaveWithoutMetadata
             | Cmd::Edit
             | Cmd::EditWith(_)
             | Cmd::EditWithOther
@@ -3097,7 +3102,7 @@ impl App {
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::SaveWithOptions => self.ask_save_options(),
-            Cmd::SaveWithoutMetadata => self.save_with(ctx, frame, true, None, true),
+            Cmd::SaveWithoutMetadata => self.strip_metadata(ctx),
             Cmd::ConvertTo(format) => self.convert(ctx, format),
             Cmd::SavePdf => self.save_pdf(ctx, frame, false),
             Cmd::SavePdfOfTargets => self.save_pdf(ctx, frame, true),
@@ -3387,8 +3392,7 @@ impl App {
             | Cmd::Crop
             | Cmd::Save
             | Cmd::SaveAs
-            | Cmd::SaveWithOptions
-            | Cmd::SaveWithoutMetadata => {}
+            | Cmd::SaveWithOptions => {}
             Cmd::Gallery => self.leave_gallery(),
             // F shows the image in full screen; Ctrl+Shift+F
             // (`WindowFullScreen`) turns the gallery's window, as in the viewer.
@@ -4298,7 +4302,6 @@ impl App {
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::SaveWithOptions => self.ask_save_options(),
-            Cmd::SaveWithoutMetadata => self.save_with(ctx, frame, true, None, true),
             Cmd::Undo => {
                 a.undo();
             }
@@ -4363,7 +4366,6 @@ impl App {
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::SaveWithOptions => self.ask_save_options(),
-            Cmd::SaveWithoutMetadata => self.save_with(ctx, frame, true, None, true),
             Cmd::RotateLeft | Cmd::RotateRight => {
                 // The frame turns with the image; the view turns it.
                 if let (Some(crop), Some((_, picture))) = (&mut self.crop, &self.shown) {
@@ -4420,7 +4422,7 @@ impl App {
     /// over) into a file the user picks. On a thread; `poll_save` takes the
     /// outcome.
     fn save(&mut self, ctx: &egui::Context, frame: &eframe::Frame, as_new: bool) {
-        self.save_with(ctx, frame, as_new, None, false);
+        self.save_with(ctx, frame, as_new, None);
     }
 
     /// The image on screen can be saved: nothing being saved, not an
@@ -4454,16 +4456,9 @@ impl App {
 
     /// Save as `save` does; with `options` (Save With Options) into a new
     /// file, shrunk, in their format first in Save As's list, a JPEG at
-    /// their quality; `strip` (also an option) leaves the metadata out.
-    pub(crate) fn save_with(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &eframe::Frame,
-        as_new: bool,
-        options: Option<crate::ui::save_options::SaveOptions>,
-        strip: bool,
-    ) {
-        let strip = strip || options.as_ref().is_some_and(|o| o.strip);
+    /// their quality, without the metadata when so chosen.
+    pub(crate) fn save_with(&mut self, ctx: &egui::Context, frame: &eframe::Frame, as_new: bool, options: Option<crate::ui::save_options::SaveOptions>) {
+        let strip = options.as_ref().is_some_and(|o| o.strip);
         let Some((path, picture)) = self.saveable() else { return };
         let turned = self.view.rotated(picture.size());
         let crop = self.save_crop(turned);
@@ -4530,6 +4525,49 @@ impl App {
     /// (File → Convert To), decoded or not.
     pub fn can_convert(&self) -> bool {
         self.current.is_some() && !self.editing_image() && self.saving.is_none() && !self.archive
+    }
+
+    /// Save the current image, or those chosen in the gallery, beside their
+    /// files without their metadata (`edit::Job::strip`): `_nometa` copies
+    /// in their own format (JPEG for what only Windows' codecs or libheif
+    /// decode and for a lossy WebP, PNG for a drawing), the image on screen
+    /// turned as it is shown; the originals stay as they are, and current.
+    fn strip_metadata(&mut self, ctx: &egui::Context) {
+        if !self.can_convert() || self.still_saving() {
+            return;
+        }
+        let targets = self.targets();
+        let one = targets.len() == 1;
+        if one && self.editable().is_none() && self.shown.as_ref().is_some_and(|(p, pic)| self.current.as_ref() == Some(p) && pic.meta.animated) {
+            self.notice(tr!("Animated images cannot be edited".into(), "Анимированные изображения не редактируются".into()));
+            return;
+        }
+        // The view's turn counts only for the image it shows.
+        let (turns, flip) = if one && self.editable().is_some() { (self.view.turns, self.view.flip) } else { (0, false) };
+        let mut planned = std::collections::HashSet::new();
+        let jobs: Vec<edit::Job> = targets
+            .into_iter()
+            .filter(|p| p.is_file())
+            .map(|src| {
+                let format = Self::save_format(&src);
+                let dir = src.parent().map(Path::to_path_buf).unwrap_or_default();
+                let name = edit::suggested_name(&src, format.extensions()[0], "_nometa", |n| {
+                    let dst = dir.join(n);
+                    dst.exists() || planned.contains(&dst.to_string_lossy().to_lowercase())
+                });
+                let dst = dir.join(name);
+                planned.insert(dst.to_string_lossy().to_lowercase());
+                edit::Job { src, dst, size: [0, 0], turns, flip, crop: None, marks: Vec::new(), resize: None, quality: None, strip: true }
+            })
+            .collect();
+        let n = jobs.len();
+        if n > 1 {
+            self.notice(tr!(format!("Saving without metadata: 0 of {n}…"), format!("Сохранение без метаданных: 0 из {n}…")));
+        }
+        self.start_save(ctx, jobs, true);
+        if let Some(saving) = &mut self.saving {
+            saving.stripped = true;
+        }
     }
 
     /// Save the current image in `format` beside its file, under its name
@@ -4599,7 +4637,7 @@ impl App {
                 ctx.request_repaint();
             }
         });
-        self.saving = Some(Saving { jobs, convert, done, results: Vec::new() });
+        self.saving = Some(Saving { jobs, convert, stripped: false, done, results: Vec::new() });
     }
 
     /// The format `path` is saved in by default: its own if it can be saved
@@ -4647,16 +4685,20 @@ impl App {
         let Some(saving) = &mut self.saving else { return };
         let before = saving.results.len();
         saving.results.extend(saving.done.try_iter());
-        let (done, total) = (saving.results.len(), saving.jobs.len());
+        let (done, total, stripped) = (saving.results.len(), saving.jobs.len(), saving.stripped);
         if done < total {
             if done > before && total > 1 {
-                self.notice(tr!(format!("Converting {done} of {total}…"), format!("Конвертирование: {done} из {total}…")));
+                self.notice(if stripped {
+                    tr!(format!("Saving without metadata: {done} of {total}…"), format!("Сохранение без метаданных: {done} из {total}…"))
+                } else {
+                    tr!(format!("Converting {done} of {total}…"), format!("Конвертирование: {done} из {total}…"))
+                });
             }
             return;
         }
-        let Saving { jobs, convert, results, .. } = self.saving.take().expect("checked above");
+        let Saving { jobs, convert, stripped, results, .. } = self.saving.take().expect("checked above");
         if jobs.len() > 1 {
-            self.converted_all(ctx, &jobs, results);
+            self.converted_all(ctx, &jobs, results, stripped);
             return;
         }
         let (Some(job), Some(result)) = (jobs.into_iter().next(), results.into_iter().next()) else { return };
@@ -4671,6 +4713,10 @@ impl App {
                     self.end_annotate();
                 }
                 self.written(ctx, std::slice::from_ref(&job.dst));
+                if stripped {
+                    self.notice(tr!(format!("Saved without metadata: {name}"), format!("Сохранено без метаданных: {name}")));
+                    return;
+                }
                 if convert {
                     self.notice(tr!(format!("Converted: {name}"), format!("Сконвертировано: {name}")));
                     return;
@@ -4688,9 +4734,10 @@ impl App {
         }
     }
 
-    /// The outcome of converting several: the copies listed, one Ctrl+Z
-    /// for them all, and how many failed.
-    fn converted_all(&mut self, ctx: &egui::Context, jobs: &[edit::Job], results: Vec<Result<edit::Saved, String>>) {
+    /// The outcome of converting several (or saving them without metadata,
+    /// `stripped`): the copies listed, one Ctrl+Z for them all, and how
+    /// many failed.
+    fn converted_all(&mut self, ctx: &egui::Context, jobs: &[edit::Job], results: Vec<Result<edit::Saved, String>>, stripped: bool) {
         let total = jobs.len();
         let (mut saved, mut failed) = (Vec::new(), Vec::new());
         for (job, result) in jobs.iter().zip(results) {
@@ -4705,11 +4752,16 @@ impl App {
             self.push_undo(Undo::Save(saved));
         }
         self.written(ctx, &paths);
-        self.notice(match failed.first() {
-            None => tr!(format!("Converted: {n} files"), format!("Сконвертировано файлов: {n}")),
-            Some(e) => tr!(
+        self.notice(match (failed.first(), stripped) {
+            (None, false) => tr!(format!("Converted: {n} files"), format!("Сконвертировано файлов: {n}")),
+            (None, true) => tr!(format!("Saved without metadata: {n} files"), format!("Сохранено без метаданных файлов: {n}")),
+            (Some(e), false) => tr!(
                 format!("Converted {n} of {total}; {e}"),
                 format!("Сконвертировано {n} из {total}; {e}")
+            ),
+            (Some(e), true) => tr!(
+                format!("Saved {n} of {total} without metadata; {e}"),
+                format!("Сохранено без метаданных {n} из {total}; {e}")
             ),
         });
     }
