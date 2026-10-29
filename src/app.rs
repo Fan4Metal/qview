@@ -486,6 +486,9 @@ pub struct App {
     pub info_width: f32,
     /// The slideshow (Shift+F), while it runs.
     pub slideshow: Option<Slideshow>,
+    /// The display is kept from turning off (`win::keep_display`) while
+    /// the slideshow runs; what was last asked for.
+    display_kept: bool,
     /// Seconds each image stays, and whether it starts over after the
     /// last one (View → Slideshow; persisted).
     pub slideshow_seconds: u32,
@@ -1024,6 +1027,7 @@ impl App {
             show_info: cc.storage.and_then(|s| s.get_string(INFO_KEY)).as_deref() == Some("true"),
             info_width: number(INFO_WIDTH_KEY).unwrap_or(280.0).clamp(200.0, 600.0),
             slideshow: None,
+            display_kept: false,
             slideshow_seconds: number(SLIDESHOW_SECONDS_KEY).map_or(5, |s| (s as u32).clamp(1, 3600)),
             slideshow_loop: cc.storage.and_then(|s| s.get_string(SLIDESHOW_LOOP_KEY)).as_deref() != Some("false"),
             info: None,
@@ -2584,6 +2588,12 @@ impl App {
     /// from when the current one came on screen (a slow file is not
     /// skipped); after the last one, start over or stop.
     fn slideshow_tick(&mut self, ctx: &egui::Context) {
+        // The screen stays on while a slideshow runs, paused or not.
+        let keep = self.slideshow.is_some();
+        if keep != self.display_kept {
+            win::keep_display(keep);
+            self.display_kept = keep;
+        }
         let (on_screen, gallery_open, current) = (self.current_on_screen(), self.gallery_open, self.current.clone());
         let editing = self.editing_image();
         let Some(show) = &mut self.slideshow else { return };
@@ -5554,6 +5564,9 @@ impl eframe::App for App {
     /// The textures are deleted now, while the GL context still lives.
     fn on_exit(&mut self, _gl: Option<&glow::Context>) {
         self.end_pdf();
+        if self.display_kept {
+            win::keep_display(false);
+        }
         self.watcher = None;
         self.player = None;
         self.shown = None;

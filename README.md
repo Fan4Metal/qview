@@ -349,7 +349,7 @@ View → Slideshow → Start (`Shift+F`) shows the images of the folder one afte
 <details>
 <summary>Slideshow</summary>
 
-View → Slideshow → Start (`Shift+F`, also from the gallery) shows the images of the folder one after another in full screen, each for the time chosen in the same menu (1 to 60 seconds, counted from when the image is on screen, so a slow file is shown in full), starting over after the last one unless Loop is turned off, when it stops and leaves full screen. `Space` pauses and resumes it, `Esc` or `Shift+F` stops it, and the browsing keys move by hand, the time starting over. The interval and Loop are kept between runs.
+View → Slideshow → Start (`Shift+F`, also from the gallery) shows the images of the folder one after another in full screen, each for the time chosen in the same menu (1 to 60 seconds, counted from when the image is on screen, so a slow file is shown in full), starting over after the last one unless Loop is turned off, when it stops and leaves full screen. `Space` pauses and resumes it, `Esc` or `Shift+F` stops it, and the browsing keys move by hand, the time starting over. While a slideshow runs, paused or not, the display is not turned off by the power settings. The interval and Loop are kept between runs.
 
 </details>
 

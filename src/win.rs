@@ -231,6 +231,16 @@ fn winhttp_error() -> String {
     }
 }
 
+/// Keep the display from turning off (and the machine from sleeping)
+/// while `on`, as a video player does during playback; the state is the
+/// calling thread's, so call it from the UI thread, and once with `false`
+/// when done.
+pub fn keep_display(on: bool) {
+    use windows_sys::Win32::System::Power::{ES_CONTINUOUS, ES_DISPLAY_REQUIRED, SetThreadExecutionState};
+    let flags = if on { ES_CONTINUOUS | ES_DISPLAY_REQUIRED } else { ES_CONTINUOUS };
+    unsafe { SetThreadExecutionState(flags) };
+}
+
 /// Open `target` (a file, a folder or a URI such as `ms-settings:…`) as
 /// Explorer would.
 pub fn shell_open(target: impl AsRef<OsStr>) -> bool {
