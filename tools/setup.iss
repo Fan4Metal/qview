@@ -54,10 +54,36 @@ english.AssocStatus=Registering file types...
 russian.AssocStatus=Регистрация типов файлов...
 english.ChooseDefault=Choose qview as the default image viewer (opens Windows Settings)
 russian.ChooseDefault=Выбрать qview программой просмотра по умолчанию (откроются параметры Windows)
+english.FolderMenuGroup=Explorer:
+russian.FolderMenuGroup=Проводник:
+english.FolderMenuTask=Add "Browse in qview" to the context menu of folders and drives
+russian.FolderMenuTask=Добавить «Просмотреть в qview» в контекстное меню папок и дисков
+english.FolderMenuItem=Browse in qview
+russian.FolderMenuItem=Просмотреть в qview
 
 [Tasks]
 Name: "assoc"; Description: "{cm:AssocTask}"; GroupDescription: "{cm:AssocGroup}"
+Name: "foldermenu"; Description: "{cm:FolderMenuTask}"; GroupDescription: "{cm:FolderMenuGroup}"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Registry]
+; "Browse in qview" in the context menu of a folder, of a folder's empty
+; space and of a drive: the folder opens in the gallery (per user, under
+; HKCU, like the file types; removed when the task is cleared on a later
+; installation and on uninstallation). %1 is the folder clicked, %V the
+; folder whose empty space was.
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\qview"; ValueType: string; ValueName: ""; ValueData: "{cm:FolderMenuItem}"; Flags: uninsdeletekey; Tasks: foldermenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\qview"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#MyAppExeName}"",0"; Tasks: foldermenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\qview\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: foldermenu
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\qview"; ValueType: string; ValueName: ""; ValueData: "{cm:FolderMenuItem}"; Flags: uninsdeletekey; Tasks: foldermenu
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\qview"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#MyAppExeName}"",0"; Tasks: foldermenu
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\qview\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%V"""; Tasks: foldermenu
+Root: HKCU; Subkey: "Software\Classes\Drive\shell\qview"; ValueType: string; ValueName: ""; ValueData: "{cm:FolderMenuItem}"; Flags: uninsdeletekey; Tasks: foldermenu
+Root: HKCU; Subkey: "Software\Classes\Drive\shell\qview"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#MyAppExeName}"",0"; Tasks: foldermenu
+Root: HKCU; Subkey: "Software\Classes\Drive\shell\qview\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: foldermenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\qview"; Flags: deletekey; Tasks: not foldermenu
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\qview"; Flags: deletekey; Tasks: not foldermenu
+Root: HKCU; Subkey: "Software\Classes\Drive\shell\qview"; Flags: deletekey; Tasks: not foldermenu
 
 [Files]
 Source: "..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion

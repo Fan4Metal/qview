@@ -38,7 +38,7 @@ qview is a fast and simple image viewer for Windows. It opens an image in a frac
 
 The installer and the portable archive are published on the [Releases](https://github.com/Fan4Metal/qview/releases) page.
 
-- **Installer**, `qview_<version>_Setup.exe`: needs no administrator rights; the program is placed in `%LOCALAPPDATA%\Programs\qview` and keeps its settings in `%APPDATA%\qview`. The "Register qview for image files" option, selected by default, registers the supported file types (see [File associations](#file-associations)); the last page of the installer then offers to open Windows Settings, where qview is chosen as the default program. Uninstallation removes the registration.
+- **Installer**, `qview_<version>_Setup.exe`: needs no administrator rights; the program is placed in `%LOCALAPPDATA%\Programs\qview` and keeps its settings in `%APPDATA%\qview`. The "Register qview for image files" option, selected by default, registers the supported file types (see [File associations](#file-associations)); the last page of the installer then offers to open Windows Settings, where qview is chosen as the default program. The "Add Browse in qview to the context menu of folders and drives" option, also selected by default, puts that item into the context menu of a folder, of a folder's empty space and of a drive in Explorer; it opens the folder in the gallery. Uninstallation removes the registration and the item.
 - **Portable archive**, `qview_<version>_portable.zip`: the program in a `qview` folder, run without installation; the settings, the favorites and the pinned folders are kept next to it, so it can be carried on a removable drive. The file types are registered from Help → File Associations… if needed.
 
 <details>
