@@ -140,7 +140,10 @@ fn worker(shared: &Shared, tx: &mpsc::Sender<Made>) {
                 q = shared.wake.wait(q).unwrap();
             }
         };
-        let result = make(&request.path, request.side);
+        let (result, pending) = match make_storing(&request.path, request.side) {
+            Ok((t, pending)) => (Ok(t), pending),
+            Err(e) => (Err(e), None),
+        };
         {
             let mut q = shared.queue.lock().unwrap();
             q.busy.retain(|r| *r != request);
@@ -152,6 +155,10 @@ fn worker(shared: &Shared, tx: &mpsc::Sender<Made>) {
         if let Some(ctx) = shared.ctx.get() {
             ctx.request_repaint();
         }
+        // After the thumbnail is on its way: the encoding takes 1-8 ms.
+        if let Some(pending) = pending {
+            pending.write();
+        }
     }
 }
 
@@ -159,22 +166,50 @@ fn worker(shared: &Shared, tx: &mpsc::Sender<Made>) {
 /// image is not enlarged): Windows' own, or decoded here if Windows has
 /// none. Call it on a thread where COM is initialised (`win::com_init`).
 pub fn make(path: &Path, side: u32) -> Result<Thumbnail, String> {
+    let (thumbnail, pending) = make_storing(path, side)?;
+    if let Some(pending) = pending {
+        pending.write();
+    }
+    Ok(thumbnail)
+}
+
+/// [`make`], with the thumbnail to put into qview's own cache
+/// (`thumbcache`) when it was decoded here and is not in it yet, to be
+/// written once the thumbnail has been handed over.
+pub fn make_storing(path: &Path, side: u32) -> Result<(Thumbnail, Option<crate::thumbcache::Pending>), String> {
     use std::os::windows::fs::MetadataExt;
     let started = Instant::now();
-    // Windows' thumbnail cache knows nothing of the images in an archive.
-    let shell = if crate::archive::inside(path) { Err("in an archive".into()) } else { shell_thumbnail(path, side) };
-    let thumbnail = match shell {
+    // Before the shell: `GetImage` took ~280 ms to fail for an AVIF with
+    // the HEIF extension installed but not the AV1 one (WIC's HEIF decoder
+    // loaded and torn down), while a hit costs ~1 ms.
+    if let Some(t) = crate::thumbcache::get(path, side) {
+        log::trace!("thumbnail of {} from the cache in {:.1} ms", path.display(), started.elapsed().as_secs_f64() * 1e3);
+        return Ok((t, None));
+    }
+    // Windows' thumbnail cache knows nothing of the images in an archive,
+    // and libheif decodes a HEIC or AVIF (an iPhone HEIC's own thumbnail
+    // in 4-5 ms, an AVIF in 16-40 ms) faster than the shell fails without
+    // the Store codec; the result is cached here either way.
+    let shell = if crate::archive::inside(path) {
+        Err("in an archive".into())
+    } else if crate::heif::takes(path) {
+        Err("libheif decodes it".into())
+    } else {
+        shell_thumbnail(path, side)
+    };
+    let (thumbnail, pending) = match shell {
         Ok((w, h, bgra)) => {
             let file = std::fs::metadata(path).ok();
             let (width, height) = image_size(path, w, h).unwrap_or((0, 0));
-            Thumbnail {
+            let t = Thumbnail {
                 pixels: Pixels { width: w, height: h, levels: loader::mip_levels(bgra, w as usize, h as usize) },
                 width,
                 height,
                 file_size: file.as_ref().map_or(0, |m| m.len()),
                 modified: file.as_ref().map_or(0, |m| m.last_write_time()),
                 created: file.as_ref().map_or(0, |m| m.creation_time()),
-            }
+            };
+            (t, None)
         }
         Err(e) => {
             log::debug!("no shell thumbnail of {}: {e}", path.display());
@@ -182,7 +217,8 @@ pub fn make(path: &Path, side: u32) -> Result<Thumbnail, String> {
             if img.width() > side || img.height() > side {
                 img = img.thumbnail(side, side);
             }
-            Thumbnail {
+            let pending = crate::thumbcache::Pending::new(path, side, &img, meta.width, meta.height, meta.file_size, meta.modified);
+            let t = Thumbnail {
                 pixels: loader::to_pixels(img),
                 width: meta.width,
                 height: meta.height,
@@ -190,11 +226,12 @@ pub fn make(path: &Path, side: u32) -> Result<Thumbnail, String> {
                 modified: meta.modified,
                 // Not in `Meta`; an image in an archive has no file of its own.
                 created: if crate::archive::inside(path) { 0 } else { std::fs::metadata(path).map_or(0, |m| m.creation_time()) },
-            }
+            };
+            (t, pending)
         }
     };
     log::trace!("thumbnail of {} in {:.1} ms", path.display(), started.elapsed().as_secs_f64() * 1e3);
-    Ok(thumbnail)
+    Ok((thumbnail, pending))
 }
 
 /// Size of the image in `path` from its header, turned to match the
@@ -367,26 +404,36 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Thumbnails of every image in `QVIEW_THUMB_DIR`, timed, printed with
-    /// `--nocapture`.
+    /// Thumbnails of every image in `QVIEW_THUMB_DIR` (a folder or an
+    /// archive), timed, printed with `--nocapture`: twice, the second pass
+    /// with qview's own cache (the real one) holding what the first one
+    /// decoded.
     #[test]
     #[ignore]
     fn thumbnail_timings() {
         let _com = crate::win::com_init();
         let dir = PathBuf::from(std::env::var("QVIEW_THUMB_DIR").expect("QVIEW_THUMB_DIR"));
-        let files = crate::folder::list(&dir, None, Default::default()).unwrap();
-        let started = Instant::now();
-        let mut slowest = (0.0, PathBuf::new());
-        for f in &files {
-            let t = Instant::now();
-            let thumb = make(f, 256);
-            let ms = t.elapsed().as_secs_f64() * 1e3;
-            let size = thumb.map_or_else(|e| e, |t| format!("{}x{} of {}x{}", t.pixels.width, t.pixels.height, t.width, t.height));
-            println!("{ms:7.1} ms {size} {}", f.display());
-            if ms > slowest.0 {
-                slowest = (ms, f.clone());
+        let files = if crate::archive::is_archive_file(&dir) {
+            crate::folder::list_archive(&dir, Default::default(), false).unwrap()
+        } else {
+            crate::folder::list(&dir, None, Default::default()).unwrap()
+        };
+        let _hold = crate::archive::hold(&files);
+        crate::thumbcache::configure(true, crate::thumbcache::DEFAULT_LIMIT_MB);
+        for pass in ["first pass", "second pass, qview's cache warm"] {
+            let started = Instant::now();
+            let mut slowest = (0.0, PathBuf::new());
+            for f in &files {
+                let t = Instant::now();
+                let thumb = make(f, 256);
+                let ms = t.elapsed().as_secs_f64() * 1e3;
+                let size = thumb.map_or_else(|e| e, |t| format!("{}x{} of {}x{}", t.pixels.width, t.pixels.height, t.width, t.height));
+                println!("{ms:7.1} ms {size} {}", f.display());
+                if ms > slowest.0 {
+                    slowest = (ms, f.clone());
+                }
             }
+            println!("{pass}: {} files in {:.0} ms, slowest {:.1} ms", files.len(), started.elapsed().as_secs_f64() * 1e3, slowest.0);
         }
-        println!("{} files in {:.0} ms, slowest {:.1} ms", files.len(), started.elapsed().as_secs_f64() * 1e3, slowest.0);
     }
 }

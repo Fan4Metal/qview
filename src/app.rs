@@ -128,6 +128,8 @@ const SLIDESHOW_SECONDS_KEY: &str = "slideshow_seconds";
 const SLIDESHOW_LOOP_KEY: &str = "slideshow_loop";
 const THUMB_FILL_KEY: &str = "thumb_fill";
 const THUMB_BADGES_KEY: &str = "thumb_badges";
+const THUMB_CACHE_KEY: &str = "thumb_cache";
+const THUMB_CACHE_MB_KEY: &str = "thumb_cache_mb";
 const THUMB_ASPECT_KEY: &str = "thumb_aspect";
 /// `thumb_aspect` in the settings when it is Auto.
 const AUTO: &str = "auto";
@@ -540,6 +542,11 @@ pub struct App {
     /// What the gallery's cells show over their thumbnails (View →
     /// Thumbnail Badges), persisted as `thumb_badges`.
     pub thumb_badges: gallery::Badges,
+    /// qview's own cache of the thumbnails it decodes itself (View →
+    /// Thumbnail Cache, `thumbcache`), persisted as `thumb_cache`.
+    pub thumb_cache: bool,
+    /// Its limit in megabytes, persisted as `thumb_cache_mb`.
+    pub thumb_cache_mb: u32,
     /// Proportions of the gallery's cells, one of `gallery::ASPECTS`;
     /// `None`: Auto, those of most images of the folder.
     pub thumb_aspect: Option<f32>,
@@ -1035,6 +1042,12 @@ impl App {
                 .unwrap_or(crate::histogram::Channels::Rgb),
             thumb_fill: cc.storage.and_then(|s| s.get_string(THUMB_FILL_KEY)).as_deref() == Some("true"),
             thumb_badges: cc.storage.and_then(|s| s.get_string(THUMB_BADGES_KEY)).map_or_else(Default::default, |v| gallery::Badges::from_names(&v)),
+            thumb_cache: cc.storage.and_then(|s| s.get_string(THUMB_CACHE_KEY)).as_deref() != Some("false"),
+            thumb_cache_mb: cc
+                .storage
+                .and_then(|s| s.get_string(THUMB_CACHE_MB_KEY))
+                .and_then(|v| v.parse().ok())
+                .map_or(crate::thumbcache::DEFAULT_LIMIT_MB, |mb: u32| mb.clamp(*crate::thumbcache::LIMIT_RANGE_MB.start(), *crate::thumbcache::LIMIT_RANGE_MB.end())),
             thumb_aspect: match cc.storage.and_then(|s| s.get_string(THUMB_ASPECT_KEY)).as_deref() {
                 Some(AUTO) => None,
                 v => Some(v.and_then(|v| gallery::ASPECTS.iter().find(|(n, _)| *n == v)).map_or(1.0, |(_, a)| *a)),
@@ -1069,6 +1082,8 @@ impl App {
             app.open(ctx, path);
         }
         app.updates.start_if_due(ctx);
+        crate::thumbcache::configure(app.thumb_cache, app.thumb_cache_mb);
+        crate::thumbcache::start();
         win::watch_paste(app.hwnd.unwrap_or(0));
         if app.favorites.len() > 0 {
             app.favorites_gone = Some(folder::find_gone(app.favorites.paths(), ctx.clone()));
@@ -3035,6 +3050,14 @@ impl App {
             Cmd::SelectCopies => self.select_copies(),
             Cmd::ThumbBadge(b) => self.thumb_badges.toggle(b),
             Cmd::ThumbBadgesAll(on) => self.thumb_badges.set_all(on),
+            Cmd::ThumbCache => {
+                self.thumb_cache = !self.thumb_cache;
+                crate::thumbcache::set_enabled(self.thumb_cache);
+            }
+            Cmd::ClearThumbCache => {
+                crate::thumbcache::clear();
+                self.notice(tr!("Thumbnail cache cleared", "Кэш миниатюр очищен").into());
+            }
             Cmd::FlipHorizontal => self.view.mirror(true),
             Cmd::FlipVertical => self.view.mirror(false),
             // A slideshow's pause first; an animation's otherwise.
@@ -5579,6 +5602,8 @@ impl eframe::App for App {
         storage.set_string(SLIDESHOW_LOOP_KEY, self.slideshow_loop.to_string());
         storage.set_string(THUMB_FILL_KEY, self.thumb_fill.to_string());
         storage.set_string(THUMB_BADGES_KEY, self.thumb_badges.to_names());
+        storage.set_string(THUMB_CACHE_KEY, self.thumb_cache.to_string());
+        storage.set_string(THUMB_CACHE_MB_KEY, self.thumb_cache_mb.to_string());
         let aspect = self.thumb_aspect.map_or(AUTO, gallery::aspect_name);
         storage.set_string(THUMB_ASPECT_KEY, aspect.to_string());
         storage.set_string(LANGUAGE_KEY, self.lang.name().to_string());

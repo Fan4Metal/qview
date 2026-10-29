@@ -192,7 +192,16 @@ Measured with `svg_file` on a 2560x1440 screen: the classic tiger (513x525, 99 K
 | Windows' thumbnail cache, cached | ~3 ms |
 | Windows' thumbnail cache, not cached | ~30 ms |
 
-- Thumbnails come from `IShellItemImageFactory` at Windows' cache sizes (96, 256, 768, 1280); qview decodes them itself only for formats Windows cannot (QOI, TGA, PNM).
+- Thumbnails come from `IShellItemImageFactory` at Windows' cache sizes (96, 256, 768, 1280); qview decodes them itself only for formats Windows cannot (QOI, TGA, PNM) and for images in archives.
+
+| qview's own cache (`thumbcache.rs`), a CBZ of 40 PNG pages of 1.5-2 MB (3840x2160 screenshots), side 256 | Time |
+|---|---|
+| First pass: unpacked and decoded, the entries written after each thumbnail is handed over | 863 ms (21.6 ms a page, the slowest 25 ms) |
+| Second pass: from the cache | 20 ms (0.5 ms a page, the slowest 0.8 ms) |
+| An AVIF of 1920x1280 (the three of the Thumbnails table above) with the HEIF Store extension installed but not the AV1 one: `GetImage` first, the cache after it | ~300 ms each, cached or not (`GetImage` fails after ~280 ms: WIC's HEIF decoder loaded and torn down) |
+| The same, the cache first and the shell skipped for what libheif reads | 24-46 ms cold (libheif), 0.7-0.9 ms from the cache |
+
+- What qview decodes itself goes into `%LOCALAPPDATA%\qview\thumbs` (`thumbs` beside a portable exe), one file per thumbnail and side, JPEG q90 for opaque thumbnails (14.5 KB each here) and PNG for those with alpha, as Windows stores its own; a hit costs a read, a JPEG decode of 256² and the mip levels. The entry is validated against the size and date of the file (or the archive), so nothing is invalidated by hand. Thumbnails from the shell are not stored: Windows keeps those itself.
 - A thumbnail may be enlarged up to 1.5 times before a larger size is requested, because 768 is rarely in Windows' cache and is made anew with nine times the pixels.
 - Image sizes are read from file headers; for JPEG qview parses segments up to SOFn itself, because the `image` crate's JPEG decoder reads the whole file even for its dimensions.
 - Uploads are limited per frame, and thumbnails beyond a pixel budget are evicted least recently used first, never those drawn in the last frame.

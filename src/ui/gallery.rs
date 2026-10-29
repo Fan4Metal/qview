@@ -1094,6 +1094,7 @@ impl App {
             ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
             self.duplicates_items(ui);
             self.badges_menu(ui);
+            self.thumb_cache_menu(ui);
             if sections {
                 self.follow_item(ui);
             }

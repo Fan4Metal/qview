@@ -144,6 +144,11 @@ pub enum Cmd {
     ThumbBadge(crate::gallery::Badge),
     /// Show every badge over the thumbnails, or none.
     ThumbBadgesAll(bool),
+    /// Keep the thumbnails qview decodes itself on disk, or no longer
+    /// (View → Thumbnail Cache).
+    ThumbCache,
+    /// Remove every thumbnail from that cache.
+    ClearThumbCache,
     /// Save it in this format beside its file, which stays current (File →
     /// Convert To).
     ConvertTo(crate::edit::Format),

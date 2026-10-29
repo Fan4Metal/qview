@@ -35,6 +35,7 @@ mod rename;
 mod selection;
 mod svg;
 mod texture;
+mod thumbcache;
 mod thumbs;
 mod tree;
 mod type_icon;

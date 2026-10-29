@@ -131,6 +131,44 @@ impl App {
         });
     }
 
+    /// qview's own cache of the thumbnails it decodes itself (`thumbcache`):
+    /// on or off, how much of it is used, its limit, Clear. Like the badges'
+    /// submenu it stays open after a click.
+    pub(super) fn thumb_cache_menu(&mut self, ui: &mut Ui) {
+        use crate::thumbcache;
+        let config = egui::containers::menu::MenuConfig::find(ui).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        let menu = egui::containers::menu::SubMenuButton::new(tr!("Thumbnail Cache", "Кэш миниатюр")).config(config);
+        menu.ui(ui, |ui| {
+            if ui.add(Button::new(tr!("Enabled", "Включён")).selected(self.thumb_cache)).clicked() {
+                self.clicked.push(Cmd::ThumbCache);
+            }
+            ui.separator();
+            thumbcache::measure();
+            let used = thumbcache::total();
+            let limit = (self.thumb_cache_mb as u64) << 20;
+            let text = match used {
+                Some(u) => tr!(format!("{} of {} MB", thumbcache::megabytes(u), self.thumb_cache_mb), format!("{} из {} МБ", thumbcache::megabytes(u), self.thumb_cache_mb)),
+                None => tr!("Counting…", "Подсчёт…").into(),
+            };
+            let bar = egui::ProgressBar::new(used.map_or(0.0, |u| u as f32 / limit as f32)).text(text).desired_width(220.0);
+            let bar = ui.add(bar);
+            if let Some(dir) = thumbcache::dir() {
+                bar.on_hover_text(dir.display().to_string());
+            }
+            ui.horizontal(|ui| {
+                ui.label(tr!("Limit:", "Предел:"));
+                let slider = egui::Slider::new(&mut self.thumb_cache_mb, thumbcache::LIMIT_RANGE_MB).logarithmic(true).suffix(tr!(" MB", " МБ"));
+                if ui.add(slider).changed() {
+                    thumbcache::set_limit(self.thumb_cache_mb);
+                }
+            });
+            ui.separator();
+            if ui.add_enabled(used != Some(0), Button::new(tr!("Clear", "Очистить"))).clicked() {
+                self.clicked.push(Cmd::ClearThumbCache);
+            }
+        });
+    }
+
     /// Find Duplicates among the images listed, shown in the gallery as
     /// groups (checked while they are; again, or Esc, for the listing),
     /// and then Select Copies.
@@ -170,6 +208,7 @@ impl App {
         ui.separator();
         if gallery {
             self.badges_menu(ui);
+            self.thumb_cache_menu(ui);
             self.item(ui, tr!("Larger Thumbnails", "Крупнее миниатюры").into(), "+", Cmd::ZoomIn, true);
             self.item(ui, tr!("Smaller Thumbnails", "Мельче миниатюры").into(), "-", Cmd::ZoomOut, true);
         } else {

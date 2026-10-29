@@ -108,6 +108,10 @@ Type: files; Name: "{app}\licenses\README.txt"
 Type: files; Name: "{app}\licenses\libheif-COPYING.txt"
 Type: files; Name: "{app}\licenses\libde265-COPYING.txt"
 
+[UninstallDelete]
+; qview's own thumbnail cache (src\thumbcache.rs); the settings stay.
+Type: filesandordirs; Name: "{localappdata}\qview\thumbs"
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
