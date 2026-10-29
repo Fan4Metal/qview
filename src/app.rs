@@ -98,7 +98,7 @@ const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
 /// How long after qview wrote a file the watcher's report of it is not
 /// taken as another program's write (see `poll_watch`).
-const SELF_WRITTEN_GRACE: Duration = Duration::from_secs(3);
+const OWN_CHANGE_GRACE: Duration = Duration::from_secs(3);
 const BACKGROUND_KEY: &str = "background";
 const CHECKER_KEY: &str = "checker";
 const FILTER_KEY: &str = "filter";
@@ -480,7 +480,7 @@ pub struct App {
     watcher: Option<crate::watch::Watcher>,
     /// Files qview itself wrote lately, with when: the watcher reports
     /// them too, and they are not decoded a second time for that.
-    self_written: Vec<(PathBuf, Instant)>,
+    own_changes: Vec<(PathBuf, Instant)>,
     /// The folders shown before and after this one, for Back and Forward.
     pub history: History,
     /// The favourite images (S), listed in the gallery as `favorites::DIR`.
@@ -1050,7 +1050,7 @@ impl App {
             saving: None,
             reloading: None,
             watcher: None,
-            self_written: Vec::new(),
+            own_changes: Vec::new(),
             pdf: None,
             history: History::default(),
             favorites: Favorites::load(crate::settings_dir().map(|d| d.join(favorites::FILE))),
@@ -2104,17 +2104,27 @@ impl App {
     /// listed again, since their dates and sizes changed or they are new
     /// there.
     fn written(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
-        let now = Instant::now();
-        self.self_written.extend(paths.iter().map(|p| (p.clone(), now)));
-        self.changed_on_disk(ctx, paths);
+        self.changed_here(paths.iter().cloned());
+        self.changed_on_disk(ctx, paths, true);
     }
 
-    /// The files `paths` have new contents (saved by qview or written by
-    /// another program): decoded again, the current one keeping the old
-    /// picture until then, and the folder listed again when they are in it.
-    fn changed_on_disk(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
+    /// qview itself made, wrote, renamed, moved or deleted `paths` just
+    /// now and has dealt with it: the watcher's report of them is not
+    /// taken as another program's doing (see `poll_watch`).
+    fn changed_here(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        let now = Instant::now();
+        self.own_changes.extend(paths.into_iter().map(|p| (p, now)));
+    }
+
+    /// The files `paths` have new contents (saved by qview, `own`, or
+    /// written by another program): decoded again, the current one keeping
+    /// the old picture until then, and the folder listed again when they
+    /// are in it. Only qview's own save puts the view's rotation into the
+    /// file, so only then is it dropped (`reloading`) when the new picture
+    /// shows.
+    fn changed_on_disk(&mut self, ctx: &egui::Context, paths: &[PathBuf], own: bool) {
         self.forget_files(paths);
-        if let Some(current) = self.current.as_ref().filter(|c| paths.contains(c)) {
+        if own && let Some(current) = self.current.as_ref().filter(|c| paths.contains(c)) {
             self.reloading = Some(current.clone());
         }
         let shown_here = |path: &PathBuf| {
@@ -2152,29 +2162,62 @@ impl App {
 
     /// Take what the watcher saw other programs do to the folder: files
     /// added, removed or renamed list it again; files written are decoded
-    /// again (not those qview wrote itself just now, done already); a
-    /// sub-folder written gets its cell's preview made again. Only images,
-    /// folders and what is listed count, so a program's temporary files
-    /// beside the images do nothing.
+    /// again, and so are listed files another one was renamed onto (an
+    /// editor's save through a temporary file); a sub-folder written gets
+    /// its cell's preview made again. Only images, visible folders and
+    /// what is listed count, so a program's temporary files beside the
+    /// images and the churn of hidden folders do nothing; what qview did
+    /// itself just now (`own_changes`) is done already.
     fn poll_watch(&mut self, ctx: &egui::Context) {
         self.sync_watch(ctx);
         let Some(changes) = self.watcher.as_ref().and_then(crate::watch::Watcher::poll) else { return };
+        let Some(dir) = self.dir.clone() else { return };
         let now = Instant::now();
-        self.self_written.retain(|(_, at)| now.duration_since(*at) < SELF_WRITTEN_GRACE);
+        self.own_changes.retain(|(_, at)| now.duration_since(*at) < OWN_CHANGE_GRACE);
+        let own = |p: &Path| self.own_changes.iter().any(|(w, _)| folder::same_path(w, p));
         let key = |p: &Path| p.to_string_lossy().to_lowercase();
         let listed: HashSet<String> =
             self.listed.iter().chain(&self.listed_folders).chain(&self.listed_comics).map(|p| key(p)).collect();
-        let counts = |p: &Path| listed.contains(&key(p)) || folder::is_image(p) || crate::archive::is_comic(p) || p.is_dir();
-        let mut relist = changes.all || changes.names.iter().any(|p| counts(p));
-        let (mut written, mut folders) = (Vec::new(), Vec::new());
+        // Not in a hidden folder under `dir`, nor a hidden folder itself:
+        // the listing skips those (asked once a folder for each report).
+        let mut hidden: HashMap<PathBuf, bool> = HashMap::new();
+        let mut is_hidden = |p: &Path| {
+            *hidden.entry(p.to_path_buf()).or_insert_with(|| {
+                use std::os::windows::fs::MetadataExt;
+                std::fs::metadata(p).is_ok_and(|m| m.is_dir() && !crate::win::is_visible_folder(m.file_attributes()))
+            })
+        };
+        let mut visible = |p: &Path| {
+            !is_hidden(p) && p.ancestors().skip(1).take_while(|a| a.starts_with(&dir) && *a != dir).all(|a| !is_hidden(a))
+        };
+        let mut relist = changes.all;
+        let mut written = Vec::new();
+        for p in &changes.names {
+            if own(p) {
+                continue;
+            }
+            if listed.contains(&key(p)) {
+                relist = true;
+                // Still there: another file took its name.
+                if p.is_file() {
+                    written.push(p.clone());
+                }
+            } else if (folder::is_image(p) || crate::archive::is_comic(p) || p.is_dir()) && visible(p) {
+                relist = true;
+            } else if self.deep && !p.exists() && self.listed.iter().any(|f| f.starts_with(p)) {
+                // A sub-folder with listed images gone.
+                relist = true;
+            }
+        }
+        let mut folders = Vec::new();
         for p in changes.written {
             if p.is_dir() {
                 folders.push(p);
             } else if listed.contains(&key(&p)) {
-                if !self.self_written.iter().any(|(w, _)| folder::same_path(w, &p)) {
+                if !own(&p) && !written.contains(&p) {
                     written.push(p);
                 }
-            } else if folder::is_image(&p) || crate::archive::is_comic(&p) {
+            } else if (folder::is_image(&p) || crate::archive::is_comic(&p)) && visible(&p) {
                 // Not listed yet: it came since the listing.
                 relist = true;
             }
@@ -2187,7 +2230,7 @@ impl App {
         if !written.is_empty() {
             // Lists the folder again too: a new size or date may order
             // the file elsewhere.
-            self.changed_on_disk(ctx, &written);
+            self.changed_on_disk(ctx, &written, false);
         } else if relist {
             self.list_again(ctx);
         }
@@ -2211,6 +2254,7 @@ impl App {
     /// Every old name is taken out before any new one goes in, since in a
     /// batch (01 to 02, 02 to 03) a new name may be another pair's old one.
     fn moved(&mut self, pairs: &[(PathBuf, PathBuf)]) {
+        self.changed_here(pairs.iter().flat_map(|(old, new)| [old.clone(), new.clone()]));
         // A folder renamed: everything known in it goes with it.
         let folders: Vec<(PathBuf, PathBuf)> = pairs.iter().filter(|(_, new)| new.is_dir()).cloned().collect();
         let expanded;
@@ -2859,6 +2903,7 @@ impl App {
         self.deleting = None;
         // The shell may have deleted some and not others.
         let gone: Vec<PathBuf> = paths.into_iter().filter(|p| !p.exists()).collect();
+        self.changed_here(gone.iter().cloned());
         if let Err(e) = result
             && e != "cancelled"
         {
@@ -3777,6 +3822,7 @@ impl App {
             return Err(tr!("A file or folder with this name already exists", "Файл или папка с таким именем уже существует").into());
         }
         std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+        self.changed_here([dir.clone()]);
         self.sibling_folders = None;
         match transfer {
             Some(copy) => {
@@ -4156,6 +4202,7 @@ impl App {
         // Into a pinned folder: the copies made that were new there can be
         // undone; copied into the folder shown, they are listed.
         let made: Vec<PathBuf> = fresh.into_iter().filter(|p| p.exists()).collect();
+        self.changed_here(made.iter().cloned().chain(created.clone()));
         let name = folder_label(&to);
         self.notice(match result {
             Ok(()) if n == 1 => tr!(format!("Copied to {name}"), format!("Скопировано в {name}")),

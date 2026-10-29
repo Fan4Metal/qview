@@ -254,26 +254,30 @@ fn run(
             let handles = [stop.0, event.0];
             let waited = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout) };
             let mut n = 0u32;
+            // Before leaving with the read under way: it is cancelled and
+            // waited for, so that the buffer and `overlapped` are no
+            // longer written to once they are gone.
+            let cancel = |n: &mut u32| unsafe {
+                CancelIoEx(folder.0, &overlapped);
+                GetOverlappedResult(folder.0, &overlapped, n, 1);
+            };
             if waited == WAIT_OBJECT_0 {
-                // Stopped: the read is cancelled and waited for, so that
-                // the buffer is no longer written to.
-                unsafe {
-                    CancelIoEx(folder.0, &overlapped);
-                    GetOverlappedResult(folder.0, &overlapped, &mut n, 1);
-                }
+                // Stopped.
+                cancel(&mut n);
                 return;
             }
             if waited == WAIT_TIMEOUT {
                 if !hand_over(&mut pending, &mut since) {
-                    unsafe {
-                        CancelIoEx(folder.0, &overlapped);
-                        GetOverlappedResult(folder.0, &overlapped, &mut n, 1);
-                    }
+                    cancel(&mut n);
                     return;
                 }
                 continue;
             }
             if waited != WAIT_OBJECT_0 + 1 {
+                log::debug!("watching {} ended: wait {waited:#x}, error {}", base.display(), unsafe { GetLastError() });
+                cancel(&mut n);
+                pending.all = true;
+                hand_over(&mut pending, &mut since);
                 return;
             }
             let ok = unsafe { GetOverlappedResult(folder.0, &overlapped, &mut n, 0) };
