@@ -258,7 +258,9 @@ pub struct BatchRename {
     /// The dates of `paths` for the template, read on a thread when the
     /// dialog opens.
     pub dates: Option<Vec<crate::rename::Dates>>,
-    dates_rx: Option<std::sync::mpsc::Receiver<Vec<crate::rename::Dates>>>,
+    /// The dates as read, in the order the dialog opened with: rows may
+    /// be dragged meanwhile, so they are matched by path.
+    dates_rx: Option<std::sync::mpsc::Receiver<Vec<(PathBuf, crate::rename::Dates)>>>,
     pub error: Option<String>,
     /// Focus the name on the next frame.
     pub focus: bool,
@@ -273,7 +275,8 @@ impl BatchRename {
         std::thread::Builder::new()
             .name("rename dates".into())
             .spawn(move || {
-                let _ = tx.send(crate::rename::read_dates(&read));
+                let dates = crate::rename::read_dates(&read);
+                let _ = tx.send(read.into_iter().zip(dates).collect());
             })
             .ok();
         Self { paths, dirs, base, start: 1, number: true, dates: None, dates_rx: Some(rx), error: None, focus: true }
@@ -301,12 +304,13 @@ impl BatchRename {
         }
     }
 
-    /// Take the dates once they are read.
+    /// Take the dates once they are read, in the order of `paths` now.
     pub fn poll_dates(&mut self) {
         if let Some(rx) = &self.dates_rx
-            && let Ok(dates) = rx.try_recv()
+            && let Ok(read) = rx.try_recv()
         {
-            self.dates = Some(dates);
+            let read: HashMap<PathBuf, crate::rename::Dates> = read.into_iter().collect();
+            self.dates = Some(self.paths.iter().map(|p| read.get(p).copied().unwrap_or_default()).collect());
             self.dates_rx = None;
         }
     }
@@ -1734,6 +1738,9 @@ impl App {
     /// undo it; why not, if they cannot be.
     pub fn rename_batch(&mut self, ctx: &egui::Context, batch: &BatchRename) -> Result<(), String> {
         let (paths, dirs) = (&batch.paths, batch.dirs);
+        if crate::rename::blank(&batch.base, batch.number || crate::rename::places_number(&batch.base)) {
+            return Err(tr!("Type a name or add a number", "Введите имя или добавьте номер").into());
+        }
         let news = crate::rename::templated(paths, dirs, &batch.base, batch.start, batch.number, batch.dates.as_deref().unwrap_or(&[]));
         let pairs: Vec<(PathBuf, PathBuf)> = paths.iter().cloned().zip(news).filter(|(old, new)| old != new).collect();
         if pairs.is_empty() {

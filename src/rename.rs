@@ -89,6 +89,12 @@ pub fn places_number(template: &str) -> bool {
     placeholders(template).any(|(name, _)| name == "n")
 }
 
+/// Whether `template` would leave the names empty: nothing in it and no
+/// number added (the files would be called `.jpg`, ` (2).jpg`…).
+pub fn blank(template: &str, number: bool) -> bool {
+    !number && template.trim().is_empty()
+}
+
 /// The `{name}` and `{name:arg}` of `template`: (name, arg).
 fn placeholders(template: &str) -> impl Iterator<Item = (&str, &str)> {
     template.split('{').skip(1).filter_map(|rest| {
@@ -157,7 +163,7 @@ pub fn templated(paths: &[PathBuf], dirs: usize, template: &str, start: u32, num
         .map(|(k, path)| path.extension().filter(|_| k >= dirs).map_or_else(String::new, |e| format!(".{}", e.to_string_lossy())))
         .collect();
     if !placed && !number {
-        distinguish(&mut stems, &exts);
+        distinguish(paths, &mut stems, &exts);
     }
     paths.iter().zip(stems).zip(exts).map(|((path, stem), ext)| path.with_file_name(format!("{stem}{ext}"))).collect()
 }
@@ -183,12 +189,14 @@ fn expand(template: &str, field: impl Fn(&str, &str) -> Option<String>) -> Strin
     out
 }
 
-/// Equal names (`stems` with their `exts`, case ignored) get ` (2)`,
-/// ` (3)`… after the stem from the second on.
-fn distinguish(stems: &mut [String], exts: &[String]) {
+/// Equal names in one folder (`stems` with their `exts`, case ignored;
+/// the folder of each of `paths`) get ` (2)`, ` (3)`… after the stem from
+/// the second on.
+fn distinguish(paths: &[PathBuf], stems: &mut [String], exts: &[String]) {
     let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    for (stem, ext) in stems.iter_mut().zip(exts) {
-        let count = seen.entry(format!("{stem}{ext}").to_lowercase()).or_insert(0);
+    for ((stem, ext), path) in stems.iter_mut().zip(exts).zip(paths) {
+        let folder = path.parent().map(lowercase).unwrap_or_default();
+        let count = seen.entry(format!("{folder}\u{0}{stem}{ext}").to_lowercase()).or_insert(0);
         *count += 1;
         if *count > 1 {
             *stem = format!("{stem} ({count})");
@@ -296,7 +304,11 @@ mod tests {
         let news = templated(&paths, 0, "{taken:YYYY} {x}", 1, false, &dates);
         assert_eq!(names(&news), ["2024 {x}.jpg", "2024 {x} (2).jpg", "2024 {x}.png"]);
         assert_eq!(names(&templated(&paths[..1], 0, "{taken}", 1, false, &[])), ["….jpg"]);
-        assert_eq!(names(&templated(&paths[..1], 0, "", 1, false, &[])), [".jpg"]);
+        assert!(blank(" ", false) && !blank("", true) && !blank("{x}", false));
+        // Equal names in other folders are not told apart.
+        let apart: Vec<PathBuf> = ["C:/x/a.jpg", "C:/y/b.jpg", "C:/y/c.jpg"].iter().map(PathBuf::from).collect();
+        let news = templated(&apart, 0, "same", 1, false, &[]);
+        assert_eq!(names(&news), ["same.jpg", "same.jpg", "same (2).jpg"]);
         assert!(uses_dates("a{modified}") && !uses_dates("{name}"));
         assert!(places_number("{n:2}") && !places_number("{name}"));
     }

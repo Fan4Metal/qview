@@ -729,6 +729,9 @@ impl App {
             let placed = crate::rename::places_number(&batch.base);
             // Its dates are not read yet: the names are not known.
             let waiting = crate::rename::uses_dates(&batch.base) && batch.dates.is_none();
+            // Nothing would be left of the names.
+            let blank = crate::rename::blank(&batch.base, batch.number || placed);
+            let ready = !waiting && !blank;
             egui::Grid::new("batch_rename_fields").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                 ui.label(tr!("Name:", "Имя:"));
                 ui.horizontal(|ui| {
@@ -739,7 +742,7 @@ impl App {
                     if std::mem::take(&mut batch.focus) {
                         edit.request_focus();
                     }
-                    if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !waiting {
+                    if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && ready {
                         decision = Some(true);
                     }
                     changed |= edit.changed();
@@ -840,13 +843,15 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let text = |s: &str| RichText::new(s).size(16.0);
                 let rename = egui::Button::new(text(tr!("Rename", "Переименовать"))).min_size(egui::vec2(160.0, 34.0));
-                if ui.add_enabled(!waiting, rename).clicked() {
+                if ui.add_enabled(ready, rename).clicked() {
                     decision = Some(true);
                 }
                 if ui.add(egui::Button::new(text(tr!("Cancel", "Отмена"))).min_size(egui::vec2(100.0, 34.0))).clicked() {
                     decision = Some(false);
                 }
-                if waiting {
+                if blank {
+                    ui.weak(tr!("Type a name or add a number", "Введите имя или добавьте номер"));
+                } else if waiting {
                     ui.weak(tr!("Reading the dates…", "Чтение дат…"));
                 }
             });
