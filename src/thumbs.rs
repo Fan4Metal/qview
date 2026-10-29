@@ -213,11 +213,13 @@ pub fn make_storing(path: &Path, side: u32) -> Result<(Thumbnail, Option<crate::
         }
         Err(e) => {
             log::debug!("no shell thumbnail of {}: {e}", path.display());
+            // Before reading: a file saved meanwhile is not stored as it was.
+            let stamp = crate::thumbcache::stamp(path);
             let (mut img, meta) = loader::read_within(path, side)?;
             if img.width() > side || img.height() > side {
                 img = img.thumbnail(side, side);
             }
-            let pending = crate::thumbcache::Pending::new(path, side, &img, meta.width, meta.height, meta.file_size, meta.modified);
+            let pending = stamp.and_then(|stamp| crate::thumbcache::Pending::new(path, side, &img, meta.width, meta.height, meta.file_size, meta.modified, stamp));
             let t = Thumbnail {
                 pixels: loader::to_pixels(img),
                 width: meta.width,

@@ -180,21 +180,39 @@ pub struct Pending {
     height: u32,
     file_size: u64,
     modified: u64,
+    stamp: Stamp,
+}
+
+/// The size and date of the file an entry is checked against (the
+/// archive of an image in one), taken before the image is decoded: if it
+/// changes meanwhile, the thumbnail is of the old contents and is not
+/// stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    size: u64,
+    modified: u64,
+}
+
+/// The [`Stamp`] of `path` now.
+pub fn stamp(path: &Path) -> Option<Stamp> {
+    stat(&container(path)).map(|(size, modified, _)| Stamp { size, modified })
 }
 
 impl Pending {
     /// The thumbnail `img` (fitted into `side`) of `path`, an image of
     /// `width` x `height` in a file of `file_size` bytes last written at
-    /// `modified`; `None` while the cache is off.
-    pub fn new(path: &Path, side: u32, img: &DynamicImage, width: u32, height: u32, file_size: u64, modified: u64) -> Option<Self> {
-        enabled().then(|| Self { path: path.to_path_buf(), side, img: img.clone(), width, height, file_size, modified })
+    /// `modified`, decoded from the file `stamp` describes; `None` while
+    /// the cache is off.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(path: &Path, side: u32, img: &DynamicImage, width: u32, height: u32, file_size: u64, modified: u64, stamp: Stamp) -> Option<Self> {
+        enabled().then(|| Self { path: path.to_path_buf(), side, img: img.clone(), width, height, file_size, modified, stamp })
     }
 
     /// Encode and write it.
     pub fn write(self) {
         let Some(dir) = dir() else { return };
         let started = Instant::now();
-        match put_in(&dir, &self.path, self.side, &self.img, self.width, self.height, self.file_size, self.modified) {
+        match put_in(&dir, &self.path, self.side, &self.img, (self.width, self.height), (self.file_size, self.modified), self.stamp) {
             Ok(bytes) => {
                 log::trace!("thumbnail cache put {} at {}, {bytes} bytes, {:.1} ms", self.path.display(), self.side, started.elapsed().as_secs_f64() * 1e3);
                 if TOTAL.load(Relaxed) != UNKNOWN {
@@ -344,14 +362,17 @@ fn touch(file: &Path) {
     }
 }
 
-/// [`Pending::write`] under `root`: the bytes written.
-#[allow(clippy::too_many_arguments)]
-fn put_in(root: &Path, path: &Path, side: u32, img: &DynamicImage, width: u32, height: u32, file_size: u64, modified: u64) -> Result<u64, String> {
+/// [`Pending::write`] under `root`: the bytes written. `image` is the
+/// image's size, `file` the file's size and date, `stamp` what the
+/// container was when the image was read.
+fn put_in(root: &Path, path: &Path, side: u32, img: &DynamicImage, image: (u32, u32), file: (u64, u64), stamp: Stamp) -> Result<u64, String> {
     let key = key_of(path);
-    let (size, container_modified, _) = stat(&container(path)).ok_or("the file is gone")?;
+    if self::stamp(path) != Some(stamp) {
+        return Err("the file changed while it was decoded".into());
+    }
     let mut out = Vec::with_capacity(HEADER + key.len() + (64 << 10));
     let flags = if img.color().has_alpha() { FLAG_PNG } else { 0 };
-    write_header(&mut out, flags, side, (img.width(), img.height()), (width, height), (size, container_modified), (file_size, modified), &key);
+    write_header(&mut out, flags, side, (img.width(), img.height()), image, (stamp.size, stamp.modified), file, &key);
     if flags & FLAG_PNG != 0 {
         use image::codecs::png::{CompressionType, FilterType, PngEncoder};
         let rgba = img.to_rgba8();
@@ -463,7 +484,8 @@ mod tests {
 
     fn put_png(root: &Path, path: &Path, side: u32, img: &DynamicImage) -> u64 {
         let m = std::fs::metadata(path).unwrap();
-        put_in(root, path, side, img, img.width() * 4, img.height() * 4, m.len(), m.last_write_time()).unwrap()
+        let stamp = stamp(path).unwrap();
+        put_in(root, path, side, img, (img.width() * 4, img.height() * 4), (m.len(), m.last_write_time()), stamp).unwrap()
     }
 
     /// An opaque thumbnail comes back as JPEG, one with alpha as PNG with
@@ -528,6 +550,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         image::RgbImage::new(8, 8).save(&file).unwrap();
         assert!(get_in(&root, &file, 96).is_none(), "written since");
+
+        // Written while it was decoded: the old picture is not stored.
+        let before = stamp(&file).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        image::RgbImage::new(9, 9).save(&file).unwrap();
+        assert!(put_in(&root, &file, 96, &img, (9, 9), (0, 0), before).is_err());
+        assert!(get_in(&root, &file, 96).is_none(), "decoded before a write");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
