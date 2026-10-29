@@ -42,6 +42,7 @@ mod ui;
 mod update;
 mod view;
 mod wallpaper;
+mod watch;
 mod wic;
 mod win;
 

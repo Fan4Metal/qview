@@ -62,6 +62,8 @@ A file is shown together with the other images of its folder; a folder is opened
 
 Only one window of qview is open at a time: when qview is already running, a file opened later (from Explorer or the command line) is shown in the existing window, which is brought to the foreground. Copies of qview started from different folders work independently.
 
+The folder shown is watched: an image added to it by another program (a camera's import, a screenshot tool, a download), deleted, renamed or overwritten (saved in an editor) is listed, taken out, renamed or shown anew within about half a second, without `F5`. The image on screen stays until the new contents are decoded; one deleted gives way to the next, with a notice. With the sub-folders listed, they are watched too; otherwise a change in a sub-folder only renews its cell in the gallery. The favourites, Quick Access and archives are not watched. `F5` still reads everything again at once.
+
 ### Supported formats
 
 | Formats | Read by | Needs |
@@ -192,7 +194,7 @@ Save (`Ctrl+S`, `Enter`) draws the marks into the image and writes it over the f
 
 File → Convert To (also under More in the context menus of the image and of a thumbnail in the gallery) saves a copy of the image in JPEG, PNG, WebP (lossless), TIFF or BMP next to the original, under the same name with the new extension (`photo.heic` → `photo.jpg`, `photo_2.jpg` if that name is taken), without a dialog; an unsaved rotation or flip is applied to the copy. The original stays unchanged and remains the current image; `Ctrl+Z` deletes the copy.
 
-File → Edit With lists the programs Windows offers for the type of the file, as in its "Open with" list, Store apps such as Photos included, and Other Program… for any executable. The program chosen there opens the image (or all chosen images in the gallery) and is remembered as the editor: File → Open in <name> (`Ctrl+E`) opens it again, also after a restart. Before one is chosen, `Ctrl+E` uses the editor Windows has for the type (Paint for most images). Opening more than five images at once asks first, since programs that take one file at a time open a window for each. An image changed in the editor is shown anew after `F5`.
+File → Edit With lists the programs Windows offers for the type of the file, as in its "Open with" list, Store apps such as Photos included, and Other Program… for any executable. The program chosen there opens the image (or all chosen images in the gallery) and is remembered as the editor: File → Open in <name> (`Ctrl+E`) opens it again, also after a restart. Before one is chosen, `Ctrl+E` uses the editor Windows has for the type (Paint for most images). Opening more than five images at once asks first, since programs that take one file at a time open a window for each. An image changed in the editor is shown anew as soon as it is saved (the folder is watched, see Opening files).
 
 </details>
 

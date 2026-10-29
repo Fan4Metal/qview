@@ -11,7 +11,7 @@
 //! The gallery (`gallery`, opened with G, Enter or a double click) shows the
 //! same folder and current file as a grid of thumbnails.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, mpsc};
@@ -96,6 +96,9 @@ const ESC_CLOSES_KEY: &str = "esc_closes";
 const CONFIRM_DELETE_KEY: &str = "confirm_delete";
 const TOOLBAR_KEY: &str = "toolbar";
 const STATUS_BAR_KEY: &str = "status_bar";
+/// How long after qview wrote a file the watcher's report of it is not
+/// taken as another program's write (see `poll_watch`).
+const SELF_WRITTEN_GRACE: Duration = Duration::from_secs(3);
 const BACKGROUND_KEY: &str = "background";
 const CHECKER_KEY: &str = "checker";
 const FILTER_KEY: &str = "filter";
@@ -408,6 +411,12 @@ pub struct App {
     /// The current file was saved over: when it is decoded again, the
     /// view's rotation, now in the file, is dropped.
     reloading: Option<PathBuf>,
+    /// The folder shown, watched for what other programs do to it (see
+    /// `poll_watch`); follows `dir` and `deep`.
+    watcher: Option<crate::watch::Watcher>,
+    /// Files qview itself wrote lately, with when: the watcher reports
+    /// them too, and they are not decoded a second time for that.
+    self_written: Vec<(PathBuf, Instant)>,
     /// The folders shown before and after this one, for Back and Forward.
     pub history: History,
     /// The favourite images (S), listed in the gallery as `favorites::DIR`.
@@ -966,6 +975,8 @@ impl App {
                 .unwrap_or(edit::JPEG_QUALITY),
             saving: None,
             reloading: None,
+            watcher: None,
+            self_written: Vec::new(),
             pdf: None,
             history: History::default(),
             favorites: Favorites::load(crate::settings_dir().map(|d| d.join(favorites::FILE))),
@@ -1546,6 +1557,8 @@ impl App {
         self.index = None;
         self.archive = crate::archive::is_archive_file(&dir);
         self.dir = Some(dir.clone());
+        // Watched anew (F5 after the folder was deleted and made again).
+        self.watcher = None;
         // An archive's folders are listed with it, by folder or not.
         self.deep = deep && !self.archive;
         self.scan = Some(self.scan_dir(dir, keep, ctx));
@@ -2004,6 +2017,15 @@ impl App {
     /// listed again, since their dates and sizes changed or they are new
     /// there.
     fn written(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
+        let now = Instant::now();
+        self.self_written.extend(paths.iter().map(|p| (p.clone(), now)));
+        self.changed_on_disk(ctx, paths);
+    }
+
+    /// The files `paths` have new contents (saved by qview or written by
+    /// another program): decoded again, the current one keeping the old
+    /// picture until then, and the folder listed again when they are in it.
+    fn changed_on_disk(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
         self.forget_files(paths);
         if let Some(current) = self.current.as_ref().filter(|c| paths.contains(c)) {
             self.reloading = Some(current.clone());
@@ -2022,6 +2044,65 @@ impl App {
         if let Some(dir) = self.dir.clone() {
             self.place = self.index;
             self.scan = Some(self.scan_dir(dir, self.current.clone(), ctx));
+        }
+    }
+
+    /// Watch the folder shown, when it is a real one (not the favourites,
+    /// Quick Access or an archive), with its sub-folders when they are
+    /// listed; stop watching one no longer shown. A folder that cannot be
+    /// watched is not tried again until it is listed anew (`start_scan`).
+    fn sync_watch(&mut self, ctx: &egui::Context) {
+        let dir = self.dir.as_deref().filter(|d| !favorites::is_virtual(d) && !self.archive);
+        match dir {
+            None => self.watcher = None,
+            Some(dir) => {
+                if self.watcher.as_ref().is_none_or(|w| !w.watches(dir, self.deep)) {
+                    self.watcher = Some(crate::watch::Watcher::new(dir, self.deep, ctx.clone()));
+                }
+            }
+        }
+    }
+
+    /// Take what the watcher saw other programs do to the folder: files
+    /// added, removed or renamed list it again; files written are decoded
+    /// again (not those qview wrote itself just now, done already); a
+    /// sub-folder written gets its cell's preview made again. Only images,
+    /// folders and what is listed count, so a program's temporary files
+    /// beside the images do nothing.
+    fn poll_watch(&mut self, ctx: &egui::Context) {
+        self.sync_watch(ctx);
+        let Some(changes) = self.watcher.as_ref().and_then(crate::watch::Watcher::poll) else { return };
+        let now = Instant::now();
+        self.self_written.retain(|(_, at)| now.duration_since(*at) < SELF_WRITTEN_GRACE);
+        let key = |p: &Path| p.to_string_lossy().to_lowercase();
+        let listed: HashSet<String> =
+            self.listed.iter().chain(&self.listed_folders).chain(&self.listed_comics).map(|p| key(p)).collect();
+        let counts = |p: &Path| listed.contains(&key(p)) || folder::is_image(p) || crate::archive::is_comic(p) || p.is_dir();
+        let mut relist = changes.all || changes.names.iter().any(|p| counts(p));
+        let (mut written, mut folders) = (Vec::new(), Vec::new());
+        for p in changes.written {
+            if p.is_dir() {
+                folders.push(p);
+            } else if listed.contains(&key(&p)) {
+                if !self.self_written.iter().any(|(w, _)| folder::same_path(w, &p)) {
+                    written.push(p);
+                }
+            } else if folder::is_image(&p) || crate::archive::is_comic(&p) {
+                // Not listed yet: it came since the listing.
+                relist = true;
+            }
+        }
+        if !folders.is_empty()
+            && let Some(gallery) = &mut self.gallery
+        {
+            gallery.forget_previews_of(&folders);
+        }
+        if !written.is_empty() {
+            // Lists the folder again too: a new size or date may order
+            // the file elsewhere.
+            self.changed_on_disk(ctx, &written);
+        } else if relist {
+            self.list_again(ctx);
         }
     }
 
@@ -5273,6 +5354,7 @@ impl eframe::App for App {
             self.cloak = Some(Cloak { until: Instant::now() + UNCLOAK_TIMEOUT, maximized: false, image: true, frame: frame_nr + 1 });
             ctx.request_repaint();
         }
+        self.poll_watch(&ctx);
         self.poll_scan(&ctx);
         self.poll_dups(&ctx);
         self.poll_favorites_gone();
@@ -5382,6 +5464,7 @@ impl eframe::App for App {
     /// The textures are deleted now, while the GL context still lives.
     fn on_exit(&mut self, _gl: Option<&glow::Context>) {
         self.end_pdf();
+        self.watcher = None;
         self.player = None;
         self.shown = None;
         self.detail = Default::default();
