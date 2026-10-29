@@ -250,11 +250,66 @@ pub struct BatchRename {
     /// The folders chosen first (`dirs` of them), then the images.
     pub paths: Vec<PathBuf>,
     pub dirs: usize,
+    /// The template of the names (`rename::templated`).
     pub base: String,
     pub start: u32,
+    /// A number is added when the template does not place one.
+    pub number: bool,
+    /// The dates of `paths` for the template, read on a thread when the
+    /// dialog opens.
+    pub dates: Option<Vec<crate::rename::Dates>>,
+    dates_rx: Option<std::sync::mpsc::Receiver<Vec<crate::rename::Dates>>>,
     pub error: Option<String>,
     /// Focus the name on the next frame.
     pub focus: bool,
+}
+
+impl BatchRename {
+    /// The dialog for `paths` (the first `dirs` folders) with `base` as
+    /// the template to start from; their dates are read on a thread.
+    pub fn new(paths: Vec<PathBuf>, dirs: usize, base: String) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let read = paths.clone();
+        std::thread::Builder::new()
+            .name("rename dates".into())
+            .spawn(move || {
+                let _ = tx.send(crate::rename::read_dates(&read));
+            })
+            .ok();
+        Self { paths, dirs, base, start: 1, number: true, dates: None, dates_rx: Some(rx), error: None, focus: true }
+    }
+
+    /// Move the item `from` to before the item `to` (`paths.len()`: to the
+    /// end) in the order, as dragged in the dialog, its dates with it; a
+    /// folder stays among the folders, a file among the files.
+    pub fn move_item(&mut self, from: usize, to: usize) {
+        let n = self.paths.len();
+        if from >= n {
+            return;
+        }
+        let (first, end) = if from < self.dirs { (0, self.dirs) } else { (self.dirs, n) };
+        let to = to.clamp(first, end);
+        let dest = if to > from { to - 1 } else { to };
+        if dest == from {
+            return;
+        }
+        let path = self.paths.remove(from);
+        self.paths.insert(dest, path);
+        if let Some(dates) = &mut self.dates {
+            let d = dates.remove(from);
+            dates.insert(dest, d);
+        }
+    }
+
+    /// Take the dates once they are read.
+    pub fn poll_dates(&mut self) {
+        if let Some(rx) = &self.dates_rx
+            && let Ok(dates) = rx.try_recv()
+        {
+            self.dates = Some(dates);
+            self.dates_rx = None;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1674,11 +1729,12 @@ impl App {
         Ok(())
     }
 
-    /// Rename `paths` to `base` and a number from `start` each (see
-    /// `rename::numbered`), all or none, so that Ctrl+Z can undo it; why
-    /// not, if they cannot be.
-    pub fn rename_batch(&mut self, ctx: &egui::Context, paths: &[PathBuf], dirs: usize, base: &str, start: u32) -> Result<(), String> {
-        let news = crate::rename::numbered(paths, dirs, base, start);
+    /// Rename `paths` as the template `base` says, with a number from
+    /// `start` (see `rename::templated`), all or none, so that Ctrl+Z can
+    /// undo it; why not, if they cannot be.
+    pub fn rename_batch(&mut self, ctx: &egui::Context, batch: &BatchRename) -> Result<(), String> {
+        let (paths, dirs) = (&batch.paths, batch.dirs);
+        let news = crate::rename::templated(paths, dirs, &batch.base, batch.start, batch.number, batch.dates.as_deref().unwrap_or(&[]));
         let pairs: Vec<(PathBuf, PathBuf)> = paths.iter().cloned().zip(news).filter(|(old, new)| old != new).collect();
         if pairs.is_empty() {
             return Ok(());
@@ -2919,7 +2975,7 @@ impl App {
             _ => {
                 // The name of the folder shown, as a start.
                 let base = items[0].parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                self.batch_rename = Some(BatchRename { paths: items, dirs, base, start: 1, error: None, focus: true });
+                self.batch_rename = Some(BatchRename::new(items, dirs, base));
             }
         }
     }
@@ -3162,7 +3218,7 @@ impl App {
                     // The folder's name, as a start.
                     // (A drive's root has none.)
                     let base = paths[0].parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.batch_rename = Some(BatchRename { paths, dirs: 0, base, start: 1, error: None, focus: true });
+                    self.batch_rename = Some(BatchRename::new(paths, 0, base));
                 } else if let Some(path) = paths.into_iter().next() {
                     let name = file_name(&path);
                     self.rename = Some(Rename { path, name, error: None, focus: true, select: true });

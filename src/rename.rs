@@ -49,27 +49,151 @@ pub fn move_all(pairs: &[(PathBuf, PathBuf)]) -> Result<(), MoveError> {
     result
 }
 
-/// The new names of `paths`: `base_01.jpg`, `base_02.heic`… numbered from
-/// `start` with as many digits as the last number has (at least two), each
-/// in its own folder with its own extension; the first `dirs` are folders,
-/// whose names keep nothing after a dot. Without a base, the number alone.
-pub fn numbered(paths: &[PathBuf], dirs: usize, base: &str, start: u32) -> Vec<PathBuf> {
+/// [`templated`] with a plain name and a number: `base_01.jpg`,
+/// `base_02.heic`…; the number alone without a base.
+#[cfg(test)]
+fn numbered(paths: &[PathBuf], dirs: usize, base: &str, start: u32) -> Vec<PathBuf> {
+    templated(paths, dirs, base, start, true, &[])
+}
+
+/// The dates of a file a template may name, as FILETIMEs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Dates {
+    /// When the photo was taken (`info::taken`); None when its metadata
+    /// does not say, and `{taken}` then takes the date modified.
+    pub taken: Option<u64>,
+    pub modified: u64,
+}
+
+/// The dates of `paths` for [`templated`], read from their metadata
+/// (milliseconds a file: call it on a thread for many).
+pub fn read_dates(paths: &[PathBuf]) -> Vec<Dates> {
+    use std::os::windows::fs::MetadataExt;
+    paths
+        .iter()
+        .map(|p| Dates {
+            taken: if p.is_dir() { None } else { crate::info::taken(p) },
+            modified: std::fs::metadata(p).map_or(0, |m| m.last_write_time()),
+        })
+        .collect()
+}
+
+/// Whether `template` names a date (`{taken}`, `{modified}`), so that
+/// [`read_dates`] is waited for.
+pub fn uses_dates(template: &str) -> bool {
+    placeholders(template).any(|(name, _)| name == "taken" || name == "modified")
+}
+
+/// Whether `template` places the number itself (`{n}`, `{n:4}`).
+pub fn places_number(template: &str) -> bool {
+    placeholders(template).any(|(name, _)| name == "n")
+}
+
+/// The `{name}` and `{name:arg}` of `template`: (name, arg).
+fn placeholders(template: &str) -> impl Iterator<Item = (&str, &str)> {
+    template.split('{').skip(1).filter_map(|rest| {
+        let inner = rest.split_once('}')?.0;
+        Some(inner.split_once(':').unwrap_or((inner, "")))
+    })
+}
+
+/// The date `t` as `pattern` says: `YYYY`, `MM`, `DD`, `HH`, `mm`, `ss`
+/// replaced; `YYYY-MM-DD HH-mm-ss` when the pattern is empty.
+fn date(t: u64, pattern: &str) -> String {
+    let Some(d) = crate::win::local_parts(t) else { return "…".into() };
+    let pattern = if pattern.is_empty() { "YYYY-MM-DD HH-mm-ss" } else { pattern };
+    pattern
+        .replace("YYYY", &format!("{:04}", d.year))
+        .replace("MM", &format!("{:02}", d.month))
+        .replace("DD", &format!("{:02}", d.day))
+        .replace("HH", &format!("{:02}", d.hour))
+        .replace("mm", &format!("{:02}", d.minute))
+        .replace("ss", &format!("{:02}", d.second))
+}
+
+/// The new names of `paths` from `template`: its text with `{n}` the
+/// number (`{n:4}` four digits), `{name}` the old name without its
+/// extension, `{taken}` the date taken and `{modified}` the date modified
+/// (`YYYY-MM-DD HH-mm-ss`, or as `{taken:YYYY-MM-DD}` says; `…` while
+/// `dates` does not have them yet); anything else in braces stays as it
+/// is. Without `{n}`, the number is added after `_` when `number` (the
+/// number alone when the template is empty), otherwise names that came
+/// out equal get ` (2)`, ` (3)`… as Explorer gives copies. The numbers
+/// run from `start` with as many digits as the last has, at least two.
+/// Each file stays in its own folder with its own extension; the first
+/// `dirs` are folders, whose names keep nothing after a dot.
+pub fn templated(paths: &[PathBuf], dirs: usize, template: &str, start: u32, number: bool, dates: &[Dates]) -> Vec<PathBuf> {
     let last = start as u64 + paths.len().saturating_sub(1) as u64;
     let width = last.to_string().len().max(2);
-    let base = base.trim();
-    paths
+    let template = template.trim();
+    let placed = places_number(template);
+    let mut stems: Vec<String> = paths
         .iter()
         .enumerate()
         .map(|(k, path)| {
-            let number = format!("{:0width$}", start as u64 + k as u64);
-            let stem = if base.is_empty() { number } else { format!("{base}_{number}") };
-            let name = match path.extension().filter(|_| k >= dirs) {
-                Some(ext) => format!("{stem}.{}", ext.to_string_lossy()),
-                None => stem,
-            };
-            path.with_file_name(name)
+            let num = start as u64 + k as u64;
+            let old = if k < dirs { file_name(path) } else { path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() };
+            let expanded = expand(template, |name, arg| match name {
+                "n" => Some(format!("{num:0w$}", w = arg.parse().unwrap_or(width))),
+                "name" => Some(old.clone()),
+                "taken" | "modified" => Some(match dates.get(k) {
+                    Some(d) => date(if name == "taken" { d.taken.unwrap_or(d.modified) } else { d.modified }, arg),
+                    None => "…".into(),
+                }),
+                _ => None,
+            });
+            if placed || !number {
+                expanded
+            } else if expanded.is_empty() {
+                format!("{num:0width$}")
+            } else {
+                format!("{expanded}_{num:0width$}")
+            }
         })
-        .collect()
+        .collect();
+    let exts: Vec<String> = paths
+        .iter()
+        .enumerate()
+        .map(|(k, path)| path.extension().filter(|_| k >= dirs).map_or_else(String::new, |e| format!(".{}", e.to_string_lossy())))
+        .collect();
+    if !placed && !number {
+        distinguish(&mut stems, &exts);
+    }
+    paths.iter().zip(stems).zip(exts).map(|((path, stem), ext)| path.with_file_name(format!("{stem}{ext}"))).collect()
+}
+
+/// `template` with each `{name}` or `{name:arg}` replaced by what
+/// `field(name, arg)` gives, kept as it is when that is None.
+fn expand(template: &str, field: impl Fn(&str, &str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(template.len() + 16);
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let Some(close) = rest.find('}') else { break };
+        let inner = &rest[1..close];
+        let (name, arg) = inner.split_once(':').unwrap_or((inner, ""));
+        match field(name, arg) {
+            Some(value) => out.push_str(&value),
+            None => out.push_str(&rest[..=close]),
+        }
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Equal names (`stems` with their `exts`, case ignored) get ` (2)`,
+/// ` (3)`… after the stem from the second on.
+fn distinguish(stems: &mut [String], exts: &[String]) {
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for (stem, ext) in stems.iter_mut().zip(exts) {
+        let count = seen.entry(format!("{stem}{ext}").to_lowercase()).or_insert(0);
+        *count += 1;
+        if *count > 1 {
+            *stem = format!("{stem} ({count})");
+        }
+    }
 }
 
 fn lowercase(path: &Path) -> String {
@@ -146,6 +270,35 @@ mod tests {
         // Folders first: a dot in a folder's name is not an extension.
         let mixed: Vec<PathBuf> = ["2024.05", "a.jpg"].iter().map(|n| PathBuf::from("C:/x").join(n)).collect();
         assert_eq!(names(&numbered(&mixed, 1, "trip", 1)), ["trip_01", "trip_02.jpg"]);
+    }
+
+    #[test]
+    fn templates_place_numbers_names_and_dates() {
+        let paths: Vec<PathBuf> = ["IMG_1.jpg", "IMG_2.jpg", "IMG_3.png"].iter().map(|n| PathBuf::from("C:/x").join(n)).collect();
+        let t = |hour: u8| {
+            crate::win::local_to_filetime(crate::info::DateTime { year: 2024, month: 5, day: 16, hour, minute: 30, second: 15 }).unwrap()
+        };
+        let dates = [
+            Dates { taken: Some(t(10)), modified: t(12) },
+            Dates { taken: None, modified: t(12) },
+            Dates { taken: Some(t(10)), modified: t(13) },
+        ];
+        // `{n}` places the number: nothing is added, even with `number`.
+        let news = templated(&paths, 0, "p{n:3}-{name}", 7, true, &dates);
+        assert_eq!(names(&news), ["p007-IMG_1.jpg", "p008-IMG_2.jpg", "p009-IMG_3.png"]);
+        // The date taken, the date modified of a file without one, a pattern.
+        let news = templated(&paths, 0, "{taken}", 1, false, &dates);
+        assert_eq!(names(&news), ["2024-05-16 10-30-15.jpg", "2024-05-16 12-30-15.jpg", "2024-05-16 10-30-15.png"]);
+        let news = templated(&paths, 0, "{modified:YYYY-MM-DD}", 1, true, &dates);
+        assert_eq!(names(&news), ["2024-05-16_01.jpg", "2024-05-16_02.jpg", "2024-05-16_03.png"]);
+        // Equal names without a number are told apart, by the extension
+        // too; unknown braces stay; no dates read yet.
+        let news = templated(&paths, 0, "{taken:YYYY} {x}", 1, false, &dates);
+        assert_eq!(names(&news), ["2024 {x}.jpg", "2024 {x} (2).jpg", "2024 {x}.png"]);
+        assert_eq!(names(&templated(&paths[..1], 0, "{taken}", 1, false, &[])), ["….jpg"]);
+        assert_eq!(names(&templated(&paths[..1], 0, "", 1, false, &[])), [".jpg"]);
+        assert!(uses_dates("a{modified}") && !uses_dates("{name}"));
+        assert!(places_number("{n:2}") && !places_number("{name}"));
     }
 
     #[test]

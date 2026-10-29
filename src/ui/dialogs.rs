@@ -708,10 +708,15 @@ impl App {
     /// cancels.
     fn batch_rename_dialog(&mut self, ctx: &egui::Context) {
         let Some(batch) = self.batch_rename.as_mut() else { return };
+        batch.poll_dates();
+        if batch.dates.is_none() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let id = egui::Id::new("batch_rename_name");
         let mut decision = None;
         let modal = egui::Modal::new(egui::Id::new("batch_rename")).show(ctx, |ui| {
-            ui.set_width(460.0);
+            ui.set_width(580.0);
+            ui.spacing_mut().item_spacing.y = 8.0;
             let n = batch.paths.len();
             ui.heading(match batch.dirs {
                 0 => tr!(format!("Rename {n} Files"), format!("Переименование файлов ({n})")),
@@ -720,19 +725,41 @@ impl App {
             });
             ui.add_space(8.0);
             let mut changed = false;
+            // The template places the number itself: nothing to add.
+            let placed = crate::rename::places_number(&batch.base);
+            // Its dates are not read yet: the names are not known.
+            let waiting = crate::rename::uses_dates(&batch.base) && batch.dates.is_none();
             egui::Grid::new("batch_rename_fields").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                 ui.label(tr!("Name:", "Имя:"));
-                let edit = ui.add(egui::TextEdit::singleline(&mut batch.base).id(id).desired_width(f32::INFINITY));
-                if std::mem::take(&mut batch.focus) {
-                    edit.request_focus();
-                }
-                if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    decision = Some(true);
-                }
-                changed |= edit.changed();
+                ui.horizontal(|ui| {
+                    // The field, then an "i" button with the placeholders.
+                    let side = ui.spacing().interact_size.y;
+                    let width = ui.available_width() - side - ui.spacing().item_spacing.x;
+                    let edit = ui.add(egui::TextEdit::singleline(&mut batch.base).id(id).desired_width(width));
+                    if std::mem::take(&mut batch.focus) {
+                        edit.request_focus();
+                    }
+                    if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !waiting {
+                        decision = Some(true);
+                    }
+                    changed |= edit.changed();
+                    let info = egui::Button::new(RichText::new("i").strong()).min_size(egui::vec2(side, side));
+                    ui.add(info).on_hover_text(tr!(
+                        "{n} — the number ({n:4} — with four digits)\n{name} — the old name\n{taken} — the date taken, 2024-05-16 10-30-15 (the date modified when the file has none)\n{modified} — the date modified\n{taken:YYYY-MM-DD} — a pattern of YYYY, MM, DD, HH, mm, ss\n\nWithout {n} the number is added after _, or, with \"Add a number\" off, equal names get (2), (3)…",
+                        "{n} — номер ({n:4} — четырьмя цифрами)\n{name} — старое имя\n{taken} — дата съёмки, 2024-05-16 10-30-15 (дата изменения, если в файле её нет)\n{modified} — дата изменения\n{taken:YYYY-MM-DD} — образец из YYYY, MM, DD, HH, mm, ss\n\nБез {n} номер добавляется после _, а со снятым флажком «Добавлять номер» совпавшие имена получают (2), (3)…"
+                    ));
+                });
                 ui.end_row();
                 ui.label(tr!("Start at:", "Начать с:"));
-                changed |= ui.add(egui::DragValue::new(&mut batch.start).range(0..=999_999)).changed();
+                ui.horizontal(|ui| {
+                    let mut number = batch.number || placed;
+                    changed |= ui.add_enabled(number, egui::DragValue::new(&mut batch.start).range(0..=999_999)).changed();
+                    ui.add_space(10.0);
+                    changed |= ui.add_enabled(!placed, egui::Checkbox::new(&mut number, tr!("Add a number", "Добавлять номер"))).changed();
+                    if !placed {
+                        batch.number = number;
+                    }
+                });
                 ui.end_row();
             });
             if changed {
@@ -740,43 +767,87 @@ impl App {
             }
             ui.add_space(8.0);
             // The first names and the last: what the numbering looks like.
-            let news = crate::rename::numbered(&batch.paths, batch.dirs, &batch.base, batch.start);
-            let shown: Vec<usize> = if n <= 4 { (0..n).collect() } else { vec![0, 1, 2, n - 1] };
-            // The old and the new names share the width, the arrow between.
-            let half = ((ui.available_width() - 30.0) / 2.0).max(60.0);
+            let news = crate::rename::templated(&batch.paths, batch.dirs, &batch.base, batch.start, batch.number, batch.dates.as_deref().unwrap_or(&[]));
+            // Every old and new name, the two sharing the width with the
+            // arrow between, a grip at the right; a row dragged (egui's
+            // drag and drop: the row follows the pointer) goes where the
+            // line shows, a folder among the folders, a file among the
+            // files.
             let height = ui.spacing().interact_size.y;
+            let grip = height;
+            let half = ((ui.available_width() - 30.0 - grip) / 2.0).max(60.0);
             let name = |ui: &mut Ui, text: RichText| {
                 ui.allocate_ui_with_layout(egui::vec2(half, height), Layout::left_to_right(Align::Center), |ui| {
                     ui.set_width(half);
                     ui.add(egui::Label::new(text).truncate());
                 });
             };
-            ui.scope(|ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for (k, &i) in shown.iter().enumerate() {
-                    if k == 3 && n > 4 {
-                        ui.weak("…");
+            let dragged = egui::DragAndDrop::payload::<usize>(ctx).map(|i| *i);
+            let pointer = ctx.pointer_interact_pos();
+            // The rows drawn: (index, rect), for where the drag would land.
+            let mut rows_drawn: Vec<(usize, egui::Rect)> = Vec::new();
+            egui::ScrollArea::vertical()
+                .max_height(8.0 * (height + ui.spacing().item_spacing.y))
+                .auto_shrink([false, true])
+                .scroll_source(egui::scroll_area::ScrollSource { drag: egui::scroll_area::DragScroll::Never, ..Default::default() })
+                .show_rows(ui, height, n, |ui, rows| {
+                    for i in rows {
+                        let id = egui::Id::new("batch_rename_row").with(i);
+                        let row = ui.dnd_drag_source(id, i, |ui| {
+                            ui.horizontal(|ui| {
+                                name(ui, RichText::new(file_name(&batch.paths[i])).weak());
+                                ui.weak("→");
+                                name(ui, RichText::new(file_name(&news[i])));
+                                // A grip of six dots (no glyph for one in egui's fonts).
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(grip, height), egui::Sense::hover());
+                                let colour = ui.visuals().weak_text_color();
+                                let c = rect.center();
+                                for dx in [-2.5, 2.5] {
+                                    for dy in [-5.0, 0.0, 5.0] {
+                                        ui.painter().circle_filled(c + egui::vec2(dx, dy), 1.2, colour);
+                                    }
+                                }
+                            });
+                        });
+                        rows_drawn.push((i, row.response.rect));
                     }
-                    ui.horizontal(|ui| {
-                        name(ui, RichText::new(file_name(&batch.paths[i])).weak());
-                        ui.weak("→");
-                        name(ui, RichText::new(file_name(&news[i])));
-                    });
-                }
-            });
+                    // Where the dragged row would go: before the first row
+                    // whose middle is below the pointer, else after the last.
+                    if let (Some(from), Some(p)) = (dragged, pointer)
+                        && let Some(first) = rows_drawn.first()
+                        && let Some(last) = rows_drawn.last()
+                        && p.y >= first.1.top() - height
+                        && p.y <= last.1.bottom() + height
+                    {
+                        let (to, y) = rows_drawn
+                            .iter()
+                            .find(|(_, r)| r.center().y > p.y)
+                            .map_or((last.0 + 1, last.1.bottom()), |(i, r)| (*i, r.top()));
+                        let x = first.1.x_range();
+                        ui.painter().hline(x, y, ui.visuals().selection.stroke);
+                        if ui.input(|i| i.pointer.any_released()) {
+                            egui::DragAndDrop::clear_payload(ctx);
+                            batch.move_item(from, to);
+                        }
+                    }
+                });
             if let Some(error) = &batch.error {
                 ui.add_space(4.0);
                 ui.colored_label(egui::Color32::from_rgb(0xff, 0x8a, 0x80), error);
             }
-            ui.add_space(10.0);
+            ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let text = |s: &str| RichText::new(s).size(16.0);
-                if ui.add(egui::Button::new(text(tr!("Rename", "Переименовать"))).min_size(egui::vec2(160.0, 34.0))).clicked() {
+                let rename = egui::Button::new(text(tr!("Rename", "Переименовать"))).min_size(egui::vec2(160.0, 34.0));
+                if ui.add_enabled(!waiting, rename).clicked() {
                     decision = Some(true);
                 }
                 if ui.add(egui::Button::new(text(tr!("Cancel", "Отмена"))).min_size(egui::vec2(100.0, 34.0))).clicked() {
                     decision = Some(false);
+                }
+                if waiting {
+                    ui.weak(tr!("Reading the dates…", "Чтение дат…"));
                 }
             });
         });
@@ -785,14 +856,13 @@ impl App {
         }
         match decision {
             Some(true) => {
-                let (paths, dirs, base, start) = (batch.paths.clone(), batch.dirs, batch.base.clone(), batch.start);
-                match self.rename_batch(ctx, &paths, dirs, &base, start) {
-                    Ok(()) => self.batch_rename = None,
+                let Some(mut batch) = self.batch_rename.take() else { return };
+                match self.rename_batch(ctx, &batch) {
+                    Ok(()) => {}
                     Err(e) => {
-                        if let Some(batch) = &mut self.batch_rename {
-                            batch.error = Some(e);
-                            batch.focus = true;
-                        }
+                        batch.error = Some(e);
+                        batch.focus = true;
+                        self.batch_rename = Some(batch);
                     }
                 }
             }

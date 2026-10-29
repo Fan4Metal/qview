@@ -375,6 +375,27 @@ pub fn date_time(t: crate::info::DateTime) -> Option<String> {
     format_date_time(&system_time(t))
 }
 
+/// A FILETIME as the parts of a local date and time.
+pub fn local_parts(filetime: u64) -> Option<crate::info::DateTime> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    let ft = FILETIME { dwLowDateTime: filetime as u32, dwHighDateTime: (filetime >> 32) as u32 };
+    let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+    unsafe {
+        if FileTimeToSystemTime(&ft, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
+            return None;
+        }
+    }
+    Some(crate::info::DateTime {
+        year: local.wYear,
+        month: local.wMonth as u8,
+        day: local.wDay as u8,
+        hour: local.wHour as u8,
+        minute: local.wMinute as u8,
+        second: local.wSecond as u8,
+    })
+}
+
 /// A FILETIME (100 ns ticks since 1601, UTC) as a local date and time in
 /// the user's short date and long time formats, as Explorer shows it:
 /// `16.04.2012 15:01:26`.
