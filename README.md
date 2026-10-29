@@ -97,6 +97,8 @@ Animated GIF and WebP images are played in the viewer, in a loop or as many time
 
 Images are listed in the same order as in Explorer (numbers are compared as numbers), or in another one chosen in View → Sort. Downscaled images are smoothed with mipmaps; 100% shows one image pixel per screen pixel at any Windows display scaling. The EXIF orientation of photos is applied. The status bar shows the position in the folder, the file name, size, dimensions, colour depth, format, modification date, the time the file took to decode (reading, decoding and preparing the mipmaps; images decoded ahead show theirs too, though they appear at once) and zoom.
 
+The File and View menus follow the mode: in the gallery they leave out what only the image on screen can take (saving, zoom, rotation and flipping, cropping, marks, animation, background, filtering) and the View menu offers the thumbnail badges and the thumbnail size (`+` / `-`) instead; the commands of the files (copying, moving, renaming, deleting, converting, printing) are in both.
+
 <details>
 <summary>Sorting</summary>
 

@@ -71,12 +71,16 @@ impl App {
             });
     }
 
+    /// The File menu; in the gallery without saving, which is the image on
+    /// screen's (the items were always off there).
     fn file_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
         self.item(ui, tr!("Open…", "Открыть…").into(), "Ctrl+O", Cmd::Open, true);
-        self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, e.edited);
-        self.item(ui, tr!("Save As…", "Сохранить как…").into(), "Ctrl+Shift+S", Cmd::SaveAs, e.edit);
-        self.item(ui, tr!("Save With Options…", "Сохранить с параметрами…").into(), "Ctrl+Alt+S", Cmd::SaveWithOptions, e.edit);
+        if !self.gallery_open {
+            self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, e.edited);
+            self.item(ui, tr!("Save As…", "Сохранить как…").into(), "Ctrl+Shift+S", Cmd::SaveAs, e.edit);
+            self.item(ui, tr!("Save With Options…", "Сохранить с параметрами…").into(), "Ctrl+Alt+S", Cmd::SaveWithOptions, e.edit);
+        }
         self.convert_menu(ui);
         self.pdf_item(ui, false);
         // The file waits while its image is cropped or marked.
@@ -146,10 +150,14 @@ impl App {
     }
 
     /// Every command, the groups as submenus: the menu was 31 rows with
-    /// them all at the top level.
+    /// them all at the top level. The viewer's and the gallery's menus
+    /// differ: the gallery has the thumbnails' items (badges, the cell
+    /// size) and none of the image's (zoom, turns, crop, marks, animation,
+    /// background, filtering), which did nothing there.
     fn view_menu(&mut self, ui: &mut Ui) {
         let e = self.enabled();
-        self.check_item(ui, tr!("Gallery", "Галерея").into(), "G", Cmd::Gallery, self.gallery_open);
+        let gallery = self.gallery_open;
+        self.check_item(ui, tr!("Gallery", "Галерея").into(), "G", Cmd::Gallery, gallery);
         ui.separator();
         ui.menu_button(tr!("Go", "Переход"), |ui| {
             self.item(ui, tr!("Previous", "Предыдущее").into(), "Page Up", Cmd::Prev, e.prev);
@@ -159,13 +167,18 @@ impl App {
         });
         ui.menu_button(tr!("Sort", "Сортировка"), |ui| self.sort_menu(ui));
         self.duplicates_items(ui);
-        self.badges_menu(ui);
         ui.separator();
-        ui.menu_button(tr!("Zoom", "Масштаб"), |ui| self.zoom_items(ui, &e));
-        self.rotate_menu(ui, &e);
-        self.crop_item(ui, &e);
-        self.annotate_item(ui, &e);
-        self.animation_menu(ui);
+        if gallery {
+            self.badges_menu(ui);
+            self.item(ui, tr!("Larger Thumbnails", "Крупнее миниатюры").into(), "+", Cmd::ZoomIn, true);
+            self.item(ui, tr!("Smaller Thumbnails", "Мельче миниатюры").into(), "-", Cmd::ZoomOut, true);
+        } else {
+            ui.menu_button(tr!("Zoom", "Масштаб"), |ui| self.zoom_items(ui, &e));
+            self.rotate_menu(ui, &e);
+            self.crop_item(ui, &e);
+            self.annotate_item(ui, &e);
+            self.animation_menu(ui);
+        }
         ui.separator();
         self.item(ui, tr!("Full Screen", "Полный экран").into(), "F", Cmd::FullScreen, true);
         ui.menu_button(tr!("Slideshow", "Слайд-шоу"), |ui| self.slideshow_menu(ui));
@@ -176,8 +189,10 @@ impl App {
             self.check_item(ui, tr!("Status Bar", "Строка состояния").into(), "B", Cmd::ToggleStatusBar, self.show_status_bar);
             self.check_item(ui, tr!("Information", "Сведения").into(), "I", Cmd::Info, self.show_info);
         });
-        ui.menu_button(tr!("Background", "Фон"), |ui| self.background_menu(ui));
-        self.filtering_menu(ui);
+        if !gallery {
+            ui.menu_button(tr!("Background", "Фон"), |ui| self.background_menu(ui));
+            self.filtering_menu(ui);
+        }
         self.esc_closes_item(ui);
         ui.separator();
         self.item(ui, tr!("Refresh", "Обновить").into(), "F5", Cmd::Refresh, e.file);
