@@ -77,6 +77,7 @@ impl App {
         self.item(ui, tr!("Save", "Сохранить").into(), "Ctrl+S", Cmd::Save, e.edited);
         self.item(ui, tr!("Save As…", "Сохранить как…").into(), "Ctrl+Shift+S", Cmd::SaveAs, e.edit);
         self.item(ui, tr!("Save With Options…", "Сохранить с параметрами…").into(), "Ctrl+Alt+S", Cmd::SaveWithOptions, e.edit);
+        self.save_without_metadata_item(ui, e.edit);
         self.convert_menu(ui);
         self.pdf_item(ui, false);
         // The file waits while its image is cropped or marked.
@@ -597,6 +598,17 @@ impl App {
         self.item_explained(ui, tr!("Copy Image", "Копировать картинку").into(), "Ctrl+Shift+C", Cmd::CopyImage, enabled, tip);
     }
 
+    /// Save As without the metadata: for sharing a photo without where and
+    /// when it was taken.
+    pub(super) fn save_without_metadata_item(&mut self, ui: &mut Ui, enabled: bool) {
+        let tip = tr!(
+            "A copy without EXIF (camera, date, GPS position), XMP, IPTC or comment; a JPEG keeps its pixels as they are",
+            "Копия без EXIF (камера, дата, координаты GPS), XMP, IPTC и комментария; пиксели JPEG не пересжимаются"
+        );
+        let text = tr!("Save Without Metadata…", "Сохранить без метаданных…");
+        self.item_explained(ui, text.into(), "", Cmd::SaveWithoutMetadata, enabled, tip);
+    }
+
     /// Save as PDF: the images chosen, or all those listed; in a context
     /// menu (`of_targets`) the images chosen, or the one clicked. Stop
     /// Making PDF while one is made.
@@ -773,8 +785,10 @@ impl App {
         self.rename_item(ui, file);
         self.transfer_menu(ui, false, file);
         self.item(ui, tr!("Show in Explorer", "Показать в Проводнике").into(), "", Cmd::ShowInExplorer, file);
+        let edit = enabled && self.enabled().edit;
         ui.menu_button(tr!("More", "Ещё"), |ui| {
             self.copy_image_item(ui, enabled);
+            self.save_without_metadata_item(ui, edit);
             self.open_in_editor_item(ui, file);
             ui.separator();
             self.transfer_menu(ui, true, file);

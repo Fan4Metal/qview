@@ -1530,6 +1530,7 @@ mod tests {
             marks: Vec::new(),
             resize: None,
             quality: None,
+            strip: false,
         };
         let t = std::time::Instant::now();
         let img = crate::edit::render(&job).unwrap();

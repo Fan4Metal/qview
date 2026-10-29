@@ -111,6 +111,8 @@ pub enum Cmd {
     SaveAs,
     /// Save As shrunk, in a format, a JPEG at a quality (Ctrl+Alt+S).
     SaveWithOptions,
+    /// Save As without the metadata (File menu, the context menus).
+    SaveWithoutMetadata,
     /// Save the images listed, or those chosen in the gallery, as one PDF
     /// (Ctrl+Shift+P).
     SavePdf,

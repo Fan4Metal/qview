@@ -139,7 +139,7 @@ mod tests {
     use super::*;
 
     fn job(src: &str, turns: u8) -> edit::Job {
-        edit::Job { src: src.into(), dst: PathBuf::new(), size: [0, 0], turns, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None }
+        edit::Job { src: src.into(), dst: PathBuf::new(), size: [0, 0], turns, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None, strip: false }
     }
 
     #[test]

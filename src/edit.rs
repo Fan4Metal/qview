@@ -142,6 +142,11 @@ pub struct Job {
     /// The quality of a JPEG, `JPEG_QUALITY` when None; a JPEG given one
     /// is encoded anew even when only turned.
     pub quality: Option<u8>,
+    /// Without its metadata: no EXIF, XMP, IPTC or comment (the ICC
+    /// profile stays, being the colours' meaning, not information about
+    /// the picture); a JPEG only turned keeps its pixels, with an
+    /// orientation tag alone when it is not upright.
+    pub strip: bool,
 }
 
 /// The contents of a file before it was saved over, for Ctrl+Z.
@@ -168,7 +173,7 @@ pub fn save(job: &Job) -> Result<Saved, String> {
     let bytes = crate::archive::read(&job.src).map_err(|e| e.to_string())?;
     let kept = job.crop.is_none() && job.marks.is_empty() && job.resize.is_none() && job.quality.is_none();
     let lossless = (kept && format == Format::Jpeg && bytes.starts_with(&[0xff, 0xd8]))
-        .then(|| turn_jpeg(&bytes, job.turns, job.flip))
+        .then(|| if job.strip { strip_jpeg(&bytes, job.turns, job.flip) } else { turn_jpeg(&bytes, job.turns, job.flip) })
         .flatten();
     let (out, lossless) = match lossless {
         Some(out) => (out, true),
@@ -325,6 +330,37 @@ pub fn turn_jpeg(jpeg: &[u8], turns: u8, flip: bool) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// `jpeg` without its metadata, mirrored if `flip` and turned `turns` as
+/// `turn_jpeg` does: the APP1 (EXIF, XMP), APP13 (Photoshop, IPTC) and
+/// comment segments are left out, and an EXIF of the orientation alone put
+/// after APP0 when it is not upright; JFIF, the ICC profile (APP2), Adobe's
+/// APP14 and the compressed data stay. None if the segments cannot be read.
+pub fn strip_jpeg(jpeg: &[u8], turns: u8, flip: bool) -> Option<Vec<u8>> {
+    let segments = jpeg_segments(jpeg)?;
+    let exif = segments.iter().find(|&&(code, _, p, e)| code == 0xe1 && jpeg[p..e].starts_with(EXIF_HEADER));
+    let orientation = exif.and_then(|&(_, _, p, e)| crate::exif::orientation(&jpeg[p + EXIF_HEADER.len()..e])).unwrap_or(1);
+    let value = turned_orientation(orientation, turns, flip);
+    let mut out = Vec::with_capacity(jpeg.len());
+    out.extend(&jpeg[..2]);
+    let mut placed = value == 1;
+    for &(code, s, _, e) in &segments {
+        // After APP0 (JFIF), which must come first.
+        if !placed && code != 0xe0 {
+            push_app1(&mut out, &crate::exif::minimal(value))?;
+            placed = true;
+        }
+        if !matches!(code, 0xe1 | 0xed | 0xfe) {
+            out.extend(&jpeg[s..e]);
+        }
+    }
+    if !placed {
+        push_app1(&mut out, &crate::exif::minimal(value))?;
+    }
+    let data = segments.last().map_or(2, |s| s.3);
+    out.extend(&jpeg[data..]);
+    Some(out)
+}
+
 /// An APP1 segment with `tiff` as its EXIF; None if it is too long.
 fn push_app1(out: &mut Vec<u8>, tiff: &[u8]) -> Option<()> {
     let len = u16::try_from(2 + EXIF_HEADER.len() + tiff.len()).ok()?;
@@ -366,7 +402,7 @@ fn encode_anew(job: &Job, bytes: &[u8], format: Format) -> Result<Vec<u8>, Strin
     }
     let Decoded { img, icc, exif } = decode(&job.src, bytes)?;
     let img = transform(job, img)?;
-    let exif = exif.and_then(|e| crate::exif::for_new_pixels(&e, img.width(), img.height()));
+    let exif = exif.filter(|_| !job.strip).and_then(|e| crate::exif::for_new_pixels(&e, img.width(), img.height()));
     encode(&img, format, icc, exif, job.quality.unwrap_or(JPEG_QUALITY)).map_err(|e| e.to_string())
 }
 
@@ -744,7 +780,7 @@ mod tests {
         asymmetric().save(&src).unwrap();
         let original = std::fs::read(&src).unwrap();
         // Turned right the image is 2x3; its middle row.
-        let job = Job { src: src.clone(), dst: src.clone(), size: [3, 2], turns: 1, flip: false, crop: Some([0, 1, 2, 1]), marks: Vec::new(), resize: None, quality: None };
+        let job = Job { src: src.clone(), dst: src.clone(), size: [3, 2], turns: 1, flip: false, crop: Some([0, 1, 2, 1]), marks: Vec::new(), resize: None, quality: None, strip: false };
         let saved = save(&job).unwrap();
         assert!(!saved.lossless);
         let expected = asymmetric().rotate90().crop_imm(0, 1, 2, 1);
@@ -758,13 +794,13 @@ mod tests {
 
         // Into a new file, as JPEG: the turn is in the pixels.
         let dst = dir.join("b.jpg");
-        let job = Job { src: src.clone(), dst: dst.clone(), size: [3, 2], turns: 2, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None };
+        let job = Job { src: src.clone(), dst: dst.clone(), size: [3, 2], turns: 2, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None, strip: false };
         let saved = save(&job).unwrap();
         assert!(saved.before.is_none());
         assert_eq!((image::open(&dst).unwrap().width(), image::open(&dst).unwrap().height()), (3, 2));
 
         // A JPEG only turned stays as it was but for its orientation.
-        let job = Job { src: dst.clone(), dst: dst.clone(), size: [3, 2], turns: 1, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None };
+        let job = Job { src: dst.clone(), dst: dst.clone(), size: [3, 2], turns: 1, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None, strip: false };
         assert!(save(&job).unwrap().lossless);
         assert_eq!(decoded(&std::fs::read(&dst).unwrap()).width(), 2);
         // Mirrored too.
@@ -774,18 +810,18 @@ mod tests {
         assert_eq!(decoded(&std::fs::read(&dst).unwrap()), before.fliph());
 
         // Mirrored and turned anew: as the view shows it.
-        let job = Job { src: src.clone(), dst: dir.join("m.png"), size: [3, 2], turns: 1, flip: true, crop: None, marks: Vec::new(), resize: None, quality: None };
+        let job = Job { src: src.clone(), dst: dir.join("m.png"), size: [3, 2], turns: 1, flip: true, crop: None, marks: Vec::new(), resize: None, quality: None, strip: false };
         save(&job).unwrap();
         let expected = asymmetric().fliph().rotate90();
         assert_eq!(image::open(dir.join("m.png")).unwrap().to_rgb8(), expected.to_rgb8());
         std::fs::remove_file(dir.join("m.png")).unwrap();
 
         // A file changed since the crop was chosen is not cropped.
-        let job = Job { src: src.clone(), dst: src.clone(), size: [30, 20], turns: 0, flip: false, crop: Some([0, 0, 1, 1]), marks: Vec::new(), resize: None, quality: None };
+        let job = Job { src: src.clone(), dst: src.clone(), size: [30, 20], turns: 0, flip: false, crop: Some([0, 0, 1, 1]), marks: Vec::new(), resize: None, quality: None, strip: false };
         assert!(save(&job).is_err());
         assert!(save(&Job { dst: dir.join("c.gif"), ..job }).is_err());
         // Without a crop the size is not needed (the gallery has none).
-        let job = Job { src: src.clone(), dst: dir.join("d.bmp"), size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None };
+        let job = Job { src: src.clone(), dst: dir.join("d.bmp"), size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None, strip: false };
         assert!(save(&job).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -796,13 +832,72 @@ mod tests {
         let src = dir.join("a.jpg");
         std::fs::write(&src, turn_jpeg(&jpeg(40, 10), 1, false).unwrap()).unwrap();
         // Upright it is 10x40; its top half.
-        let job = Job { src: src.clone(), dst: src.clone(), size: [10, 40], turns: 0, flip: false, crop: Some([0, 0, 10, 20]), marks: Vec::new(), resize: None, quality: None };
+        let job = Job { src: src.clone(), dst: src.clone(), size: [10, 40], turns: 0, flip: false, crop: Some([0, 0, 10, 20]), marks: Vec::new(), resize: None, quality: None, strip: false };
         save(&job).unwrap();
         let bytes = std::fs::read(&src).unwrap();
         let img = decoded(&bytes);
         assert_eq!((img.width(), img.height()), (10, 20));
         let (_, _, p, e) = jpeg_segments(&bytes).unwrap().into_iter().find(|s| s.0 == 0xe1).expect("EXIF kept");
         assert_eq!(crate::exif::orientation(&bytes[p + EXIF_HEADER.len()..e]), Some(1));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Without metadata: a JPEG only turned keeps its pixels and gets an
+    /// EXIF of the orientation alone (none when upright), its XMP and
+    /// comment gone; one cropped is encoded anew with no EXIF at all.
+    #[test]
+    fn saving_without_metadata() {
+        let dir = temp_dir("strip");
+        let src = dir.join("a.jpg");
+        // Orientation 6 (a quarter turn), an XMP segment and a comment.
+        let mut turned = turn_jpeg(&jpeg(40, 10), 1, false).unwrap();
+        let at = jpeg_segments(&turned).unwrap().iter().find(|s| s.0 == 0xe1).unwrap().3;
+        let xmp: Vec<u8> = XMP_HEADER.iter().copied().chain(*b"<x:xmpmeta/>").collect();
+        let mut extra = vec![0xff, 0xe1];
+        extra.extend(((xmp.len() + 2) as u16).to_be_bytes());
+        extra.extend(&xmp);
+        extra.extend([0xff, 0xfe, 0, 7, b'h', b'e', b'l', b'l', b'o']);
+        turned.splice(at..at, extra);
+        std::fs::write(&src, &turned).unwrap();
+        let strip = |dst: PathBuf, turns: u8, crop: Option<[u32; 4]>| Job {
+            src: src.clone(),
+            dst,
+            size: [10, 40],
+            turns,
+            flip: false,
+            crop,
+            marks: Vec::new(),
+            resize: None,
+            quality: None,
+            strip: true,
+        };
+        let kinds = |bytes: &[u8]| -> Vec<u8> { jpeg_segments(bytes).unwrap().iter().map(|s| s.0).collect() };
+
+        // Still a quarter turn: an EXIF of the orientation alone, after JFIF.
+        let dst = dir.join("b.jpg");
+        assert!(save(&strip(dst.clone(), 0, None)).unwrap().lossless);
+        let bytes = std::fs::read(&dst).unwrap();
+        let segments = jpeg_segments(&bytes).unwrap();
+        let app1: Vec<_> = segments.iter().filter(|s| s.0 == 0xe1).collect();
+        assert_eq!(app1.len(), 1);
+        let (_, _, p, e) = *app1[0];
+        assert_eq!(&bytes[p + EXIF_HEADER.len()..e], crate::exif::minimal(6));
+        assert!(!kinds(&bytes).contains(&0xfe));
+        assert_eq!(segments[0].0, 0xe0);
+        assert_eq!(decoded(&bytes).to_rgb8(), decoded(&turned).to_rgb8());
+
+        // Turned back upright: no EXIF at all.
+        let dst = dir.join("c.jpg");
+        assert!(save(&strip(dst.clone(), 3, None)).unwrap().lossless);
+        let bytes = std::fs::read(&dst).unwrap();
+        assert!(!kinds(&bytes).contains(&0xe1), "{:x?}", kinds(&bytes));
+
+        // Cropped: encoded anew, nothing carried over.
+        let dst = dir.join("d.jpg");
+        assert!(!save(&strip(dst.clone(), 0, Some([0, 0, 10, 20]))).unwrap().lossless);
+        let bytes = std::fs::read(&dst).unwrap();
+        assert!(!kinds(&bytes).contains(&0xe1));
+        assert_eq!((decoded(&bytes).width(), decoded(&bytes).height()), (10, 20));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -836,7 +931,7 @@ mod tests {
         let dir = temp_dir("resize");
         let src = dir.join("a.jpg");
         std::fs::write(&src, jpeg(64, 48)).unwrap();
-        let job = Job { src: src.clone(), dst: dir.join("b.jpg"), size: [64, 48], turns: 0, flip: false, crop: None, marks: Vec::new(), resize: Some([32, 24]), quality: None };
+        let job = Job { src: src.clone(), dst: dir.join("b.jpg"), size: [64, 48], turns: 0, flip: false, crop: None, marks: Vec::new(), resize: Some([32, 24]), quality: None, strip: false };
         let saved = save(&job).unwrap();
         assert!(!saved.lossless);
         let img = decoded(&std::fs::read(dir.join("b.jpg")).unwrap());

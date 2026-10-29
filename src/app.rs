@@ -3097,6 +3097,7 @@ impl App {
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::SaveWithOptions => self.ask_save_options(),
+            Cmd::SaveWithoutMetadata => self.save_with(ctx, frame, true, None, true),
             Cmd::ConvertTo(format) => self.convert(ctx, format),
             Cmd::SavePdf => self.save_pdf(ctx, frame, false),
             Cmd::SavePdfOfTargets => self.save_pdf(ctx, frame, true),
@@ -3386,7 +3387,8 @@ impl App {
             | Cmd::Crop
             | Cmd::Save
             | Cmd::SaveAs
-            | Cmd::SaveWithOptions => {}
+            | Cmd::SaveWithOptions
+            | Cmd::SaveWithoutMetadata => {}
             Cmd::Gallery => self.leave_gallery(),
             // F shows the image in full screen; Ctrl+Shift+F
             // (`WindowFullScreen`) turns the gallery's window, as in the viewer.
@@ -3848,7 +3850,7 @@ impl App {
             (Some(_), Some(a)) => a.marks.clone(),
             _ => Vec::new(),
         };
-        edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop, marks, resize: None, quality: None }
+        edit::Job { src: path, dst: PathBuf::new(), size, turns, flip, crop, marks, resize: None, quality: None, strip: false }
     }
 
     /// Put the images of an archive to copy (`targets`) on the clipboard as
@@ -4296,6 +4298,7 @@ impl App {
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::SaveWithOptions => self.ask_save_options(),
+            Cmd::SaveWithoutMetadata => self.save_with(ctx, frame, true, None, true),
             Cmd::Undo => {
                 a.undo();
             }
@@ -4360,6 +4363,7 @@ impl App {
             Cmd::Save => self.save(ctx, frame, false),
             Cmd::SaveAs => self.save(ctx, frame, true),
             Cmd::SaveWithOptions => self.ask_save_options(),
+            Cmd::SaveWithoutMetadata => self.save_with(ctx, frame, true, None, true),
             Cmd::RotateLeft | Cmd::RotateRight => {
                 // The frame turns with the image; the view turns it.
                 if let (Some(crop), Some((_, picture))) = (&mut self.crop, &self.shown) {
@@ -4416,7 +4420,7 @@ impl App {
     /// over) into a file the user picks. On a thread; `poll_save` takes the
     /// outcome.
     fn save(&mut self, ctx: &egui::Context, frame: &eframe::Frame, as_new: bool) {
-        self.save_with(ctx, frame, as_new, None);
+        self.save_with(ctx, frame, as_new, None, false);
     }
 
     /// The image on screen can be saved: nothing being saved, not an
@@ -4450,8 +4454,16 @@ impl App {
 
     /// Save as `save` does; with `options` (Save With Options) into a new
     /// file, shrunk, in their format first in Save As's list, a JPEG at
-    /// their quality.
-    pub(crate) fn save_with(&mut self, ctx: &egui::Context, frame: &eframe::Frame, as_new: bool, options: Option<crate::ui::save_options::SaveOptions>) {
+    /// their quality; `strip` (also an option) leaves the metadata out.
+    pub(crate) fn save_with(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+        as_new: bool,
+        options: Option<crate::ui::save_options::SaveOptions>,
+        strip: bool,
+    ) {
+        let strip = strip || options.as_ref().is_some_and(|o| o.strip);
         let Some((path, picture)) = self.saveable() else { return };
         let turned = self.view.rotated(picture.size());
         let crop = self.save_crop(turned);
@@ -4483,6 +4495,8 @@ impl App {
                 "_crop"
             } else if resize.is_some() {
                 "_resized"
+            } else if strip {
+                "_nometa"
             } else if self.view.turns != 0 {
                 "_rotate"
             } else if self.view.flip {
@@ -4496,7 +4510,8 @@ impl App {
         // As the file chosen ends: another format may have been picked there.
         let quality = options.filter(|_| edit::Format::of(&dst) == Some(edit::Format::Jpeg)).map(|o| o.quality);
         let size = [picture.meta.width, picture.meta.height];
-        let job = edit::Job { src: path, dst, size, turns: self.view.turns, flip: self.view.flip, crop, marks, resize, quality };
+        let job =
+            edit::Job { src: path, dst, size, turns: self.view.turns, flip: self.view.flip, crop, marks, resize, quality, strip };
         self.start_save(ctx, vec![job], false);
     }
 
@@ -4539,7 +4554,7 @@ impl App {
         let (turns, flip) = if self.editable().is_some() { (self.view.turns, self.view.flip) } else { (0, false) };
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let name = edit::suggested_name(&path, format.extensions()[0], "", |n| dir.join(n).exists());
-        let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, flip, crop: None, marks: Vec::new(), resize: None, quality: None };
+        let job = edit::Job { src: path, dst: dir.join(name), size: [0, 0], turns, flip, crop: None, marks: Vec::new(), resize: None, quality: None, strip: false };
         self.start_save(ctx, vec![job], true);
     }
 
@@ -4558,7 +4573,7 @@ impl App {
                 });
                 let dst = dir.join(name);
                 planned.insert(dst.to_string_lossy().to_lowercase());
-                edit::Job { src, dst, size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None }
+                edit::Job { src, dst, size: [0, 0], turns: 0, flip: false, crop: None, marks: Vec::new(), resize: None, quality: None, strip: false }
             })
             .collect();
         let n = jobs.len();

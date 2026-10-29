@@ -25,12 +25,14 @@ pub struct SaveOptions {
     pub format: Format,
     /// Of a JPEG, 1 to 100.
     pub quality: u8,
+    /// Without the metadata (see `edit::Job::strip`).
+    pub strip: bool,
 }
 
 impl SaveOptions {
     pub fn new(path: PathBuf, full: [u32; 2], format: Format, quality: u8) -> Self {
         let full = full.map(|v| v.max(1));
-        SaveOptions { path, full, size: full, keep: true, format, quality: quality.clamp(1, 100) }
+        SaveOptions { path, full, size: full, keep: true, format, quality: quality.clamp(1, 100), strip: false }
     }
 
     /// The width `w` (within the image); the height follows if kept.
@@ -158,6 +160,13 @@ impl App {
                     ui.add(egui::Slider::new(&mut o.quality, 1..=100)).on_hover_text(tip);
                     ui.end_row();
                 }
+                ui.label("");
+                let tip = tr!(
+                    "No EXIF (camera, date, GPS position), XMP, IPTC or comment; the ICC colour profile is kept",
+                    "Без EXIF (камера, дата, координаты GPS), XMP, IPTC и комментария; цветовой профиль ICC сохраняется"
+                );
+                ui.checkbox(&mut o.strip, tr!("Without metadata", "Без метаданных")).on_hover_text(tip);
+                ui.end_row();
             });
             if o.format == Format::Jpeg && Format::of(&o.path) == Some(Format::Jpeg) && o.resize().is_none() {
                 ui.add_space(4.0);
@@ -188,7 +197,7 @@ impl App {
             Some(true) => {
                 let options = self.save_options.take().expect("shown");
                 self.save_quality = options.quality;
-                self.save_with(ctx, frame, true, Some(options));
+                self.save_with(ctx, frame, true, Some(options), false);
             }
             Some(false) => self.save_options = None,
             None => {}
