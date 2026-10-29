@@ -107,16 +107,22 @@ impl App {
     }
 
     /// What the gallery's cells show over their thumbnails, each on or off.
+    /// The submenu stays open after a click, so that several can be turned
+    /// on or off in a row; a click outside the menus closes it.
     pub(super) fn badges_menu(&mut self, ui: &mut Ui) {
-        ui.menu_button(tr!("Thumbnail Badges", "Значки на миниатюрах"), |ui| {
+        let config = egui::containers::menu::MenuConfig::find(ui).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        let menu = egui::containers::menu::SubMenuButton::new(tr!("Thumbnail Badges", "Значки на миниатюрах")).config(config);
+        menu.ui(ui, |ui| {
             for b in crate::gallery::Badge::ALL {
-                self.check_item(ui, b.label().into(), "", Cmd::ThumbBadge(b), self.thumb_badges.has(b));
+                if ui.add(Button::new(b.label()).selected(self.thumb_badges.has(b))).clicked() {
+                    self.clicked.push(Cmd::ThumbBadge(b));
+                }
             }
             ui.separator();
-            if self.thumb_badges.all() {
-                self.item(ui, tr!("Hide All", "Скрыть все").into(), "", Cmd::ThumbBadgesAll(false), true);
-            } else {
-                self.item(ui, tr!("Show All", "Показать все").into(), "", Cmd::ThumbBadgesAll(true), true);
+            let all = self.thumb_badges.all();
+            let text = if all { tr!("Hide All", "Скрыть все") } else { tr!("Show All", "Показать все") };
+            if ui.button(text).clicked() {
+                self.clicked.push(Cmd::ThumbBadgesAll(!all));
             }
         });
     }
