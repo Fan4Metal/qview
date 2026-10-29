@@ -100,7 +100,7 @@ Images are listed in the same order as in Explorer (numbers are compared as numb
 <details>
 <summary>Sorting</summary>
 
-View → Sort orders the images by date modified, date taken or size instead of the name, ascending or descending. The date taken is read from the EXIF data of each image when this order is chosen; an image without it is placed by its date modified. The sub-folders and comic books shown as cells follow the same order: folders by name or by date modified (also when the date taken is chosen, since a folder has none) and by name when the size is chosen, comic books by any of them; the folder tree always lists folders by name.
+View → Sort orders the images by date modified, date taken, size or type instead of the name, ascending or descending. The date taken is read from the EXIF data of each image when this order is chosen; an image without it is placed by its date modified. The type is the extension, its case ignored, so `.JPG` and `.jpg` files go together, in name order within a type. The sub-folders and comic books shown as cells follow the same order: folders by name or by date modified (also when the date taken is chosen, since a folder has none) and by name when the size or the type is chosen, comic books by any of them; the folder tree always lists folders by name.
 
 </details>
 

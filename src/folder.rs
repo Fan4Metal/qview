@@ -71,13 +71,17 @@ pub enum SortKey {
     /// modified for an image that does not say.
     Taken,
     Size,
+    /// The file type: the extension, case ignored (`.JPG` with `.jpg`),
+    /// as Explorer's Type column groups files; equal ones by name.
+    Type,
     /// When it was marked as a favourite: its place in the favourites
     /// (only they are sorted so; a folder's files are all equal by it).
     Added,
 }
 
 impl SortKey {
-    pub const ALL: [SortKey; 5] = [SortKey::Name, SortKey::Modified, SortKey::Taken, SortKey::Size, SortKey::Added];
+    pub const ALL: [SortKey; 6] =
+        [SortKey::Name, SortKey::Modified, SortKey::Taken, SortKey::Size, SortKey::Type, SortKey::Added];
 
     /// Name in the settings.
     pub fn name(self) -> &'static str {
@@ -86,6 +90,7 @@ impl SortKey {
             SortKey::Modified => "modified",
             SortKey::Taken => "taken",
             SortKey::Size => "size",
+            SortKey::Type => "type",
             SortKey::Added => "added",
         }
     }
@@ -116,8 +121,15 @@ struct Entry {
     /// `taken` is the date the file says it was taken (`read_taken`).
     dated: bool,
     size: u64,
+    /// The extension in lower case, for [`SortKey::Type`].
+    ext: String,
     /// Its place among the favourites, 0 in a folder.
     added: usize,
+}
+
+/// The extension of `path` in lower case, empty without one.
+fn extension(path: &Path) -> String {
+    path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
 impl Entry {
@@ -125,7 +137,8 @@ impl Entry {
         use std::os::windows::fs::MetadataExt;
         let name = crate::win::wide(path.file_name().unwrap_or_default());
         let modified = meta.map_or(0, |m| m.last_write_time());
-        Self { name, modified, taken: modified, dated: false, size: meta.map_or(0, |m| m.len()), added: 0, path }
+        let (size, ext) = (meta.map_or(0, |m| m.len()), extension(&path));
+        Self { name, modified, taken: modified, dated: false, size, ext, added: 0, path }
     }
 }
 
@@ -312,6 +325,7 @@ fn compare(a: &Entry, b: &Entry, order: Order) -> Ordering {
         SortKey::Modified => a.modified.cmp(&b.modified),
         SortKey::Taken => a.taken.cmp(&b.taken),
         SortKey::Size => a.size.cmp(&b.size),
+        SortKey::Type => a.ext.cmp(&b.ext),
         SortKey::Added => a.added.cmp(&b.added),
     };
     let key = if order.descending { key.reverse() } else { key };
@@ -337,14 +351,14 @@ fn in_order(mut files: Vec<Entry>, order: Order) -> Vec<PathBuf> {
 }
 
 /// Sub-folders in `order`: by name, or by their date modified for either
-/// date (a folder has no date taken); a folder has no size here (nor a
-/// place among the favourites), so those orders leave them in Explorer's
-/// name order.
+/// date (a folder has no date taken); a folder has no size or type here
+/// (nor a place among the favourites), so those orders leave them in
+/// Explorer's name order.
 fn folders_in(folders: Vec<Entry>, order: Order) -> Vec<PathBuf> {
     let order = match order.key {
         SortKey::Name | SortKey::Modified => order,
         SortKey::Taken => Order { key: SortKey::Modified, ..order },
-        SortKey::Size | SortKey::Added => Order::default(),
+        SortKey::Size | SortKey::Type | SortKey::Added => Order::default(),
     };
     in_order(folders, order)
 }
@@ -553,6 +567,7 @@ pub fn list_archive(archive: &Path, order: Order, by_folder: bool) -> std::io::R
             taken: i.modified,
             dated: false,
             size: i.size,
+            ext: extension(&i.path),
             added: 0,
             path: i.path,
         })
@@ -1106,6 +1121,24 @@ mod tests {
         let scan = super::scan(dir.join("a"), Depth::Flat, None, Order::default(), ctx);
         assert!(wait(&scan).is_ok());
         assert_eq!(scan.take_up(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sorts_by_type() {
+        let dir = std::env::temp_dir().join(format!("qview_folder_type_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.png", "b.jpg", "c.JPG", "d.gif"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let names = |descending| -> Vec<String> {
+            let order = Order { key: SortKey::Type, descending };
+            list(&dir, None, order).unwrap().iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect()
+        };
+        // The extension's case does not tell types apart; equal ones by
+        // name, either way.
+        assert_eq!(names(false), ["d.gif", "b.jpg", "c.JPG", "a.png"]);
+        assert_eq!(names(true), ["a.png", "b.jpg", "c.JPG", "d.gif"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

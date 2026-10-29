@@ -347,6 +347,7 @@ impl App {
                 SortKey::Modified => tr!("By Date Modified", "По дате изменения"),
                 SortKey::Taken => tr!("By Date Taken", "По дате съёмки"),
                 SortKey::Size => tr!("By Size", "По размеру"),
+                SortKey::Type => tr!("By Type", "По типу"),
                 SortKey::Added if favorites => tr!("By Date Added", "По дате добавления"),
                 SortKey::Added => continue,
             };
