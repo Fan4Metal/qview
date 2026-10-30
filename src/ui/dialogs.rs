@@ -732,7 +732,7 @@ impl App {
             // Nothing would be left of the names.
             let blank = crate::rename::blank(&batch.base, batch.number || placed);
             let ready = !waiting && !blank;
-            egui::Grid::new("batch_rename_fields").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+            egui::Grid::new("batch_rename_fields").num_columns(2).spacing([10.0, 14.0]).show(ui, |ui| {
                 ui.label(tr!("Name:", "Имя:"));
                 ui.horizontal(|ui| {
                     // The field, then an "i" button with the placeholders.
@@ -747,10 +747,7 @@ impl App {
                     }
                     changed |= edit.changed();
                     let info = egui::Button::new(RichText::new("i").strong()).min_size(egui::vec2(side, side));
-                    ui.add(info).on_hover_text(tr!(
-                        "{n} — the number ({n:4} — with four digits)\n{name} — the old name\n{taken} — the date taken, 2024-05-16 10-30-15 (the date modified when the file has none)\n{modified} — the date modified\n{taken:YYYY-MM-DD} — a pattern of YYYY, MM, DD, HH, mm, ss\n\nWithout {n} the number is added after _, or, with \"Add a number\" off, equal names get (2), (3)…",
-                        "{n} — номер ({n:4} — четырьмя цифрами)\n{name} — старое имя\n{taken} — дата съёмки, 2024-05-16 10-30-15 (дата изменения, если в файле её нет)\n{modified} — дата изменения\n{taken:YYYY-MM-DD} — образец из YYYY, MM, DD, HH, mm, ss\n\nБез {n} номер добавляется после _, а со снятым флажком «Добавлять номер» совпавшие имена получают (2), (3)…"
-                    ));
+                    ui.add(info).on_hover_ui(template_help);
                 });
                 ui.end_row();
                 ui.label(tr!("Start at:", "Начать с:"));
@@ -874,6 +871,38 @@ impl App {
             Some(false) => self.batch_rename = None,
             None => {}
         }
+    }
+}
+
+/// The batch rename template's placeholders, for the "i" button: each
+/// in monospace beside what it gives, then how the number is added.
+fn template_help(ui: &mut Ui) {
+    ui.set_max_width(460.0);
+    let rows = [
+        ("{n}", tr!("the number: 01, 02…", "номер: 01, 02…")),
+        ("{n:4}", tr!("the number with four digits: 0001", "номер из четырёх цифр: 0001")),
+        ("{name}", tr!("the old name without its extension", "старое имя без расширения")),
+        ("{taken}", tr!("the date taken: 2024-05-16 10-30-15", "дата съёмки: 2024-05-16 10-30-15")),
+        ("{modified}", tr!("the date modified", "дата изменения")),
+        ("{taken:YYYY-MM-DD}", tr!("a date by a pattern of YYYY, MM, DD, HH, mm, ss", "дата по образцу из YYYY, MM, DD, HH, mm, ss")),
+    ];
+    egui::Grid::new("template_help").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+        for (code, text) in rows {
+            ui.label(RichText::new(code).monospace().strong());
+            ui.label(text);
+            ui.end_row();
+        }
+    });
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(2.0);
+    let notes = [
+        tr!("A file without a date taken gets its date modified.", "Если даты съёмки в файле нет, берётся дата изменения."),
+        tr!("Without {n} the number is added after _.", "Без {n} номер добавляется после _."),
+        tr!("With \"Add a number\" off, equal names get (2), (3)…", "Со снятым флажком «Добавлять номер» совпавшие имена получают (2), (3)…"),
+    ];
+    for note in notes {
+        ui.label(RichText::new(note).weak());
     }
 }
 
